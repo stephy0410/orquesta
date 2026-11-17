@@ -9,7 +9,7 @@ El planner puede pagar a los proveedores.
 Los planners pueden organizar el acomodo de mesas de los invitados
 Los invitados reciben su invitación por SMS y email.
 
-# Fuera de alcance: facturación CFDI, presupuestos, asistente de IA, apps nativas y portal del anfitrión.
+#### Fuera de alcance: facturación CFDI, presupuestos, asistente de IA, apps nativas y portal del anfitrión.
 
 ## Estimación de capacidad
 Objetivo de diseño: 5 mil planners, por 4 eventos al mes, por 200 invitados, da aproximadamente 4 millones de invitados al mes.
