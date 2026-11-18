@@ -283,7 +283,7 @@ resource "aws_apigatewayv2_api" "http_api" {
     allow_credentials = true
     allow_origins     = local.cors_origins
     allow_methods     = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-    allow_headers     = ["Authorization", "Content-Type", "Idempotency-Key", "If-None-Match"]
+    allow_headers     = ["Authorization", "Content-Type", "Idempotency-Key", "If-None-Match", "If-Match"]
     expose_headers    = ["ETag", "Idempotency-Key", "Retry-After"]
     max_age           = 3600
   }

@@ -68,8 +68,9 @@ async function getDefaultContext() {
 
 export function createApiHandler(ctx) {
   return async function apiHandler(event) {
+    let req = null;
     try {
-      const req = parseHttpRequest(event);
+      req = parseHttpRequest(event);
 
       if (req.method === "OPTIONS") {
         return jsonResponse(204, null);
@@ -105,7 +106,7 @@ export function createApiHandler(ctx) {
 
       return response;
     } catch (err) {
-      return errorResponse(err);
+      return errorResponse(err, req);
     }
   };
 }
