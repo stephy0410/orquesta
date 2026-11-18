@@ -13,7 +13,8 @@
     "test:all": "npm test && npm run test:pg",
     "lint": "find src test -name '*.js' -print0 | xargs -0 -n1 node --check",
     "db:up": "docker compose up -d --wait postgres",
-    "db:down": "docker compose down -v"
+    "db:down": "docker compose down -v",
+    "load:checkin": "node load/checkin-load.js"
   },
   "dependencies": {
     "pg": "^8.13.1",
