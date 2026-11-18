@@ -144,10 +144,12 @@
       <div class="oq-card">
         <div class="oq-card-header">
           <h2>Cámara del dispositivo</h2>
-          @if (cameraSupported()) {
-            <span class="oq-badge oq-badge-success">BarcodeDetector nativo</span>
+          @if (!cameraSupported()) {
+            <span class="oq-badge oq-badge-warning">Sin cámara disponible</span>
+          } @else if (usingCanvasFallback()) {
+            <span class="oq-badge oq-badge-info">Canvas jsQR (Safari/Firefox)</span>
           } @else {
-            <span class="oq-badge oq-badge-warning">Sin BarcodeDetector</span>
+            <span class="oq-badge oq-badge-success">BarcodeDetector nativo</span>
           }
         </div>
 
