@@ -3,13 +3,13 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
-import { BanquetArtComponent } from '../../../shared/ui/banquet-art.component';
+import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-planner-login-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, BanquetArtComponent],
+  imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
@@ -124,7 +124,7 @@ import { AuthService } from '../../../core/auth/auth.service';
       </section>
       </div>
       <aside class="oq-auth-art" aria-hidden="true">
-        <app-banquet-art stroke="#f5f2e8" />
+        <app-tablescape-art stroke="#f5f2e8" fill="#56602a" />
         <blockquote>Tres eventos el mismo sábado, una sola pantalla.</blockquote>
       </aside>
     </main>

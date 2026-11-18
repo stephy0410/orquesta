@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { BanquetArtComponent } from './banquet-art.component';
+import { TablescapeArtComponent } from './tablescape-art.component';
 import { OliveSprigComponent } from './olive-sprig.component';
 
 /** Patrón decorativo con forma de QR (no codifica nada). */
@@ -27,7 +27,7 @@ function buildQrGlyph(size = 21): { x: number; y: number }[] {
   selector: 'app-product-triptych',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [BanquetArtComponent, OliveSprigComponent],
+  imports: [TablescapeArtComponent, OliveSprigComponent],
   template: `
     <figure class="tri-panel tri-paper">
       <div class="tri-card" aria-hidden="true">
@@ -49,7 +49,7 @@ function buildQrGlyph(size = 21): { x: number; y: number }[] {
     </figure>
 
     <figure class="tri-panel tri-olive">
-      <app-banquet-art class="tri-plan" stroke="#f5f2e8" />
+      <app-tablescape-art class="tri-plan" stroke="#f5f2e8" fill="#56602a" />
       <figcaption><span>02</span> Cada invitado tiene mesa antes de llegar.</figcaption>
     </figure>
 
@@ -145,7 +145,8 @@ function buildQrGlyph(size = 21): { x: number; y: number }[] {
       shape-rendering: crispEdges;
     }
     .tri-plan {
-      width: 88%;
+      width: 150%;
+      flex: none;
     }
     .tri-live {
       width: 100%;
