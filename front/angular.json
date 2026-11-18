@@ -30,7 +30,13 @@
                 "input": "public"
               }
             ],
-            "styles": ["src/styles.scss"]
+            "styles": [
+              "@fontsource-variable/figtree/wght.css",
+              "@fontsource/cormorant-garamond/latin-500.css",
+              "@fontsource/cormorant-garamond/latin-500-italic.css",
+              "@fontsource/cormorant-garamond/latin-600-italic.css",
+              "src/styles.scss"
+            ]
           },
           "configurations": {
             "production": {
