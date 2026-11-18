@@ -1,4 +1,5 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
+import { reconcileUnresolvedPayments } from "../../shared/payment-reconciliation.js";
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -28,6 +29,10 @@ export function createOutboxPollerHandler(ctx) {
     // 5. Barrido de retención y anonimización PII a 12 / 24 meses (NFR-08)
     const retention = await ctx.store.sweepRetention({ now });
 
+    // 6. Conciliación de pagos `pendiente`/`desconocido` contra el PSP (RF-11, FR6). Nunca lanza:
+    //    una caída del procesador de pagos no detiene recordatorios ni proyecciones.
+    const payments = await reconcileUnresolvedPayments(ctx, { now });
+
     // Flush de cualquier evento nuevo en outbox generado por los barridos 2 o 4
     const outboxAfter = await flushOutboxNow(ctx, 200);
 
@@ -37,6 +42,7 @@ export function createOutboxPollerHandler(ctx) {
       expired_reservations: expiredReservations.expired,
       indeterminado_deliveries: indeterminado.transitioned,
       retention,
+      payments,
     };
   };
 }

@@ -8,7 +8,12 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:pg": "TEST_DB=pg node --test test/*.test.js",
+    "test:all": "npm test && npm run test:pg",
+    "lint": "find src test -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down -v"
   },
   "dependencies": {
     "pg": "^8.13.1",
