@@ -66,6 +66,12 @@ export class EventSeatingPage implements OnInit {
     }
   }
 
+  rsvpLabel(estado: string | null | undefined): string {
+    if (estado === 'confirma') return 'Confirmó';
+    if (estado === 'declina') return 'Declinó';
+    return 'Sin respuesta';
+  }
+
   tableLabel(t: TableDto): string {
     return t.nombre || `Mesa ${t.numero ?? ''}`.trim();
   }

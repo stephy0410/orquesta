@@ -180,6 +180,7 @@
       <select
         class="oq-select"
         style="width: auto"
+        aria-label="Canal del reenvío"
         [ngModel]="resendCanal()"
         (ngModelChange)="resendCanal.set($event)"
       >
@@ -236,7 +237,7 @@
     <table class="oq-table">
       <thead>
         <tr>
-          <th>Sel.</th>
+          <th scope="col"><span class="oq-sr-only">Seleccionar</span></th>
           <th>Invitado</th>
           <th>Contacto</th>
           <th>Envío / RSVP</th>
@@ -250,6 +251,7 @@
             <td>
               <input
                 type="checkbox"
+                [attr.aria-label]="'Seleccionar a ' + g.nombre"
                 [checked]="selectedGuestIds().has(gid)"
                 (change)="toggleGuestSelection(gid)"
               />
@@ -311,6 +313,7 @@
       <select
         class="oq-select"
         style="width: auto"
+        aria-label="Filtrar entregas por canal"
         [ngModel]="deliveryCanal()"
         (ngModelChange)="deliveryCanal.set($event); loadDeliveries()"
       >
@@ -321,6 +324,7 @@
       <select
         class="oq-select"
         style="width: auto"
+        aria-label="Filtrar entregas por estado"
         [ngModel]="deliveryEstado()"
         (ngModelChange)="deliveryEstado.set($event); loadDeliveries()"
       >

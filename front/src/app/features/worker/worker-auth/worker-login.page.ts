@@ -11,6 +11,7 @@ import { AuthService } from '../../../core/auth/auth.service';
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
@@ -23,7 +24,6 @@ import { AuthService } from '../../../core/auth/auth.service';
       </div>
     </header>
 
-    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <main id="contenido" class="oq-auth" tabindex="-1">
       <div class="oq-auth-form">
       <section class="oq-card">
