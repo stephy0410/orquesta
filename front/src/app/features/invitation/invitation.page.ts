@@ -1,7 +1,4 @@
-import { CommonModule } from '@angular/common';
 import { Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import * as QRCode from 'qrcode';
 import { ApiService } from '../../core/api/api.service';
 import { OrquestaApiError } from '../../core/api/api-config';
 import { PublicRsvpStateResponse, RsvpRespuesta } from '../../core/api/models';
@@ -62,7 +59,8 @@ export function formatEventTime(value: string | null | undefined, timeZone?: str
 @Component({
   selector: 'app-invitation-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, OliveSprigComponent],
+  // Sin FormsModule ni CommonModule: esta ruta es pública y su bundle debe ser mínimo (issue #8).
+  imports: [OliveSprigComponent],
   templateUrl: './invitation.page.html',
   styleUrl: './invitation.page.scss',
 })
@@ -106,6 +104,10 @@ export class InvitationPage implements OnInit {
     }
     return '';
   });
+
+  onManualTokenInput(event: Event): void {
+    this.manualTokenInput.set((event.target as HTMLInputElement).value);
+  }
 
   ngOnInit(): void {
     this.syncTokenFromLocation();
@@ -207,13 +209,16 @@ export class InvitationPage implements OnInit {
       return;
     }
     try {
+      // Import diferido: la librería de QR (~45 KB) no bloquea el primer render de la invitación.
+      const mod = await import('qrcode');
+      const QRCode = (mod as unknown as { default?: typeof mod }).default ?? mod;
       const svg = await QRCode.toString(qrToken, {
         type: 'svg',
         width: 260,
         margin: 2,
         errorCorrectionLevel: 'M',
         color: {
-          dark: '#0f172a',
+          dark: '#2b2e1b',
           light: '#ffffff',
         },
       });

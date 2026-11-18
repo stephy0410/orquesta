@@ -20,7 +20,7 @@
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "allowedCommonJsDependencies": ["qrcode", "jsqr"],
+            "allowedCommonJsDependencies": ["qrcode", "jsqr", "dijkstrajs"],
             "browser": "src/main.ts",
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
@@ -28,11 +28,19 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "bodoni-moda-latin-opsz-normal.woff2",
+                "input": "node_modules/@fontsource-variable/bodoni-moda/files",
+                "output": "fonts"
+              },
+              {
+                "glob": "figtree-latin-wght-normal.woff2",
+                "input": "node_modules/@fontsource-variable/figtree/files",
+                "output": "fonts"
               }
             ],
             "styles": [
-              "@fontsource-variable/figtree/wght.css",
-              "@fontsource-variable/bodoni-moda/opsz.css",
               "@fontsource/pinyon-script/latin-400.css",
               "src/styles.scss"
             ]
@@ -42,8 +50,8 @@
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "500kB",
-                  "maximumError": "1MB"
+                  "maximumWarning": "340kB",
+                  "maximumError": "400kB"
                 },
                 {
                   "type": "anyComponentStyle",

@@ -11,7 +11,7 @@
           Abre el enlace que te llegó por SMS o correo. Si solo tienes el código de tu invitación,
           pégalo aquí.
         </p>
-        <form class="oq-form-grid inv-manual" (ngSubmit)="openManualToken()">
+        <form class="oq-form-grid inv-manual" (submit)="$event.preventDefault(); openManualToken()">
           <div class="oq-field">
             <label class="oq-label" for="rsvpTokenInput">Código de invitación</label>
             <input
@@ -20,8 +20,8 @@
               class="oq-input mono"
               type="text"
               autocomplete="off"
-              [ngModel]="manualTokenInput()"
-              (ngModelChange)="manualTokenInput.set($event)"
+              [value]="manualTokenInput()"
+              (input)="onManualTokenInput($event)"
             />
           </div>
           <button class="oq-btn oq-btn-primary" type="submit">Cargar invitación</button>
@@ -63,7 +63,7 @@
           }
         </div>
 
-        <p class="inv-kicker oq-script">Tienes una invitación a</p>
+        <p class="inv-kicker">Tienes una invitación a</p>
         <h1 class="inv-title">{{ inv.evento.nombre }}</h1>
         <app-olive-sprig class="inv-sprig" [width]="150" />
 
