@@ -3,29 +3,31 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { BanquetArtComponent } from '../../../shared/ui/banquet-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-worker-login-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, BanquetArtComponent],
   template: `
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Trabajador</span>
+          Orquesta <small>para proveedores</small>
         </a>
-        <div class="oq-nav-links">
-          <a class="oq-nav-link" routerLink="/planner/login">Soy Planner</a>
-          <a class="oq-nav-link" routerLink="/scan">Ir a Escáner</a>
-        </div>
+        <nav class="oq-nav-links" aria-label="Accesos">
+          <a class="oq-nav-link" routerLink="/planner/login">Soy planner</a>
+          <a class="oq-nav-link" routerLink="/scan">Escáner</a>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Iniciar sesión (Trabajador / Proveedor)</h1>
+        <h1>Entra como proveedor</h1>
         <p class="oq-page-subtitle">
           Administra tu perfil contratable, ventanas de disponibilidad, solicitudes y pagos.
         </p>
@@ -71,6 +73,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           <a routerLink="/worker/register">Regístrate aquí</a>
         </p>
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-banquet-art stroke="#f5f2e8" />
+        <blockquote>Las solicitudes llegan a tu celular, también las urgentes.</blockquote>
+      </aside>
     </main>
   `,
 })

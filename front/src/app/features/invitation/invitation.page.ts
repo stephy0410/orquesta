@@ -5,6 +5,7 @@ import * as QRCode from 'qrcode';
 import { ApiService } from '../../core/api/api.service';
 import { OrquestaApiError } from '../../core/api/api-config';
 import { PublicRsvpStateResponse, RsvpRespuesta } from '../../core/api/models';
+import { OliveSprigComponent } from '../../shared/ui/olive-sprig.component';
 
 export function extractRsvpTokenFromHash(hash: string): string | null {
   if (!hash) return null;
@@ -28,7 +29,7 @@ export function extractRsvpTokenFromHash(hash: string): string | null {
 @Component({
   selector: 'app-invitation-page',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, OliveSprigComponent],
   templateUrl: './invitation.page.html',
   styleUrl: './invitation.page.scss',
 })

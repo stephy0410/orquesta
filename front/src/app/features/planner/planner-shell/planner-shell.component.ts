@@ -9,44 +9,45 @@ import { ConnectivityService } from '../../../core/connectivity/connectivity.ser
   standalone: true,
   imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/planner/dashboard">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Planner</span>
+          Orquesta <small>para planners</small>
         </a>
 
         <nav class="oq-nav-links" aria-label="Navegación del planner">
-          <a class="oq-nav-link" routerLink="/planner/dashboard" routerLinkActive="active">
+          <a class="oq-nav-link" routerLink="/planner/dashboard" routerLinkActive="active" ariaCurrentWhenActive="page">
             Tablero en vivo
           </a>
-          <a class="oq-nav-link" routerLink="/planner/events/new" routerLinkActive="active">
+          <a class="oq-nav-link" routerLink="/planner/events/new" routerLinkActive="active" ariaCurrentWhenActive="page">
             Nuevo evento
           </a>
-          <a class="oq-nav-link" routerLink="/scan" routerLinkActive="active">
-            Escáner PWA
+          <a class="oq-nav-link" routerLink="/scan" routerLinkActive="active" ariaCurrentWhenActive="page">
+            Escáner
           </a>
         </nav>
 
         <div class="oq-row">
           <span
             class="oq-badge"
+            role="status"
             [class.oq-badge-success]="connectivity.isOnline()"
             [class.oq-badge-danger]="!connectivity.isOnline()"
           >
-            {{ connectivity.isOnline() ? 'API OK' : 'Offline' }}
+            {{ connectivity.isOnline() ? 'En línea' : 'Sin conexión' }}
           </span>
           @if (auth.userEmail()) {
-            <span class="oq-hint mono" style="color: #cbd5e1">{{ auth.userEmail() }}</span>
+            <span class="oq-hint">{{ auth.userEmail() }}</span>
           }
           <button type="button" class="oq-btn oq-btn-sm oq-btn-secondary" (click)="logout()">
-            Salir
+            Cerrar sesión
           </button>
         </div>
       </div>
     </header>
 
-    <main class="oq-container">
+    <main id="contenido" class="oq-container" tabindex="-1">
       <router-outlet />
     </main>
   `,

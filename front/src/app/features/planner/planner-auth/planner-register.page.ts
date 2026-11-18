@@ -3,28 +3,30 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { BanquetArtComponent } from '../../../shared/ui/banquet-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-planner-register-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, BanquetArtComponent],
   template: `
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Planner</span>
+          Orquesta <small>para planners</small>
         </a>
-        <div class="oq-nav-links">
+        <nav class="oq-nav-links" aria-label="Accesos">
           <a class="oq-nav-link" routerLink="/planner/login">Iniciar sesión</a>
-        </div>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Crear cuenta de Planner (RF-19)</h1>
+        <h1>Crea tu cuenta de planner</h1>
         <p class="oq-page-subtitle">
           Regístrate con tu correo y verifícalo para comenzar a gestionar eventos.
         </p>
@@ -91,6 +93,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           ¿Ya verificaste tu correo? <a routerLink="/planner/login">Ir al login</a>
         </p>
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-banquet-art stroke="#f5f2e8" />
+        <blockquote>Tu lista de invitados ya no vive en Excel.</blockquote>
+      </aside>
     </main>
   `,
 })

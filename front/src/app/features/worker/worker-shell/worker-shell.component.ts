@@ -8,32 +8,32 @@ import { AuthService } from '../../../core/auth/auth.service';
   standalone: true,
   imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/worker/requests">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Trabajador</span>
+          Orquesta <small>para proveedores</small>
         </a>
 
-        <nav class="oq-nav-links" aria-label="Navegación de trabajador">
-          <a class="oq-nav-link" routerLink="/worker/requests" routerLinkActive="active">Solicitudes</a>
-          <a class="oq-nav-link" routerLink="/worker/profile" routerLinkActive="active">Perfil y OTP</a>
-          <a class="oq-nav-link" routerLink="/worker/availability" routerLinkActive="active">Disponibilidad</a>
-          <a class="oq-nav-link" routerLink="/scan">Escáner QR</a>
+        <nav class="oq-nav-links" aria-label="Navegación del proveedor">
+          <a class="oq-nav-link" routerLink="/worker/requests" routerLinkActive="active" ariaCurrentWhenActive="page">Solicitudes</a>
+          <a class="oq-nav-link" routerLink="/worker/profile" routerLinkActive="active" ariaCurrentWhenActive="page">Perfil</a>
+          <a class="oq-nav-link" routerLink="/worker/availability" routerLinkActive="active" ariaCurrentWhenActive="page">Disponibilidad</a>
+          <a class="oq-nav-link" routerLink="/scan">Escáner</a>
         </nav>
 
         <div class="oq-row">
           @if (auth.userEmail()) {
-            <span class="oq-hint mono" style="color: #cbd5e1">{{ auth.userEmail() }}</span>
+            <span class="oq-hint">{{ auth.userEmail() }}</span>
           }
           <button type="button" class="oq-btn oq-btn-sm oq-btn-secondary" (click)="logout()">
-            Salir
+            Cerrar sesión
           </button>
         </div>
       </div>
     </header>
 
-    <main class="oq-container">
+    <main id="contenido" class="oq-container" tabindex="-1">
       <router-outlet />
     </main>
   `,
