@@ -1,0 +1,17 @@
+{
+  "name": "orquesta-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Orquesta backend lambdas, shared domain/ports, and PostgreSQL schema",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "qrcode": "^1.5.4"
+  }
+}

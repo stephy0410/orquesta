@@ -1,0 +1,153 @@
+<main class="inv-shell">
+  <div class="oq-container-narrow">
+    <header class="inv-brand">
+      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="32" height="32" />
+      <span>Orquesta · Invitación digital</span>
+    </header>
+
+    @if (!token()) {
+      <section class="oq-card inv-card">
+        <h1>Abre tu invitación</h1>
+        <p class="oq-page-subtitle">
+          El enlace de invitación usa un token privado en el fragmento de URL (<code>#t=...</code>)
+          para cuidar tu privacidad y no requerir cuenta.
+        </p>
+        <form class="oq-form-grid" (ngSubmit)="openManualToken()">
+          <div class="oq-field">
+            <label class="oq-label" for="rsvpTokenInput">Token de RSVP</label>
+            <input
+              id="rsvpTokenInput"
+              name="rsvpTokenInput"
+              class="oq-input mono"
+              type="text"
+              placeholder="rsvp_..."
+              [ngModel]="manualTokenInput()"
+              (ngModelChange)="manualTokenInput.set($event)"
+            />
+          </div>
+          <button class="oq-btn oq-btn-primary" type="submit">Cargar invitación</button>
+        </form>
+      </section>
+    } @else if (loading()) {
+      <section class="oq-card inv-card inv-center">
+        <p class="oq-page-subtitle">Cargando detalles del evento y pase QR...</p>
+      </section>
+    } @else if (error(); as apiErr) {
+      <section class="oq-card inv-card">
+        <div class="oq-alert oq-alert-error">
+          <strong>{{ apiErr.code }}</strong> — {{ apiErr.message }}
+        </div>
+        @if (apiErr.code === 'TOKEN_TIPO_INCORRECTO') {
+          <p class="oq-hint">
+            Estás intentando abrir un QR de check-in en la página de confirmación RSVP. Utiliza el
+            enlace enviado a tu SMS o correo.
+          </p>
+        } @else if (apiErr.code === 'INVITACION_REVOCADA') {
+          <p class="oq-hint">
+            Esta invitación fue dada de baja o reemplazada por el organizador del evento.
+          </p>
+        }
+        <button class="oq-btn oq-btn-secondary" type="button" (click)="loadRsvpState(token()!)">
+          Reintentar
+        </button>
+      </section>
+    } @else if (state(); as inv) {
+      <section class="oq-card inv-card">
+        <div class="oq-between">
+          <span class="oq-badge oq-badge-info">Sin cuenta requerida</span>
+          @if (inv.respuesta === 'confirma') {
+            <span class="oq-badge oq-badge-success">Asistencia confirmada</span>
+          } @else if (inv.respuesta === 'declina') {
+            <span class="oq-badge oq-badge-danger">No asistirás</span>
+          } @else {
+            <span class="oq-badge oq-badge-warning">Pendiente de respuesta</span>
+          }
+        </div>
+
+        <h1 class="inv-title">{{ inv.evento.nombre }}</h1>
+
+        <dl class="inv-meta">
+          <div>
+            <dt>Fecha</dt>
+            <dd>{{ inv.evento.fecha }}</dd>
+          </div>
+          <div>
+            <dt>Horario</dt>
+            <dd>
+              {{ inv.evento.inicio }}
+              @if (inv.evento.fin) {
+                – {{ inv.evento.fin }}
+              }
+              @if (inv.evento.timezone) {
+                <span class="oq-hint">({{ inv.evento.timezone }})</span>
+              }
+            </dd>
+          </div>
+          @if (venueLabel()) {
+            <div>
+              <dt>Lugar</dt>
+              <dd>{{ venueLabel() }}</dd>
+            </div>
+          }
+        </dl>
+
+        @if (lastActionBanner()) {
+          <div class="oq-alert oq-alert-success">{{ lastActionBanner() }}</div>
+        }
+
+        <div class="inv-actions">
+          <button
+            type="button"
+            class="oq-btn oq-btn-lg"
+            [class.oq-btn-accent]="inv.respuesta !== 'confirma'"
+            [class.oq-btn-primary]="inv.respuesta === 'confirma'"
+            [disabled]="submitting()"
+            (click)="respond('confirma')"
+          >
+            {{ inv.respuesta === 'confirma' ? 'Confirmado (mantener)' : 'Confirmar asistencia' }}
+          </button>
+
+          <button
+            type="button"
+            class="oq-btn oq-btn-lg oq-btn-secondary"
+            [disabled]="submitting()"
+            (click)="respond('declina')"
+          >
+            {{ inv.respuesta === 'declina' ? 'Declinado (mantener)' : 'No podré asistir' }}
+          </button>
+        </div>
+
+        @if (inv.respondido_en) {
+          <p class="oq-hint inv-timestamp">
+            Última respuesta: <span class="mono">{{ inv.respondido_en }}</span>
+            @if (inv.recordatorios_cancelados) {
+              · Recordatorios cancelados: {{ inv.recordatorios_cancelados }}
+            }
+          </p>
+        }
+
+        <hr class="inv-divider" />
+
+        <div class="inv-qr-box">
+          <h2>Tu QR de check-in</h2>
+          <p class="oq-hint">
+            Preséntalo en la entrada del venue. Permanece disponible antes y después de responder.
+          </p>
+
+          @if (qrDataUrl()) {
+            <img class="inv-qr-img" [src]="qrDataUrl()!" alt="Código QR de check-in" />
+          } @else if (inv.qr.png_url) {
+            <img class="inv-qr-img" [src]="inv.qr.png_url" alt="Código QR de check-in" />
+          }
+
+          @if (inv.qr.codigo_corto) {
+            <div class="inv-short-code">
+              <span>Código corto (fallback sin cámara)</span>
+              <strong class="mono">{{ inv.qr.codigo_corto }}</strong>
+            </div>
+          }
+        </div>
+      </section>
+    }
+  </div>
+</main>

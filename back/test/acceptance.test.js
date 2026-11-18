@@ -1,0 +1,1888 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { createApiHandler } from "../src/lambdas/api/index.js";
+import { createImportWorkerHandler } from "../src/lambdas/import-worker/index.js";
+import { createNotifyEmailHandler } from "../src/lambdas/notify-email/index.js";
+import { createNotifySmsHandler } from "../src/lambdas/notify-sms/index.js";
+import { createOutboxPollerHandler } from "../src/lambdas/outbox-poller/index.js";
+import { createProjectorHandler } from "../src/lambdas/projector/index.js";
+import { createAppContext } from "../src/shared/context.js";
+import {
+  computeBatchChecksum,
+  signWebhookHmac,
+  verifyEs256Jws,
+} from "../src/shared/crypto.js";
+import { verifyPaymentProviderContract } from "../src/shared/ports.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } = {}) {
+  let currentNow = new Date(nowDate);
+  const ctx = await createAppContext({
+    dbMode: "memory",
+    silentMetrics: true,
+    now: () => new Date(currentNow),
+  });
+
+  const api = createApiHandler(ctx);
+  const importWorker = createImportWorkerHandler(ctx);
+  const projector = createProjectorHandler(ctx);
+  const notifySms = createNotifySmsHandler(ctx);
+  const notifyEmail = createNotifyEmailHandler(ctx);
+  const outboxPoller = createOutboxPollerHandler(ctx);
+
+  ctx.queueBus.registerConsumer("import_jobs", importWorker);
+  ctx.queueBus.registerConsumer("projection", projector);
+  ctx.queueBus.registerConsumer("notify_sms", notifySms);
+  ctx.queueBus.registerConsumer("notify_email", notifyEmail);
+
+  async function request(method, rawPath, { body = null, headers = {}, cookies = [], rawBody = null, query = {} } = {}) {
+    const qs = new URLSearchParams(query).toString();
+    const isStringBody = typeof rawBody === "string";
+    const serialized =
+      rawBody !== null
+        ? isStringBody
+          ? rawBody
+          : Buffer.from(rawBody).toString("base64")
+        : body !== null
+          ? JSON.stringify(body)
+          : undefined;
+    const event = {
+      version: "2.0",
+      requestContext: { http: { method, path: rawPath } },
+      rawPath,
+      rawQueryString: qs,
+      headers: {
+        ...(body !== null && !headers["content-type"] ? { "content-type": "application/json" } : {}),
+        ...headers,
+      },
+      cookies,
+      body: serialized,
+      isBase64Encoded: rawBody !== null && !isStringBody,
+    };
+    const res = await api(event);
+    const parsed = res.body ? JSON.parse(res.body) : null;
+    return { status: res.statusCode, headers: res.headers, cookies: res.cookies || [], body: parsed };
+  }
+
+  async function registerAndLoginUser({ email, password = "Password123!", role = "planner", tipo = "persona" }) {
+    const regPath = role === "worker" ? "/v1/auth/worker/register" : "/v1/auth/register";
+    const reg = await request("POST", regPath, { body: { email, password, tipo } });
+    assert.equal(reg.status, role === "worker" ? 201 : 201);
+    await ctx.queueBus.drainQueue("notify_email");
+    const emailMsg = [...ctx.emailProvider.captured].reverse().find((m) => m.to === email.toLowerCase());
+    assert.ok(emailMsg, `Verification email should be captured for ${email}`);
+    const vfy = await request("POST", "/v1/auth/verify-email", { body: { token: emailMsg.metadata.token } });
+    assert.equal(vfy.status, 200);
+    const login = await request("POST", "/v1/auth/login", { body: { email, password } });
+    assert.equal(login.status, 200);
+    const cookieHeader = (login.cookies[0] || "").split(";")[0];
+    return {
+      userId: reg.body.user_id,
+      token: login.body.access_token,
+      cookie: cookieHeader,
+      headers: { authorization: `Bearer ${login.body.access_token}` },
+    };
+  }
+
+  return {
+    ctx,
+    request,
+    registerAndLoginUser,
+    drainAll: () => ctx.queueBus.drainAll(),
+    outboxPoller,
+    setNow: (d) => {
+      currentNow = new Date(d);
+    },
+    advanceMs: (ms) => {
+      currentNow = new Date(currentNow.getTime() + ms);
+    },
+  };
+}
+
+function buildMultipartCsv(csvText, boundary = "----OrquestaBoundary123") {
+  const payload =
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="file"; filename="guests.csv"\r\n` +
+    `Content-Type: text/csv\r\n\r\n` +
+    `${csvText}\r\n` +
+    `--${boundary}--\r\n`;
+  return {
+    rawBody: payload,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+// ============================================================================
+// 0. DDL SQL e Integridad de Migración
+// ============================================================================
+test("001_initial_schema.sql contiene las 22 entidades, extensiones, vistas y triggers normativos", async () => {
+  const sql = await readFile(path.join(__dirname, "../migrations/001_initial_schema.sql"), "utf8");
+  for (const required of [
+    "CREATE EXTENSION IF NOT EXISTS btree_gist",
+    "CREATE EXTENSION IF NOT EXISTS pgcrypto",
+    "set_updated_at()",
+    'CREATE TABLE "user"',
+    "CREATE TABLE event_membership",
+    "CREATE TABLE venue",
+    "CREATE TABLE event",
+    "CREATE TABLE event_requirement",
+    "CREATE TABLE guest",
+    "CREATE TABLE invitation",
+    "CREATE TABLE event_access_token",
+    "CREATE TABLE staff_assignment",
+    "CREATE TABLE invitation_delivery",
+    "CREATE TABLE rsvp_response",
+    "CREATE TABLE checkin_event",
+    "CREATE TABLE device_sync_state",
+    "CREATE TABLE event_table",
+    "CREATE TABLE seat_assignment",
+    "CREATE TABLE reminder_job",
+    "CREATE TABLE audit_entry",
+    "CREATE TABLE worker_profile",
+    "CREATE TABLE availability_window",
+    "CREATE TABLE worker_reservation",
+    "CREATE TABLE payment",
+    "CREATE TABLE payment_entry",
+    "CREATE OR REPLACE VIEW worker_profile_publico",
+    "CREATE TABLE event_counters",
+    "CREATE TABLE outbox_event",
+    "CREATE TABLE idempotency_record",
+    "CREATE TABLE projector_applied",
+    "CREATE TABLE verification_challenge",
+    "assert_transaccion_balanceada()",
+    "DEFERRABLE INITIALLY DEFERRED",
+    "aceptar_worker_reservation",
+    "pg_advisory_xact_lock",
+  ]) {
+    assert.ok(sql.includes(required), `SQL migration missing: ${required}`);
+  }
+});
+
+// ============================================================================
+// 1. Health, Auth, Cookie httpOnly, OTP (AC-25), PII AES-256-GCM y WebCrypto ES256
+// ============================================================================
+test("Auth, OTP, unicidad de teléfono (AC-25), AES-256-GCM y firma ES256 compatible con Web Crypto", async () => {
+  const h = await createTestHarness();
+
+  // Health
+  const health = await h.request("GET", "/health");
+  assert.equal(health.status, 200);
+  assert.equal(health.body.status, "ok");
+
+  // Registro sin verificar bloquea login (RF-19)
+  const reg = await h.request("POST", "/v1/auth/register", {
+    body: { email: "planner1@orquesta.test", password: "Password123!" },
+  });
+  assert.equal(reg.status, 201);
+  const blockedLogin = await h.request("POST", "/v1/auth/login", {
+    body: { email: "planner1@orquesta.test", password: "Password123!" },
+  });
+  assert.equal(blockedLogin.status, 403);
+  assert.equal(blockedLogin.body.error.code, "EMAIL_NOT_VERIFIED");
+
+  // Verificar email + login emite cookie httpOnly + Bearer
+  await h.ctx.queueBus.drainQueue("notify_email");
+  const verifyTok = h.ctx.emailProvider.captured[0].metadata.token;
+  const vfy1 = await h.request("POST", "/v1/auth/verify-email", { body: { token: verifyTok } });
+  assert.equal(vfy1.status, 200);
+  // Segundo uso es idempotente
+  const vfy2 = await h.request("POST", "/v1/auth/verify-email", { body: { token: verifyTok } });
+  assert.equal(vfy2.status, 200);
+
+  const login = await h.request("POST", "/v1/auth/login", {
+    body: { email: "planner1@orquesta.test", password: "Password123!" },
+  });
+  assert.equal(login.status, 200);
+  assert.ok(login.cookies[0].includes("HttpOnly"));
+  assert.ok(login.cookies[0].includes("SameSite=Lax"));
+
+  // Autenticación usando Cookie httpOnly sin header Authorization
+  const cookieOnlyEvents = await h.request("GET", "/v1/events", {
+    cookies: [login.cookies[0].split(";")[0]],
+  });
+  assert.equal(cookieOnlyEvents.status, 200);
+
+  // Verificar que PII en store está cifrada con AES-256-GCM (NFR-07)
+  const rawUser = h.ctx.store.users.get(reg.body.user_id);
+  assert.ok(rawUser.email_cifrado.startsWith("enc:v1:"));
+  assert.equal(rawUser.email, undefined);
+
+  // Trabajador 1: alta, perfil completo, invisible sin OTP, visible tras OTP (AC-25)
+  const w1 = await h.registerAndLoginUser({ email: "worker1@orquesta.test", role: "worker" });
+  const prof1 = await h.request("POST", "/v1/worker/profile", {
+    headers: w1.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Chef Sofía",
+      categorias: ["mesero"],
+      servicios: ["servicio_mesa"],
+      tarifa: { modo: "fijo", monto: 500, moneda: "MXN", unidad: "hora" },
+      zonas: ["sur"],
+      telefono_e164: "+525511223344",
+    },
+  });
+  assert.equal(prof1.status, 201);
+
+  // Intentar publicar antes de OTP -> PROFILE_NOT_VERIFIED
+  const pubFail = await h.request("POST", "/v1/worker/profile/publish", { headers: w1.headers });
+  assert.equal(pubFail.status, 409);
+  assert.equal(pubFail.body.error.code, "PROFILE_NOT_VERIFIED");
+
+  // Incluso si estado se marca 'publicado' antes de verificar teléfono, búsqueda devuelve 0 (AC-25)
+  await h.request("PATCH", "/v1/worker/profile", {
+    headers: w1.headers,
+    body: { estado: "publicado" },
+  });
+  const plannerHeaders = { authorization: `Bearer ${login.body.access_token}` };
+  const searchBeforeOtp = await h.request("GET", "/v1/workers", {
+    headers: plannerHeaders,
+    query: { categorias: "mesero", zonas: "sur" },
+  });
+  assert.equal(searchBeforeOtp.status, 200);
+  assert.equal(searchBeforeOtp.body.items.length, 0);
+
+  // Verificar teléfono por OTP SMS (y duplicado por email D11)
+  const chal = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: w1.headers,
+    body: { canal: "telefono" },
+  });
+  assert.equal(chal.status, 202);
+  await h.drainAll();
+  const otpSms = h.ctx.smsProvider.captured.find((s) => s.to === "+525511223344");
+  assert.ok(otpSms);
+  const confirmOtp = await h.request("POST", `/v1/worker/profile/verifications/${chal.body.desafio_id}/confirm`, {
+    headers: w1.headers,
+    body: { codigo_otp: otpSms.metadata.codigo_otp },
+  });
+  assert.equal(confirmOtp.status, 200);
+  assert.equal(confirmOtp.body.visible_en_busqueda, true);
+
+  // Ahora SÍ aparece en búsqueda, SIN exponer datos de contacto (NFR-11 exc. 2)
+  const searchAfterOtp = await h.request("GET", "/v1/workers", {
+    headers: plannerHeaders,
+    query: { categorias: "mesero", zonas: "sur" },
+  });
+  assert.equal(searchAfterOtp.body.items.length, 1);
+  assert.equal(searchAfterOtp.body.items[0].worker_id, prof1.body.worker_id);
+  assert.equal(searchAfterOtp.body.items[0].telefono_e164, undefined);
+
+  // Trabajador 2 intentando verificar el mismo teléfono -> rechazado (AC-25)
+  const w2 = await h.registerAndLoginUser({ email: "worker2@orquesta.test", role: "worker" });
+  await h.request("POST", "/v1/worker/profile", {
+    headers: w2.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Otro Mesero",
+      categorias: ["mesero"],
+      zonas: ["sur"],
+      tarifa: { monto: 400, moneda: "MXN", unidad: "hora" },
+    },
+  });
+  const dupPhoneReq = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: w2.headers,
+    body: { canal: "telefono", telefono_e164: "+525511223344" },
+  });
+  assert.equal(dupPhoneReq.status, 409);
+  assert.equal(dupPhoneReq.body.error.code, "TELEFONO_YA_REGISTRADO");
+
+  // Interoperabilidad 100% Web Crypto SubtleCrypto ECDSA P-256 / SHA-256 (TR-06)
+  const jws = await h.ctx.qrSigner.signJws({
+    typ: "checkin_qr",
+    invitation_id: "inv_test_1",
+    event_id: "evt_test_1",
+    token_version: 1,
+    key_id: "k-2026-03",
+  });
+  const { public_key_pem } = await h.ctx.qrSigner.getPublicKey();
+  const spkiDer = Buffer.from(
+    public_key_pem.replace(/-----BEGIN PUBLIC KEY-----|\r|\n|-----END PUBLIC KEY-----/g, ""),
+    "base64"
+  );
+  const webCryptoKey = await globalThis.crypto.subtle.importKey(
+    "spki",
+    spkiDer,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"]
+  );
+  const [hdr, pld, sig] = jws.split(".");
+  const webVerified = await globalThis.crypto.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    webCryptoKey,
+    Buffer.from(sig, "base64url"),
+    Buffer.from(`${hdr}.${pld}`, "utf8")
+  );
+  assert.equal(webVerified, true);
+  assert.equal(verifyEs256Jws(jws, public_key_pem).payload.invitation_id, "inv_test_1");
+});
+
+// ============================================================================
+// 2. Creación de evento, Aforo, Import Idempotente, Envío Paralelo, RSVP y Baja
+//    (AC-20, AC-11, AC-13, AC-21, AC-06, AC-12, AC-23, AC-24)
+// ============================================================================
+test("Ciclo completo del invitado: evento, import CSV, envíos SMS+Email, RSVP sin cuenta y baja lógica", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-01T12:00:00Z" });
+  const plannerA = await h.registerAndLoginUser({ email: "pa@orquesta.test" });
+  const plannerB = await h.registerAndLoginUser({ email: "pb@orquesta.test" });
+
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: plannerA.headers,
+    body: { nombre: "Hacienda Sol", zona: "sur", direccion: "Av. Reforma 100" },
+  });
+  assert.equal(venue.status, 201);
+
+  // AC-20: sin timezone/nombre/fecha/venue responde error determinista
+  const badEvt = await h.request("POST", "/v1/events", {
+    headers: plannerA.headers,
+    body: {
+      nombre: "Boda Sin TZ",
+      fecha: "2026-06-15",
+      ventana: { inicio: "2026-06-15T18:00:00-06:00", fin: "2026-06-16T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 2,
+    },
+  });
+  assert.equal(badEvt.status, 422);
+  assert.equal(badEvt.body.error.code, "VALIDATION_ERROR");
+
+  // Crear evento con aforo = 2
+  const evt = await h.request("POST", "/v1/events", {
+    headers: { ...plannerA.headers, "idempotency-key": "evt-create-1" },
+    body: {
+      nombre: "Boda Robles",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T18:00:00-06:00", fin: "2026-06-16T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 2,
+    },
+  });
+  assert.equal(evt.status, 201);
+  const eventId = evt.body.id;
+
+  // Replay misma Idempotency-Key -> mismo evento; distinto cuerpo -> 409 IDEMPOTENCY_CONFLICT
+  const evtReplay = await h.request("POST", "/v1/events", {
+    headers: { ...plannerA.headers, "idempotency-key": "evt-create-1" },
+    body: {
+      nombre: "Boda Robles",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T18:00:00-06:00", fin: "2026-06-16T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 2,
+    },
+  });
+  assert.equal(evtReplay.body.id, eventId);
+  const evtConflict = await h.request("POST", "/v1/events", {
+    headers: { ...plannerA.headers, "idempotency-key": "evt-create-1" },
+    body: { nombre: "Otro" },
+  });
+  assert.equal(evtConflict.status, 409);
+  assert.equal(evtConflict.body.error.code, "IDEMPOTENCY_CONFLICT");
+
+  // AC-20 / AC-15: no aparece en tablero de planner B
+  const dashB = await h.request("GET", "/v1/dashboard", { headers: plannerB.headers });
+  assert.equal(dashB.body.items.length, 0);
+
+  // AC-20: Import que excede aforo (3 válidos > aforo 2) -> 422 AFORO_EXCEDIDO con 0 creados
+  const overCsv = buildMultipartCsv(
+    "nombre,email,telefono\nAna,ana@x.com,+525500000001\nLuis,luis@x.com,+525500000002\nEva,eva@x.com,+525500000003\n"
+  );
+  const overRes = await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...plannerA.headers, "content-type": overResContentType(overCsv) },
+    rawBody: overCsv.rawBody,
+  });
+  function overResContentType(mp) {
+    return mp.contentType;
+  }
+  assert.equal(overRes.status, 422);
+  assert.equal(overRes.body.error.code, "AFORO_EXCEDIDO");
+  const guestsAfterOver = await h.request("GET", `/v1/events/${eventId}/guests`, { headers: plannerA.headers });
+  assert.equal(guestsAfterOver.body.items.length, 0);
+
+  // AC-11 & AC-21: CSV con 1 sin clave, 1 duplicado interno, 2 válidos (0 mensajes enviados al importar)
+  const csv1 = buildMultipartCsv(
+    "nombre,email,telefono\n" +
+      "Ana Ruiz,ANA@Example.com ,+52 55 1234 5678\n" +
+      "Luis Prado,,+52 55 0000 1111\n" +
+      "Sofía Nava,,\n" +
+      "Ana Duplicada,ana@example.com,\n"
+  );
+  const imp1 = await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...plannerA.headers, "content-type": csv1.contentType, "idempotency-key": "imp-k1" },
+    rawBody: csv1.rawBody,
+  });
+  assert.equal(imp1.status, 202);
+  await h.drainAll();
+
+  const report1 = await h.request("GET", `/v1/events/${eventId}/guests/imports/${imp1.body.import_id}`, {
+    headers: plannerA.headers,
+  });
+  assert.equal(report1.status, 200);
+  assert.equal(report1.body.estado, "completado");
+  assert.equal(report1.body.aceptadas, 2);
+  assert.equal(report1.body.rechazadas, 1);
+  assert.equal(report1.body.duplicadas_en_archivo, 1);
+  assert.deepEqual(report1.body.errores, [
+    { linea: 4, motivo: "GUEST_SIN_CLAVE" },
+    { linea: 5, motivo: "GUEST_DUPLICADO" },
+  ]);
+  assert.equal(h.ctx.smsProvider.captured.length, 0);
+  assert.equal(h.ctx.emailProvider.captured.length, 2); // solo los 2 de verify-email previos
+
+  // Reimportar mismo CSV con distinta Idempotency-Key -> 0 invitados nuevos, 0 notificaciones (AC-11)
+  const imp2 = await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...plannerA.headers, "content-type": csv1.contentType, "idempotency-key": "imp-k2" },
+    rawBody: csv1.rawBody,
+  });
+  assert.equal(imp2.status, 202);
+  await h.drainAll();
+  const report2 = await h.request("GET", `/v1/events/${eventId}/guests/imports/${imp2.body.import_id}`, {
+    headers: plannerA.headers,
+  });
+  assert.equal(report2.body.aceptadas, 0);
+
+  // Envío falla en borrador -> 409 EVENT_STATE_INVALID
+  const sendDraft = await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: plannerA.headers,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 2 },
+  });
+  assert.equal(sendDraft.status, 409);
+  assert.equal(sendDraft.body.error.code, "EVENT_STATE_INVALID");
+
+  // Publicar y validar confirmación requerida (RF-16)
+  await h.request("POST", `/v1/events/${eventId}/publish`, { headers: plannerA.headers });
+  const pendingSummary = await h.request("GET", `/v1/events/${eventId}/invitations/pending-summary`, {
+    headers: plannerA.headers,
+  });
+  assert.equal(pendingSummary.body.destinatarios, 2);
+  assert.deepEqual(pendingSummary.body.por_canal, { sms: 2, email: 1 });
+
+  const wrongConfirm = await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: plannerA.headers,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 99 },
+  });
+  assert.equal(wrongConfirm.status, 409);
+  assert.equal(wrongConfirm.body.error.code, "CONFIRMACION_REQUERIDA");
+
+  // Simular fallo de SMS (3 intentos -> rebotado) para +525512345678 (Ana) para probar entrega parcial (RF-04)
+  h.ctx.smsProvider.setFailCount("+525512345678", 5);
+
+  const sendOk = await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: { ...plannerA.headers, "idempotency-key": "send-1" },
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 2 },
+  });
+  assert.equal(sendOk.status, 202);
+  assert.equal(sendOk.body.entregas_encoladas, 3); // Ana: sms+email, Luis: sms
+
+  // Drenar colas (3 reintentos SMS para Ana hasta rebotado)
+  await h.drainAll();
+  await h.drainAll();
+  await h.drainAll();
+  await h.drainAll();
+
+  const deliveries = await h.request("GET", `/v1/events/${eventId}/invitations/deliveries`, {
+    headers: plannerA.headers,
+  });
+  const anaSms = deliveries.body.items.find((d) => d.canal === "sms" && d.estado === "rebotado");
+  const anaEmail = deliveries.body.items.find((d) => d.canal === "email" && d.estado === "entregado");
+  const luisSms = deliveries.body.items.find((d) => d.canal === "sms" && d.estado === "entregado");
+  assert.ok(anaSms && anaSms.intentos === 3);
+  assert.ok(anaEmail);
+  assert.ok(luisSms);
+
+  // Segundo envío automático sin pendientes -> 409 SIN_DESTINATARIOS_PENDIENTES (AC-21)
+  const sendEmpty = await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: plannerA.headers,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 0 },
+  });
+  assert.equal(sendEmpty.status, 409);
+  assert.equal(sendEmpty.body.error.code, "SIN_DESTINATARIOS_PENDIENTES");
+
+  // AC-13: Dedupe concurrente de entregas por clave TR-12
+  const guestList = await h.request("GET", `/v1/events/${eventId}/guests`, { headers: plannerA.headers });
+  const anaGuest = guestList.body.items.find((g) => g.nombre === "Ana Ruiz");
+  const luisGuest = guestList.body.items.find((g) => g.nombre === "Luis Prado");
+
+  const [rs1, rs2] = await Promise.all([
+    h.request("POST", `/v1/events/${eventId}/invitations/resend`, {
+      headers: plannerA.headers,
+      body: { guest_ids: [anaGuest.id], canal: "email", ventana: "resend_1" },
+    }),
+    h.request("POST", `/v1/events/${eventId}/invitations/resend`, {
+      headers: plannerA.headers,
+      body: { guest_ids: [anaGuest.id], canal: "email", ventana: "resend_1" },
+    }),
+  ]);
+  assert.equal(rs1.body.entregas_encoladas + rs2.body.entregas_encoladas, 1);
+  await h.drainAll();
+
+  // AC-23, AC-06, AC-12: Página pública de invitación sin cookie, separación de tokens y cancelación de recordatorio
+  const anaEmailMsg = h.ctx.emailProvider.captured.find(
+    (m) => m.to === "ana@example.com" && m.metadata?.rsvp_url
+  );
+  const rsvpToken = anaEmailMsg.metadata.rsvp_url.split("#t=")[1];
+
+  const pubSummary = await h.request("GET", `/v1/public/events/${eventId}/summary`);
+  assert.equal(pubSummary.status, 200);
+  assert.ok(pubSummary.headers["cache-control"].includes("s-maxage=300"));
+
+  const pubGet = await h.request("GET", `/v1/public/invitations/${rsvpToken}/rsvp`);
+  assert.equal(pubGet.status, 200);
+  assert.equal(pubGet.headers["cache-control"], "no-store");
+  assert.equal(pubGet.body.respuesta, null);
+  assert.ok(pubGet.body.qr.token);
+
+  // AC-06 / TR-07: usar QR de check-in como token de RSVP -> 400 TOKEN_TIPO_INCORRECTO
+  const wrongTokenType = await h.request("POST", `/v1/public/invitations/${pubGet.body.qr.token}/rsvp`, {
+    body: { respuesta: "confirma" },
+  });
+  assert.equal(wrongTokenType.status, 400);
+  assert.equal(wrongTokenType.body.error.code, "TOKEN_TIPO_INCORRECTO");
+
+  // Confirmar RSVP -> 201, QR sigue visible, cancela recordatorios pendientes T-7d y T-1d (AC-12)
+  const rsvpConfirm = await h.request("POST", `/v1/public/invitations/${rsvpToken}/rsvp`, {
+    body: { respuesta: "confirma" },
+  });
+  assert.equal(rsvpConfirm.status, 201);
+  assert.equal(rsvpConfirm.body.respuesta, "confirma");
+  assert.equal(rsvpConfirm.body.recordatorios_cancelados, 4); // 2 canales x (t_7d, t_1d)
+  assert.ok(rsvpConfirm.body.qr.token);
+
+  // Declinar y volver a confirmar: NO reactiva jobs cancelados (AC-12)
+  const rsvpDecline = await h.request("POST", `/v1/public/invitations/${rsvpToken}/rsvp`, {
+    body: { respuesta: "declina" },
+  });
+  assert.equal(rsvpDecline.status, 200);
+  assert.ok(rsvpDecline.body.superseded_at);
+
+  const rsvpReconfirm = await h.request("POST", `/v1/public/invitations/${rsvpToken}/rsvp`, {
+    body: { respuesta: "confirma" },
+  });
+  assert.equal(rsvpReconfirm.status, 200);
+
+  // Avanzar a T-1d y correr outboxPoller: NO debe enviar recordatorio para Ana (ya respondió)
+  h.setNow("2026-06-15T12:00:00Z");
+  const emailsBeforePoller = h.ctx.emailProvider.captured.length;
+  await h.outboxPoller();
+  await h.drainAll();
+  const anaReminderSent = h.ctx.emailProvider.captured
+    .slice(emailsBeforePoller)
+    .some((m) => m.to === "ana@example.com");
+  assert.equal(anaReminderSent, false);
+
+  // Tablero refleja invitados=2, confirmados=1, entregas_parciales=1
+  const reLoginA = await h.request("POST", "/v1/auth/login", {
+    body: { email: "pa@orquesta.test", password: "Password123!" },
+  });
+  const plannerA15 = { authorization: `Bearer ${reLoginA.body.access_token}` };
+  const dashA = await h.request("GET", "/v1/dashboard", { headers: plannerA15 });
+  assert.equal(dashA.body.items[0].contadores.invitados, 2);
+  assert.equal(dashA.body.items[0].contadores.confirmados, 1);
+  assert.equal(dashA.body.items[0].contadores.entregas_parciales, 1);
+  assert.equal(dashA.body.items[0].no_show, null);
+
+  // AC-24: Baja lógica de invitado revoca tokens, conserva historial y NO libera aforo
+  const delAna = await h.request("DELETE", `/v1/events/${eventId}/guests/${anaGuest.id}`, {
+    headers: plannerA15,
+  });
+  assert.equal(delAna.status, 200);
+  assert.equal(delAna.body.token_revocado, true);
+
+  const pubRevoked = await h.request("GET", `/v1/public/invitations/${rsvpToken}/rsvp`);
+  assert.equal(pubRevoked.status, 410);
+  assert.equal(pubRevoked.body.error.code, "INVITACION_REVOCADA");
+
+  // Aforo sigue ocupado (2/2): intentar importar otro invitado nuevo falla con AFORO_EXCEDIDO
+  const thirdCsv = buildMultipartCsv("nombre,email,telefono\nPedro,pedro@x.com,\n");
+  const overAfterDel = await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...plannerA15, "content-type": thirdCsv.contentType },
+    rawBody: thirdCsv.rawBody,
+  });
+  assert.equal(overAfterDel.status, 422);
+  assert.equal(overAfterDel.body.error.code, "AFORO_EXCEDIDO");
+  assert.ok(luisGuest.id);
+});
+
+// ============================================================================
+// 3. Check-in Offline, Replay, Convergencia Cross-Dispositivo, Anulación y Cierre Tardío
+//    (AC-03, AC-05, AC-16, AC-17, TR-01, TR-03, TR-17, TR-18)
+// ============================================================================
+test("Check-in offline, replay idempotente, convergencia cross-dispositivo, anulación y tardío post-cierre", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-15T10:00:00Z" });
+  const planner = await h.registerAndLoginUser({ email: "scan-planner@orquesta.test" });
+  const staff = await h.registerAndLoginUser({ email: "staff@orquesta.test", role: "worker" });
+
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Foro Centro", zona: "centro", direccion: "Calle 1" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Gala Tech",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T18:00:00-06:00", fin: "2026-06-16T02:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 50,
+    },
+  });
+  const eventId = evt.body.id;
+  await h.request("POST", `/v1/events/${eventId}/publish`, { headers: planner.headers });
+  await h.request("POST", `/v1/events/${eventId}/start`, { headers: planner.headers });
+
+  const csv = buildMultipartCsv(
+    "nombre,email,telefono\nCarlos Uno,carlos@x.com,+525511111111\nDiana Dos,diana@x.com,+525522222222\nElena Tres,elena@x.com,+525533333333\n"
+  );
+  await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...planner.headers, "content-type": csv.contentType },
+    rawBody: csv.rawBody,
+  });
+  await h.drainAll();
+
+  const guests = (await h.request("GET", `/v1/events/${eventId}/guests`, { headers: planner.headers })).body.items;
+  const invCarlos = guests[0].invitation_id;
+  const invDiana = guests[1].invitation_id;
+  const invElena = guests[2].invitation_id;
+
+  // Dar de baja a Elena antes de sincronizar
+  await h.request("DELETE", `/v1/events/${eventId}/guests/${guests[2].id}`, { headers: planner.headers });
+
+  // StaffAssignment + EventAccessToken
+  await h.request("POST", `/v1/events/${eventId}/staff-assignments`, {
+    headers: planner.headers,
+    body: { user_id: staff.userId, permisos: ["roster", "checkin", "anulacion"] },
+  });
+  const accTok = await h.request("POST", `/v1/events/${eventId}/access-tokens`, {
+    headers: planner.headers,
+    body: { rol: "staff" },
+  });
+  assert.equal(accTok.status, 201);
+
+  const sess1Ex = await h.request("POST", "/v1/auth/event-session", {
+    body: { access_token: accTok.body.qr_token, device_id: "dev_1" },
+  });
+  assert.equal(sess1Ex.status, 200);
+  const dev1Headers = { authorization: `Bearer ${sess1Ex.body.session_token}` };
+
+  const sess2Ex = await h.request("POST", "/v1/auth/event-session", {
+    body: { access_token: accTok.body.qr_token, device_id: "dev_2" },
+  });
+  const dev2Headers = { authorization: `Bearer ${sess2Ex.body.session_token}` };
+
+  // Roster firmado + ETag 304 + fallback búsqueda por código corto
+  const roster = await h.request("GET", `/v1/scan-sessions/${sess1Ex.body.session_id}/roster`, {
+    headers: dev1Headers,
+  });
+  assert.equal(roster.status, 200);
+  assert.equal(roster.body.invitados.length, 2); // Elena ya está dada de baja
+  const roster304 = await h.request("GET", `/v1/scan-sessions/${sess1Ex.body.session_id}/roster`, {
+    headers: { ...dev1Headers, "if-none-match": roster.headers.etag },
+  });
+  assert.equal(roster304.status, 304);
+
+  const searchShort = await h.request(
+    "GET",
+    `/v1/scan-sessions/${sess1Ex.body.session_id}/roster/search`,
+    { headers: dev1Headers, query: { codigo_corto: guests[0].codigo_corto } }
+  );
+  assert.equal(searchShort.body.items[0].invitation_id, invCarlos);
+
+  // Checksum mismatch -> 400 BATCH_CHECKSUM_MISMATCH
+  const evsDev1 = [
+    {
+      sequence: 1,
+      invitation_id: invCarlos,
+      scanned_at: "2026-06-15T19:00:00-06:00",
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+    {
+      sequence: 2,
+      invitation_id: invElena,
+      scanned_at: "2026-06-15T19:01:00-06:00",
+      verdict_local: "no_verificable_offline",
+      modo: "camara",
+    },
+  ];
+  const badBatch = await h.request("POST", `/v1/scan-sessions/${sess1Ex.body.session_id}/batches`, {
+    headers: dev1Headers,
+    body: {
+      batch_id: "b1",
+      device_id: "dev_1",
+      event_id: eventId,
+      seq_desde: 1,
+      seq_hasta: 2,
+      checksum: { alg: "sha256", valor: "0".repeat(64) },
+      events: evsDev1,
+    },
+  });
+  assert.equal(badBatch.status, 400);
+  assert.equal(badBatch.body.error.code, "BATCH_CHECKSUM_MISMATCH");
+
+  // AC-03: Replay del mismo lote 3 veces -> idéntico resultado, contador = 1
+  const validPayload1 = {
+    batch_id: "b1",
+    device_id: "dev_1",
+    event_id: eventId,
+    seq_desde: 1,
+    seq_hasta: 2,
+    checksum: { alg: "sha256", valor: computeBatchChecksum(evsDev1) },
+    cola_reportada: 0,
+    events: evsDev1,
+  };
+  const b1r1 = await h.request("POST", `/v1/scan-sessions/${sess1Ex.body.session_id}/batches`, {
+    headers: dev1Headers,
+    body: validPayload1,
+  });
+  const b1r2 = await h.request("POST", `/v1/scan-sessions/${sess1Ex.body.session_id}/batches`, {
+    headers: dev1Headers,
+    body: validPayload1,
+  });
+  const b1r3 = await h.request("POST", `/v1/scan-sessions/${sess1Ex.body.session_id}/batches`, {
+    headers: dev1Headers,
+    body: validPayload1,
+  });
+  assert.equal(b1r1.status, 200);
+  assert.deepEqual(b1r2.body, b1r1.body);
+  assert.deepEqual(b1r3.body, b1r1.body);
+  assert.equal(b1r1.body.results[0].verdict, "admitido");
+  assert.equal(b1r1.body.results[1].verdict, "invitacion_revocada");
+  assert.equal(b1r1.body.results[1].resolucion_al_sincronizar, "invalidado_al_sincronizar");
+
+  // AC-05: Dispositivo 2 escaneó a Carlos offline (incluso con reloj más temprano!) -> al sincronizar queda duplicado_tardio
+  const evsDev2 = [
+    {
+      sequence: 1,
+      invitation_id: invCarlos,
+      scanned_at: "2026-06-15T18:55:00-06:00",
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+  ];
+  const b2 = await h.request("POST", `/v1/scan-sessions/${sess2Ex.body.session_id}/batches`, {
+    headers: dev2Headers,
+    body: {
+      batch_id: "b2",
+      device_id: "dev_2",
+      event_id: eventId,
+      seq_desde: 1,
+      seq_hasta: 1,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(evsDev2) },
+      cola_reportada: 0,
+      events: evsDev2,
+    },
+  });
+  assert.equal(b2.status, 200);
+  assert.equal(b2.body.results[0].kind, "duplicado_tardio");
+  assert.equal(b2.body.results[0].verdict, "ya_registrado");
+  assert.equal(b2.body.results[0].vigente_checkin_id, b1r1.body.results[0].checkin_id);
+
+  await h.drainAll();
+  const dash1 = await h.request("GET", "/v1/dashboard", { headers: planner.headers });
+  assert.equal(dash1.body.items[0].contadores.asistentes, 1);
+
+  // AC-16: Anular check-in -> baja asistentes 1 -> 0, replay es no-op, re-escanear vuelve a admitir
+  const carlosCheckinId = b1r1.body.results[0].checkin_id;
+  const ann1 = await h.request("POST", `/v1/events/${eventId}/checkins/${carlosCheckinId}/annulments`, {
+    headers: staff.headers,
+    body: { motivo: "Escaneo accidental" },
+  });
+  assert.equal(ann1.status, 201);
+  assert.equal(ann1.body.asistentes, 0);
+
+  const ann2 = await h.request("POST", `/v1/events/${eventId}/checkins/${carlosCheckinId}/annulments`, {
+    headers: staff.headers,
+    body: { motivo: "Escaneo accidental" },
+  });
+  assert.equal(ann2.status, 200);
+  await h.drainAll();
+  const dashAfterAnn = await h.request("GET", "/v1/dashboard", { headers: planner.headers });
+  assert.equal(dashAfterAnn.body.items[0].contadores.asistentes, 0);
+
+  // Re-escaneo de Carlos tras anulación -> admitido nuevamente!
+  const reScanEv = [
+    {
+      sequence: 3,
+      invitation_id: invCarlos,
+      scanned_at: "2026-06-15T19:15:00-06:00",
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+  ];
+  const reScanBatch = await h.request("POST", `/v1/scan-sessions/${sess1Ex.body.session_id}/batches`, {
+    headers: dev1Headers,
+    body: {
+      batch_id: "b1-rescan",
+      device_id: "dev_1",
+      event_id: eventId,
+      seq_desde: 3,
+      seq_hasta: 3,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(reScanEv) },
+      events: reScanEv,
+    },
+  });
+  assert.equal(reScanBatch.status, 200);
+  assert.equal(reScanBatch.body.results[0].verdict, "admitido");
+
+  // AC-17: Cerrar evento y sincronizar escaneo de Diana hecho DENTRO de la ventana del evento -> aceptado como `tardio`
+  h.setNow("2026-06-16T07:30:00Z");
+  const closeRes = await h.request("POST", `/v1/events/${eventId}/close`, { headers: planner.headers });
+  assert.equal(closeRes.status, 200);
+  assert.equal(closeRes.body.estado, "cerrado");
+
+  const lateEv = [
+    {
+      sequence: 2,
+      invitation_id: invDiana,
+      scanned_at: "2026-06-15T20:00:00-06:00", // dentro de ventana
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+    {
+      sequence: 3,
+      invitation_id: invDiana,
+      scanned_at: "2026-06-17T20:00:00-06:00", // fuera de ventana -> rechazado individualmente
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+  ];
+  const lateBatch = await h.request("POST", `/v1/scan-sessions/${sess2Ex.body.session_id}/batches`, {
+    headers: dev2Headers,
+    body: {
+      batch_id: "b2-late",
+      device_id: "dev_2",
+      event_id: eventId,
+      seq_desde: 2,
+      seq_hasta: 3,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(lateEv) },
+      events: lateEv,
+    },
+  });
+  assert.equal(lateBatch.status, 200);
+  assert.equal(lateBatch.body.contadores.tardios, 1);
+  assert.equal(lateBatch.body.contadores.rechazados, 1);
+  assert.equal(lateBatch.body.results[0].tardio, true);
+  assert.equal(lateBatch.body.results[0].verdict, "admitido");
+  assert.equal(lateBatch.body.results[1].status, 400);
+
+  // TR-18: Sin heartbeat en 5 min -> tablero reporta `desconocido`, nunca 0
+  h.advanceMs(6 * 60 * 1000);
+  const dashStale = await h.request("GET", "/v1/dashboard", { headers: planner.headers });
+  assert.equal(dashStale.body.items[0].pendientes.estado, "desconocido");
+  assert.equal(dashStale.body.items[0].pendientes.valor, null);
+});
+
+// ============================================================================
+// 4. Seating Concurrency (AC-14)
+// ============================================================================
+test("Seating: 50 asignaciones concurrentes a mesa de 40, movimiento concurrente y liberación por RSVP declina (AC-14)", async () => {
+  const h = await createTestHarness();
+  const planner = await h.registerAndLoginUser({ email: "seat@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Salón Mesas", zona: "centro", direccion: "Calle 2" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Cena 50",
+      fecha: "2026-07-01",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-07-01T18:00:00-06:00", fin: "2026-07-02T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 100,
+    },
+  });
+  const eventId = evt.body.id;
+
+  const lines = ["nombre,email,telefono"];
+  for (let i = 1; i <= 50; i++) {
+    lines.push(`Invitado ${i},inv${i}@x.com,`);
+  }
+  const csv = buildMultipartCsv(lines.join("\n"));
+  await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...planner.headers, "content-type": csv.contentType },
+    rawBody: csv.rawBody,
+  });
+  await h.drainAll();
+  const guests = (
+    await h.request("GET", `/v1/events/${eventId}/guests`, {
+      headers: planner.headers,
+      query: { limit: "100" },
+    })
+  ).body.items;
+  assert.equal(guests.length, 50);
+
+  const mesa1 = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: planner.headers,
+    body: { nombre: "Mesa Grande", capacidad: 40 },
+  });
+  const mesa2 = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: planner.headers,
+    body: { nombre: "Mesa 2", capacidad: 10 },
+  });
+
+  // 50 asignaciones concurrentes sobre capacidad 40 -> 40 aceptadas, 10 MESA_SIN_CAPACIDAD
+  const seatResponses = await Promise.all(
+    guests.map((g) =>
+      h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+        headers: planner.headers,
+        body: { guest_id: g.id, table_id: mesa1.body.id },
+      })
+    )
+  );
+  const okCount = seatResponses.filter((r) => r.status === 201 || r.status === 200).length;
+  const fullCount = seatResponses.filter(
+    (r) => r.status === 409 && r.body.error.code === "MESA_SIN_CAPACIDAD"
+  ).length;
+  assert.equal(okCount, 40);
+  assert.equal(fullCount, 10);
+
+  // Reintentar 3x una ganadora -> idempotente, ocupación sigue en 40
+  const winnerIdx = seatResponses.findIndex((r) => r.status === 201);
+  const winnerGuest = guests[winnerIdx];
+  for (let k = 0; k < 3; k++) {
+    const r = await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+      headers: planner.headers,
+      body: { guest_id: winnerGuest.id, table_id: mesa1.body.id },
+    });
+    assert.equal(r.status, 200);
+  }
+  const tablesAfter = await h.request("GET", `/v1/events/${eventId}/tables`, { headers: planner.headers });
+  assert.equal(tablesAfter.body.items[0].ocupacion, 40);
+
+  // Mover invitado a mesa 2 y luego declinar RSVP -> libera capacidad
+  await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+    headers: planner.headers,
+    body: { guest_id: winnerGuest.id, table_id: mesa2.body.id },
+  });
+  const invObj = h.ctx.store.invitations.get(winnerGuest.invitation_id);
+  const rsvpToken = h.ctx.store._dec(invObj.rsvp_token_cifrado);
+  const declineRes = await h.request("POST", `/v1/public/invitations/${rsvpToken}/rsvp`, {
+    body: { respuesta: "declina" },
+  });
+  assert.equal(declineRes.status, 201);
+  const tablesFinal = await h.request("GET", `/v1/events/${eventId}/tables`, { headers: planner.headers });
+  assert.equal(tablesFinal.body.items[0].ocupacion, 39);
+  assert.equal(tablesFinal.body.items[1].ocupacion, 0);
+});
+
+// ============================================================================
+// 5. Concurrencia de Reservas (plazas=1 y plazas=6 parcial), Costo Congelado,
+//    Emergencia, Cierre -> Completada y Aislamiento (AC-07, AC-15, AC-22, AC-26, AC-27, AC-29)
+// ============================================================================
+test("Contratación: 100 solicitudes concurrentes, plazas=1, empresa parcial plazas=6, costo congelado, emergencia y aislamiento", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-01T12:00:00Z" });
+  const wPersona = await h.registerAndLoginUser({ email: "wp1@orquesta.test", role: "worker" });
+  const wEmpresa = await h.registerAndLoginUser({ email: "we1@orquesta.test", role: "worker", tipo: "empresa" });
+
+  // Configurar perfil persona (plazas=1) y verificar OTP
+  const pPers = await h.request("POST", "/v1/worker/profile", {
+    headers: wPersona.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "DJ Único",
+      categorias: ["dj"],
+      tarifa: { monto: 850, moneda: "MXN", unidad: "evento" },
+      zonas: ["centro"],
+      telefono_e164: "+525533334444",
+    },
+  });
+  const chPers = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: wPersona.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otpPers = h.ctx.smsProvider.captured.find((s) => s.to === "+525533334444").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${chPers.body.desafio_id}/confirm`, {
+    headers: wPersona.headers,
+    body: { codigo_otp: otpPers },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: wPersona.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: wPersona.headers,
+    body: {
+      inicio: "2026-06-10T16:00:00Z",
+      fin: "2026-06-11T04:00:00Z",
+      zona: "centro",
+      rol: "dj",
+    },
+  });
+
+  // Configurar perfil empresa (plazas=6) y verificar OTP
+  const pEmp = await h.request("POST", "/v1/worker/profile", {
+    headers: wEmpresa.headers,
+    body: {
+      tipo: "empresa",
+      plazas_ofrecidas: 6,
+      nombre_publico: "Staff Co",
+      categorias: ["mesero"],
+      tarifa: { monto: 400, moneda: "MXN", unidad: "persona_hora" },
+      zonas: ["centro"],
+      telefono_e164: "+525544445555",
+    },
+  });
+  const chEmp = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: wEmpresa.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otpEmp = h.ctx.smsProvider.captured.find((s) => s.to === "+525544445555").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${chEmp.body.desafio_id}/confirm`, {
+    headers: wEmpresa.headers,
+    body: { codigo_otp: otpEmp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: wEmpresa.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: wEmpresa.headers,
+    body: {
+      inicio: "2026-06-10T16:00:00Z",
+      fin: "2026-06-11T04:00:00Z",
+      zona: "centro",
+      rol: "mesero",
+    },
+  });
+
+  // AC-07: 100 eventos distintos solicitan concurrentemente al mismo DJ (plazas=1)
+  const mainPlanner = await h.registerAndLoginUser({ email: "mainplanner@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: mainPlanner.headers,
+    body: { nombre: "Expo", zona: "centro", direccion: "Av 5" },
+  });
+
+  const eventIds = await Promise.all(
+    Array.from({ length: 100 }, async (_, i) => {
+      const p = await h.registerAndLoginUser({ email: `pl_${i}@orquesta.test` });
+      const ev = await h.request("POST", "/v1/events", {
+        headers: p.headers,
+        body: {
+          nombre: `Ev ${i}`,
+          fecha: "2026-06-10",
+          timezone: "America/Mexico_City",
+          ventana: { inicio: "2026-06-10T18:00:00Z", fin: "2026-06-11T02:00:00Z" },
+          venue_id: venue.body.id,
+          aforo: 50,
+          requerimientos: [{ rol: "dj", cantidad: 1 }],
+        },
+      });
+      return { headers: p.headers, eventId: ev.body.id };
+    })
+  );
+
+  // Solicitudes concurrentes -> las 100 quedan `solicitada` (0 rechazadas por concurrencia)
+  const reqResults = await Promise.all(
+    eventIds.map((e) =>
+      h.request("POST", `/v1/events/${e.eventId}/worker-requests`, {
+        headers: e.headers,
+        body: {
+          worker_id: pPers.body.worker_id,
+          rol: "dj",
+          plazas: 1,
+          ventana: { inicio: "2026-06-10T19:00:00Z", fin: "2026-06-10T23:00:00Z" },
+          hora_llegada: "2026-06-10T19:00:00Z",
+        },
+      })
+    )
+  );
+  assert.equal(reqResults.filter((r) => r.status === 201 && r.body.estado === "solicitada").length, 100);
+
+  // AC-26: Trabajador sube tarifa a 1500 antes de aceptar -> la reserva conserva costo_congelado = 850
+  await h.request("PATCH", "/v1/worker/profile", {
+    headers: wPersona.headers,
+    body: { tarifa: { monto: 1500, moneda: "MXN", unidad: "evento" } },
+  });
+
+  // Aceptar 2 en paralelo -> exactamente 1 ganadora, 1 conflicto determinista que nombra a la ganadora
+  const r0 = reqResults[0].body.id;
+  const r1 = reqResults[1].body.id;
+  const [acc0, acc1] = await Promise.all([
+    h.request("POST", `/v1/worker/requests/${r0}/accept`, { headers: wPersona.headers, body: {} }),
+    h.request("POST", `/v1/worker/requests/${r1}/accept`, { headers: wPersona.headers, body: {} }),
+  ]);
+  const winner = acc0.status === 200 ? acc0 : acc1;
+  const loser = acc0.status === 409 ? acc0 : acc1;
+  assert.equal(winner.status, 200);
+  assert.equal(winner.body.costo_congelado.monto, 850);
+  assert.equal(loser.status, 409);
+  assert.equal(loser.body.error.code, "RESERVATION_OVERLAP");
+  assert.equal(loser.body.error.details.ganadora.reservation_id, winner.body.reservation_id);
+
+  // AC-15: Aislamiento cross-planner + disponibilidad devuelve solo {worker_id, ventana_ocupada}
+  const availResp = await h.request("GET", `/v1/workers/${pPers.body.worker_id}/availability`, {
+    headers: mainPlanner.headers,
+  });
+  assert.equal(availResp.status, 200);
+  assert.deepEqual(Object.keys(availResp.body), ["worker_id", "ventana_ocupada"]);
+  assert.equal(availResp.body.ventana_ocupada.length, 1);
+  assert.equal(availResp.body.ventana_ocupada[0].event_id, undefined);
+
+  // Trabajador contratado SIN StaffAssignment no puede abrir sesión de escaneo (NFR-11, AC-15)
+  const winnerEvent = eventIds[acc0.status === 200 ? 0 : 1];
+  await h.request("POST", `/v1/events/${winnerEvent.eventId}/publish`, { headers: winnerEvent.headers });
+  const unauthScan = await h.request("POST", "/v1/scan-sessions", {
+    headers: wPersona.headers,
+    body: { event_id: winnerEvent.eventId, device_id: "dev_worker" },
+  });
+  assert.equal(unauthScan.status, 404);
+
+  // AC-15: Editor agregado y luego revocado -> primero 200, luego 403 FORBIDDEN_EVENT_SCOPE
+  await h.request("POST", `/v1/events/${winnerEvent.eventId}/members`, {
+    headers: winnerEvent.headers,
+    body: { email: "mainplanner@orquesta.test", rol: "editor" },
+  });
+  const editorOk = await h.request("GET", `/v1/events/${winnerEvent.eventId}`, { headers: mainPlanner.headers });
+  assert.equal(editorOk.status, 200);
+  await h.request("DELETE", `/v1/events/${winnerEvent.eventId}/members/${mainPlanner.userId}`, {
+    headers: winnerEvent.headers,
+  });
+  const editorRevoked = await h.request("GET", `/v1/events/${winnerEvent.eventId}`, {
+    headers: mainPlanner.headers,
+  });
+  assert.equal(editorRevoked.status, 403);
+  assert.equal(editorRevoked.body.error.code, "FORBIDDEN_EVENT_SCOPE");
+
+  // AC-07: Empresa plazas_ofrecidas = 6: aceptar 4 y luego 4 -> segunda acepta 2 y devuelve 2, tercera falla
+  const empReq1 = await h.request("POST", `/v1/events/${eventIds[0].eventId}/worker-requests`, {
+    headers: eventIds[0].headers,
+    body: {
+      worker_id: pEmp.body.worker_id,
+      rol: "mesero",
+      plazas: 4,
+      ventana: { inicio: "2026-06-10T19:00:00Z", fin: "2026-06-10T23:00:00Z" },
+      hora_llegada: "2026-06-10T19:00:00Z",
+    },
+  });
+  const empReq2 = await h.request("POST", `/v1/events/${eventIds[1].eventId}/worker-requests`, {
+    headers: eventIds[1].headers,
+    body: {
+      worker_id: pEmp.body.worker_id,
+      rol: "mesero",
+      plazas: 4,
+      ventana: { inicio: "2026-06-10T19:00:00Z", fin: "2026-06-10T23:00:00Z" },
+      hora_llegada: "2026-06-10T19:00:00Z",
+    },
+  });
+  const empReq3 = await h.request("POST", `/v1/events/${eventIds[2].eventId}/worker-requests`, {
+    headers: eventIds[2].headers,
+    body: {
+      worker_id: pEmp.body.worker_id,
+      rol: "mesero",
+      plazas: 1,
+      ventana: { inicio: "2026-06-10T19:00:00Z", fin: "2026-06-10T23:00:00Z" },
+      hora_llegada: "2026-06-10T19:00:00Z",
+    },
+  });
+  const ea1 = await h.request("POST", `/v1/worker/requests/${empReq1.body.id}/accept`, {
+    headers: wEmpresa.headers,
+    body: {},
+  });
+  assert.equal(ea1.status, 200);
+  assert.equal(ea1.body.plazas_aceptadas, 4);
+
+  const ea2 = await h.request("POST", `/v1/worker/requests/${empReq2.body.id}/accept`, {
+    headers: wEmpresa.headers,
+    body: {},
+  });
+  assert.equal(ea2.status, 200);
+  assert.equal(ea2.body.plazas_aceptadas, 2);
+  assert.equal(ea2.body.plazas_devueltas, 2);
+
+  const ea3 = await h.request("POST", `/v1/worker/requests/${empReq3.body.id}/accept`, {
+    headers: wEmpresa.headers,
+    body: {},
+  });
+  assert.equal(ea3.status, 409);
+  assert.equal(ea3.body.error.code, "RESERVATION_OVERLAP");
+
+  // AC-22: Solicitud fuera de AvailabilityWindow -> 422 WINDOW_NOT_AVAILABLE
+  const outAvail = await h.request("POST", `/v1/events/${eventIds[3].eventId}/worker-requests`, {
+    headers: eventIds[3].headers,
+    body: {
+      worker_id: pEmp.body.worker_id,
+      rol: "mesero",
+      plazas: 1,
+      ventana: { inicio: "2026-06-12T19:00:00Z", fin: "2026-06-12T23:00:00Z" },
+      hora_llegada: "2026-06-12T19:00:00Z",
+    },
+  });
+  assert.equal(outAvail.status, 422);
+  assert.equal(outAvail.body.error.code, "WINDOW_NOT_AVAILABLE");
+
+  // AC-27: Emergencia: trabajador cancela en vivo -> alerta al planner + reemplazo sin candidato -> sin_cubrir
+  await h.request("POST", `/v1/events/${eventIds[0].eventId}/publish`, { headers: eventIds[0].headers });
+  await h.request("POST", `/v1/events/${eventIds[0].eventId}/start`, { headers: eventIds[0].headers });
+  const wCancel = await h.request("POST", `/v1/worker/reservations/${empReq1.body.id}/cancel`, {
+    headers: wEmpresa.headers,
+    body: { motivo: "Imprevisto" },
+  });
+  assert.equal(wCancel.status, 200);
+  assert.equal(wCancel.body.alerta_planner, "emitida");
+  const alerts = await h.request("GET", `/v1/events/${eventIds[0].eventId}/alerts`, {
+    headers: eventIds[0].headers,
+  });
+  assert.equal(alerts.body.items.length, 1);
+
+  const sinCubrir = await h.request(
+    "POST",
+    `/v1/events/${eventIds[0].eventId}/worker-requests/${empReq1.body.id}/replacements`,
+    { headers: eventIds[0].headers, body: {} }
+  );
+  assert.equal(sinCubrir.status, 200);
+  assert.equal(sinCubrir.body.estado, "sin_cubrir");
+
+  // AC-29: Cerrar evento ganador pasa su reserva `aceptada` -> `completada` y sube eventos_completados en 1
+  const closeWinner = await h.request("POST", `/v1/events/${winnerEvent.eventId}/close`, {
+    headers: winnerEvent.headers,
+  });
+  assert.equal(closeWinner.status, 200);
+  assert.equal(closeWinner.body.reservas_completadas, 1);
+  const pubAfterClose = await h.request("GET", `/v1/workers/${pPers.body.worker_id}`, {
+    headers: mainPlanner.headers,
+  });
+  assert.equal(pubAfterClose.body.perfil_publico.eventos_completados, 1);
+});
+
+// ============================================================================
+// 6. Pagos Idempotentes, Contract Test PSP, Timeout + QueryByKey, Webhook y Ledger
+//    (AC-08, AC-09, AC-26, TR-09, TR-14, RF-11)
+// ============================================================================
+test("Pagos: contract test PSP, 3 reintentos + 5 concurrentes, timeout/queryByKey, webhook 3x y ledger suma 0", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-05T12:00:00Z" });
+  assert.equal(await verifyPaymentProviderContract(() => h.ctx.paymentProvider), true);
+
+  const planner = await h.registerAndLoginUser({ email: "pay-planner@orquesta.test" });
+  const worker = await h.registerAndLoginUser({ email: "pay-worker@orquesta.test", role: "worker" });
+
+  const wp = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Foto Pro",
+      categorias: ["fotografo"],
+      tarifa: { monto: 1200, moneda: "MXN", unidad: "evento" },
+      zonas: ["norte"],
+      telefono_e164: "+525566667777",
+    },
+  });
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: worker.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === "+525566667777").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-06-15T10:00:00Z", fin: "2026-06-15T22:00:00Z", zona: "norte", rol: "fotografo" },
+  });
+
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Jardín Norte", zona: "norte", direccion: "Norte 1" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Boda Pago",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T12:00:00Z", fin: "2026-06-15T20:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 20,
+    },
+  });
+  const req1 = await h.request("POST", `/v1/events/${evt.body.id}/worker-requests`, {
+    headers: planner.headers,
+    body: {
+      worker_id: wp.body.worker_id,
+      rol: "fotografo",
+      plazas: 1,
+      ventana: { inicio: "2026-06-15T13:00:00Z", fin: "2026-06-15T18:00:00Z" },
+      hora_llegada: "2026-06-15T13:00:00Z",
+    },
+  });
+
+  // Pago contra solicitada -> 409 RESERVATION_NOT_ACCEPTED
+  const payPending = await h.request("POST", `/v1/reservations/${req1.body.id}/payments`, {
+    headers: planner.headers,
+    body: {},
+  });
+  assert.equal(payPending.status, 409);
+  assert.equal(payPending.body.error.code, "RESERVATION_NOT_ACCEPTED");
+
+  // Subir tarifa luego de solicitar -> cobro usa costo_congelado = 1200 (AC-26)
+  await h.request("PATCH", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: { tarifa: { monto: 2500, moneda: "MXN", unidad: "evento" } },
+  });
+  await h.request("POST", `/v1/worker/requests/${req1.body.id}/accept`, { headers: worker.headers, body: {} });
+
+  // AC-09: Simular timeout del PSP tras ejecutar cobro, luego reintento consulta por clave y concilia sin doble cobro
+  const pspKey = `pay:${req1.body.id}`;
+  h.ctx.paymentProvider.simulateTimeoutAfterCharge(pspKey);
+  const chargeExecsBefore = h.ctx.paymentProvider.chargeExecutions;
+
+  const timedOutPay = await h.request("POST", `/v1/reservations/${req1.body.id}/payments`, {
+    headers: planner.headers,
+    body: {},
+  });
+  assert.equal(timedOutPay.status, 202);
+  assert.equal(timedOutPay.body.estado, "desconocido");
+
+  // AC-08: 3 reintentos + 5 solicitudes concurrentes -> 1 solo cobro en PSP y 1 tx de ledger suma 0
+  const concurrentPays = await Promise.all([
+    h.request("POST", `/v1/reservations/${req1.body.id}/payments`, { headers: planner.headers, body: {} }),
+    h.request("POST", `/v1/reservations/${req1.body.id}/payments`, { headers: planner.headers, body: {} }),
+    h.request("POST", `/v1/reservations/${req1.body.id}/payments`, { headers: planner.headers, body: {} }),
+    h.request("POST", `/v1/reservations/${req1.body.id}/payments`, { headers: planner.headers, body: {} }),
+    h.request("POST", `/v1/reservations/${req1.body.id}/payments`, { headers: planner.headers, body: {} }),
+  ]);
+  for (const r of concurrentPays) {
+    assert.equal(r.status, 201);
+    assert.equal(r.body.monto, 1200);
+  }
+  assert.equal(h.ctx.paymentProvider.chargeExecutions - chargeExecsBefore, 1);
+
+  // AC-09: Webhook reenviado 3 veces y fuera de orden
+  const webhookBody = {
+    event_id: "wh_evt_1",
+    idempotency_key: pspKey,
+    status: "succeeded",
+    amount: 1200,
+    currency: "MXN",
+  };
+  const sig = signWebhookHmac(JSON.stringify(webhookBody), h.ctx.pspWebhookSecret);
+  for (let i = 0; i < 3; i++) {
+    const wh = await h.request("POST", "/v1/webhooks/psp", {
+      headers: { "x-psp-signature": sig },
+      body: webhookBody,
+    });
+    assert.equal(wh.status, 200);
+    assert.equal(wh.body.estado, "confirmado");
+  }
+
+  // Cancelar después del cobro -> cancelada_pagada + asiento reverso balanceado (suma 0)
+  const cancelPaid = await h.request(
+    "POST",
+    `/v1/events/${evt.body.id}/reservations/${req1.body.id}/cancel`,
+    { headers: planner.headers, body: { motivo: "Cambio de planes" } }
+  );
+  assert.equal(cancelPaid.status, 200);
+  assert.equal(cancelPaid.body.estado, "cancelada_pagada");
+
+  const payInfo = await h.request("GET", `/v1/reservations/${req1.body.id}/payments`, {
+    headers: planner.headers,
+  });
+  const entries = payInfo.body.items[0].ledger_entries;
+  assert.equal(entries.length, 4); // 2 líneas cobro + 2 líneas reverso
+  const sum = entries.reduce((s, e) => s + e.importe, 0);
+  assert.equal(sum, 0);
+});
+
+// ============================================================================
+// 7. Retención 12 y 24 meses y Alcance Partido (AC-18, AC-28, NFR-08)
+// ============================================================================
+test("Retención NFR-08: 13 meses borra PII de evento manteniendo worker activo; 25 meses borra device_id", async () => {
+  const h = await createTestHarness({ nowDate: "2026-01-10T10:00:00Z" });
+  const planner = await h.registerAndLoginUser({ email: "ret-planner@orquesta.test" });
+  const worker = await h.registerAndLoginUser({ email: "ret-worker@orquesta.test", role: "worker" });
+
+  const wp = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Mesero Estable",
+      categorias: ["mesero"],
+      tarifa: { monto: 500, moneda: "MXN", unidad: "hora" },
+      zonas: ["sur"],
+      telefono_e164: "+525588889999",
+    },
+  });
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: worker.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === "+525588889999").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-01-10T16:00:00Z", fin: "2026-01-11T04:00:00Z", zona: "sur", rol: "mesero" },
+  });
+
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Salón Sur", zona: "sur", direccion: "Sur 9" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Evento Antiguo",
+      fecha: "2026-01-10",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-01-10T18:00:00Z", fin: "2026-01-11T02:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 20,
+    },
+  });
+  await h.request("POST", `/v1/events/${evt.body.id}/publish`, { headers: planner.headers });
+  await h.request("POST", `/v1/events/${evt.body.id}/start`, { headers: planner.headers });
+
+  const csv = buildMultipartCsv("nombre,email,telefono\nInvitado Viejo,viejo@x.com,+525510101010\n");
+  await h.request("POST", `/v1/events/${evt.body.id}/guests/import`, {
+    headers: { ...planner.headers, "content-type": csv.contentType },
+    rawBody: csv.rawBody,
+  });
+  await h.drainAll();
+  const guests = (await h.request("GET", `/v1/events/${evt.body.id}/guests`, { headers: planner.headers })).body.items;
+
+  // Enviar invitación y registrar 1 check-in antes de cerrar
+  await h.request("POST", `/v1/events/${evt.body.id}/invitations/send`, {
+    headers: planner.headers,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 1 },
+  });
+  await h.drainAll();
+
+  const acc = await h.request("POST", `/v1/events/${evt.body.id}/access-tokens`, {
+    headers: planner.headers,
+    body: { rol: "staff" },
+  });
+  const sess = await h.request("POST", "/v1/auth/event-session", {
+    body: { access_token: acc.body.qr_token, device_id: "dev_ret" },
+  });
+  const scanEvs = [
+    {
+      sequence: 1,
+      invitation_id: guests[0].invitation_id,
+      scanned_at: "2026-01-10T19:00:00Z",
+      verdict_local: "admitido",
+      modo: "camara",
+    },
+  ];
+  const batchRet = await h.request("POST", `/v1/scan-sessions/${sess.body.session_id}/batches`, {
+    headers: { authorization: `Bearer ${sess.body.session_token}` },
+    body: {
+      batch_id: "b-ret",
+      device_id: "dev_ret",
+      event_id: evt.body.id,
+      seq_desde: 1,
+      seq_hasta: 1,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(scanEvs) },
+      events: scanEvs,
+    },
+  });
+  assert.equal(batchRet.status, 200);
+  await h.drainAll();
+
+  // Contratar trabajador y cerrar evento el 2026-01-11
+  const wr = await h.request("POST", `/v1/events/${evt.body.id}/worker-requests`, {
+    headers: planner.headers,
+    body: {
+      worker_id: wp.body.worker_id,
+      rol: "mesero",
+      plazas: 1,
+      ventana: { inicio: "2026-01-10T18:00:00Z", fin: "2026-01-11T01:00:00Z" },
+      hora_llegada: "2026-01-10T18:00:00Z",
+    },
+  });
+  await h.request("POST", `/v1/worker/requests/${wr.body.id}/accept`, { headers: worker.headers, body: {} });
+  h.setNow("2026-01-11T03:00:00Z");
+  await h.request("POST", `/v1/events/${evt.body.id}/close`, { headers: planner.headers });
+
+  // El trabajador actualiza su actividad 6 meses después (para AC-28)
+  h.setNow("2026-07-15T12:00:00Z");
+  const wLogin6m = await h.request("POST", "/v1/auth/login", {
+    body: { email: "ret-worker@orquesta.test", password: "Password123!" },
+  });
+  const wHeaders6m = { authorization: `Bearer ${wLogin6m.body.access_token}` };
+  await h.request("PATCH", "/v1/worker/profile", {
+    headers: wHeaders6m,
+    body: { nombre_publico: "Mesero Estable Actualizado" },
+  });
+
+  // A los 13 meses del cierre (2027-02-15): PII de evento borrada, agregado intacto, WorkerProfile intacto (AC-18, AC-28)
+  h.setNow("2027-02-15T12:00:00Z");
+  const r13 = await h.outboxPoller({ now: "2027-02-15T12:00:00Z" });
+  assert.equal(r13.retention.anonymized_events, 1);
+  assert.equal(r13.retention.anonymized_workers, 0);
+
+  const rsvpMsg = h.ctx.emailProvider.captured.find((m) => m.to === "viejo@x.com");
+  const rsvpTok = rsvpMsg.metadata.rsvp_url.split("#t=")[1];
+  const pubAfter13 = await h.request("GET", `/v1/public/invitations/${rsvpTok}/rsvp`);
+  assert.equal(pubAfter13.status, 404); // token borrado/anonimizado
+
+  const pLogin13 = await h.request("POST", "/v1/auth/login", {
+    body: { email: "ret-planner@orquesta.test", password: "Password123!" },
+  });
+  const pHeaders13 = { authorization: `Bearer ${pLogin13.body.access_token}` };
+  const wLogin13 = await h.request("POST", "/v1/auth/login", {
+    body: { email: "ret-worker@orquesta.test", password: "Password123!" },
+  });
+  const wHeaders13 = { authorization: `Bearer ${wLogin13.body.access_token}` };
+
+  const dashAfter13 = await h.request("GET", "/v1/dashboard", { headers: pHeaders13 });
+  assert.equal(dashAfter13.body.items[0].contadores.asistentes, 1); // agregado intacto
+  const wpOwn = await h.request("GET", "/v1/worker/profile", { headers: wHeaders13 });
+  assert.equal(wpOwn.body.perfil.telefono_e164, "+525588889999");
+
+  // A los 25 meses del cierre (2028-02-20): CheckinEvent sin device_id, manteniendo (event_id, sequence, veredicto) (AC-18)
+  h.setNow("2028-02-20T12:00:00Z");
+  const r25 = await h.outboxPoller({ now: "2028-02-20T12:00:00Z" });
+  assert.equal(r25.retention.anonymized_checkin_events, 1);
+  const pLogin25 = await h.request("POST", "/v1/auth/login", {
+    body: { email: "ret-planner@orquesta.test", password: "Password123!" },
+  });
+  const chks = await h.request("GET", `/v1/events/${evt.body.id}/checkins`, {
+    headers: { authorization: `Bearer ${pLogin25.body.access_token}` },
+  });
+  assert.equal(chks.body.items[0].device_id, null);
+  assert.equal(chks.body.items[0].verdict, "admitido");
+});
+
+// ============================================================================
+// 8. Cobertura exhaustiva de bordes: reset/logout, 48h/15m expiración, indeterminado,
+//    reemplazo emergencia con candidato, move concurrente, batch > 500, 24h corrección,
+//    búsqueda RF-07 radio_km, y retención inactiva de worker (RF-03, RF-04, RF-07, RF-09, RF-14, RF-17)
+// ============================================================================
+test("Bordes normativos: password-reset, logout, indeterminado 15m, expiración 48h, emergencia, límites lote y RF-07", async () => {
+  const h = await createTestHarness({ nowDate: "2026-08-01T10:00:00Z" });
+  const planner = await h.registerAndLoginUser({ email: "edge-planner@orquesta.test" });
+
+  // Password reset (202 sin enumeración) + confirmación + logout revoca JWT
+  const unknownReset = await h.request("POST", "/v1/auth/password-reset", {
+    body: { email: "noexiste@orquesta.test" },
+  });
+  assert.equal(unknownReset.status, 202);
+  await h.request("POST", "/v1/auth/password-reset", {
+    body: { email: "edge-planner@orquesta.test" },
+  });
+  await h.drainAll();
+  const rstMsg = [...h.ctx.emailProvider.captured]
+    .reverse()
+    .find((m) => m.to === "edge-planner@orquesta.test" && m.metadata?.token);
+  const rstConfirm = await h.request("POST", "/v1/auth/password-reset/confirm", {
+    body: { token: rstMsg.metadata.token, password: "NewPassword123!" },
+  });
+  assert.equal(rstConfirm.status, 204);
+  const logoutRes = await h.request("POST", "/v1/auth/logout", { headers: planner.headers });
+  assert.equal(logoutRes.status, 204);
+  const afterLogout = await h.request("GET", "/v1/events", { headers: planner.headers });
+  assert.equal(afterLogout.status, 401);
+
+  const loginNew = await h.request("POST", "/v1/auth/login", {
+    body: { email: "edge-planner@orquesta.test", password: "NewPassword123!" },
+  });
+  assert.equal(loginNew.status, 200);
+  const pHeaders = { authorization: `Bearer ${loginNew.body.access_token}` };
+
+  // Crear venue y evento
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: pHeaders,
+    body: { nombre: "Terraza Centro", zona: "centro", direccion: "Centro 10" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: pHeaders,
+    body: {
+      nombre: "Evento Bordes",
+      fecha: "2026-08-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-08-15T18:00:00Z", fin: "2026-08-16T02:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 25000,
+    },
+  });
+  const eventId = evt.body.id;
+  await h.request("POST", `/v1/events/${eventId}/publish`, { headers: pHeaders });
+
+  // > 20,000 filas CSV -> 413 IMPORT_FILAS_EXCEDIDAS
+  const bigLines = ["nombre,email,telefono"];
+  for (let i = 1; i <= 20001; i++) bigLines.push(`G${i},g${i}@x.com,`);
+  const bigCsv = buildMultipartCsv(bigLines.join("\n"));
+  const bigImp = await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...pHeaders, "content-type": bigCsv.contentType },
+    rawBody: bigCsv.rawBody,
+  });
+  assert.equal(bigImp.status, 413);
+  assert.equal(bigImp.body.error.code, "IMPORT_FILAS_EXCEDIDAS");
+
+  // Importar 2 invitados, mover uno concurrentemente a 2 mesas (AC-14), regenerar tokens (RF-03), y probar indeterminado 15m (RF-04)
+  const smallCsv = buildMultipartCsv(
+    "nombre,email,telefono\nUno,uno@x.com,+525511110001\nDos,dos@x.com,+525511110002\n"
+  );
+  await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...pHeaders, "content-type": smallCsv.contentType },
+    rawBody: smallCsv.rawBody,
+  });
+  await h.drainAll();
+  const guests = (await h.request("GET", `/v1/events/${eventId}/guests`, { headers: pHeaders })).body.items;
+
+  const mesaA = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: pHeaders,
+    body: { nombre: "Mesa A", capacidad: 5 },
+  });
+  const mesaB = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: pHeaders,
+    body: { nombre: "Mesa B", capacidad: 5 },
+  });
+  await Promise.all([
+    h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+      headers: pHeaders,
+      body: { guest_id: guests[0].id, table_id: mesaA.body.id },
+    }),
+    h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+      headers: pHeaders,
+      body: { guest_id: guests[0].id, table_id: mesaB.body.id },
+    }),
+  ]);
+  const tablesAfterMove = (await h.request("GET", `/v1/events/${eventId}/tables`, { headers: pHeaders })).body.items;
+  assert.equal(tablesAfterMove[0].ocupacion + tablesAfterMove[1].ocupacion, 1);
+
+  // Enviar invitaciones SIN drenar workers de notificación para simular timeout a `indeterminado` a los 15 min
+  await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: pHeaders,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 2 },
+  });
+  h.advanceMs(16 * 60 * 1000);
+  const pollIndet = await h.outboxPoller();
+  assert.ok(pollIndet.indeterminado_deliveries >= 4);
+
+  // TR-12: Reprogramar evento reescribe disparar_en del MISMO ReminderJob
+  const reminderCountBefore = h.ctx.store.reminderJobs.size;
+  await h.request("PATCH", `/v1/events/${eventId}`, {
+    headers: pHeaders,
+    body: { ventana: { inicio: "2026-08-20T18:00:00Z", fin: "2026-08-21T02:00:00Z" } },
+  });
+  assert.equal(h.ctx.store.reminderJobs.size, reminderCountBefore);
+
+  // RF-03: Regenerar tokens revoca el anterior
+  const regen = await h.request(
+    "POST",
+    `/v1/events/${eventId}/invitations/${guests[0].invitation_id}/regenerate`,
+    { headers: pHeaders }
+  );
+  assert.equal(regen.status, 200);
+  assert.equal(regen.body.token_version, 2);
+
+  // Trabajadores para RF-07 (zona exacta vs radio_km + cero resultados) y AC-22 / AC-27
+  const wA = await h.registerAndLoginUser({ email: "wa-search@orquesta.test", role: "worker" });
+  const wB = await h.registerAndLoginUser({ email: "wb-search@orquesta.test", role: "worker" });
+
+  async function setupWorker(w, { nombre, categorias, zonas, radioKm, tarifa, phone }) {
+    const p = await h.request("POST", "/v1/worker/profile", {
+      headers: w.headers,
+      body: {
+        tipo: "persona",
+        nombre_publico: nombre,
+        categorias,
+        zonas,
+        radio_km: radioKm,
+        tarifa: { monto: tarifa, moneda: "MXN", unidad: "hora" },
+        telefono_e164: phone,
+      },
+    });
+    const ch = await h.request("POST", "/v1/worker/profile/verifications", {
+      headers: w.headers,
+      body: { canal: "telefono" },
+    });
+    await h.drainAll();
+    const otp = h.ctx.smsProvider.captured.find((s) => s.to === phone).metadata.codigo_otp;
+    await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+      headers: w.headers,
+      body: { codigo_otp: otp },
+    });
+    await h.request("POST", "/v1/worker/profile/publish", { headers: w.headers });
+    await h.request("POST", "/v1/worker/availability", {
+      headers: w.headers,
+      body: { inicio: "2026-08-20T16:00:00Z", fin: "2026-08-21T04:00:00Z", zona: zonas[0], rol: categorias[0] },
+    });
+    return p.body.worker_id;
+  }
+
+  const wIdA = await setupWorker(wA, {
+    nombre: "Exacto Centro",
+    categorias: ["mesero", "bartender"],
+    zonas: ["centro"],
+    radioKm: 10,
+    tarifa: 700,
+    phone: "+525577770001",
+  });
+  const wIdB = await setupWorker(wB, {
+    nombre: "Cercano Roma",
+    categorias: ["mesero"],
+    zonas: ["roma_condesa"],
+    radioKm: 25,
+    tarifa: 450,
+    phone: "+525577770002",
+  });
+
+  // RF-07: zona exacta ("Exacto Centro") ordena ANTES que radio ("Cercano Roma")
+  const searchRadio = await h.request("GET", "/v1/workers", {
+    headers: pHeaders,
+    query: { categorias: "mesero", zonas: "centro", radio_km: "20" },
+  });
+  assert.equal(searchRadio.body.items.length, 2);
+  assert.equal(searchRadio.body.items[0].worker_id, wIdA);
+  assert.equal(searchRadio.body.items[1].worker_id, wIdB);
+
+  // NFR-09: búsqueda con 0 resultados emite métrica worker_search_zero_results
+  const zeroRes = await h.request("GET", "/v1/workers", {
+    headers: pHeaders,
+    query: { categorias: "mesero,dj", zonas: "monterrey" },
+  });
+  assert.equal(zeroRes.body.items.length, 0);
+  assert.ok(h.ctx.metrics.records.some((m) => m.metricName === "worker_search_zero_results"));
+
+  // AC-22: Solicitud expira a las 48h vía outboxPoller
+  const reqExp = await h.request("POST", `/v1/events/${eventId}/worker-requests`, {
+    headers: pHeaders,
+    body: {
+      worker_id: wIdA,
+      rol: "mesero",
+      plazas: 1,
+      ventana: { inicio: "2026-08-20T18:00:00Z", fin: "2026-08-21T01:00:00Z" },
+      hora_llegada: "2026-08-20T18:00:00Z",
+    },
+  });
+  h.advanceMs(49 * 60 * 60 * 1000);
+  const pollExp = await h.outboxPoller();
+  assert.equal(pollExp.expired_reservations, 1);
+
+  const loginAfter49h = await h.request("POST", "/v1/auth/login", {
+    body: { email: "wa-search@orquesta.test", password: "Password123!" },
+  });
+  const accExpired = await h.request("POST", `/v1/worker/requests/${reqExp.body.id}/accept`, {
+    headers: { authorization: `Bearer ${loginAfter49h.body.access_token}` },
+    body: {},
+  });
+  assert.equal(accExpired.status, 410);
+  assert.equal(accExpired.body.error.code, "REQUEST_EXPIRED");
+
+  // Reemplazo de emergencia exitoso con candidato libre (wIdB -> modo_emergencia: true, 15 min)
+  const loginPLate = await h.request("POST", "/v1/auth/login", {
+    body: { email: "edge-planner@orquesta.test", password: "NewPassword123!" },
+  });
+  const pLateHeaders = { authorization: `Bearer ${loginPLate.body.access_token}` };
+  const replOk = await h.request(
+    "POST",
+    `/v1/events/${eventId}/worker-requests/${reqExp.body.id}/replacements`,
+    { headers: pLateHeaders, body: { worker_id: wIdB } }
+  );
+  assert.equal(replOk.status, 201);
+  assert.equal(replOk.body.modo_emergencia, true);
+  assert.equal(replOk.body.sla_respuesta, "PT15M");
+
+  // La solicitud de emergencia expira a los 15 min si no se responde (RF-17)
+  h.advanceMs(16 * 60 * 1000);
+  const pollEmergExp = await h.outboxPoller();
+  assert.equal(pollEmergExp.expired_reservations, 1);
+
+  // Batch > 500 (413 BATCH_TOO_LARGE), desordenado (400 BATCH_OUT_OF_ORDER), GET /batches/:batchId y >24h CORRECTION_WINDOW_CLOSED
+  const accTok = await h.request("POST", `/v1/events/${eventId}/access-tokens`, {
+    headers: pLateHeaders,
+    body: { rol: "staff" },
+  });
+  const sess = await h.request("POST", "/v1/auth/event-session", {
+    body: { access_token: accTok.body.qr_token, device_id: "dev_edge" },
+  });
+  const devHeaders = { authorization: `Bearer ${sess.body.session_token}` };
+
+  const tooBigEvs = Array.from({ length: 501 }, (_, i) => ({
+    sequence: i + 1,
+    invitation_id: guests[0].invitation_id,
+    scanned_at: "2026-08-20T19:00:00Z",
+  }));
+  const tooBigRes = await h.request("POST", `/v1/scan-sessions/${sess.body.session_id}/batches`, {
+    headers: devHeaders,
+    body: {
+      batch_id: "b-501",
+      device_id: "dev_edge",
+      event_id: eventId,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(tooBigEvs) },
+      events: tooBigEvs,
+    },
+  });
+  assert.equal(tooBigRes.status, 413);
+  assert.equal(tooBigRes.body.error.code, "BATCH_TOO_LARGE");
+
+  const outOfOrderEvs = [
+    { sequence: 2, invitation_id: guests[0].invitation_id, scanned_at: "2026-08-20T19:00:00Z" },
+    { sequence: 1, invitation_id: guests[1].invitation_id, scanned_at: "2026-08-20T19:01:00Z" },
+  ];
+  const oooRes = await h.request("POST", `/v1/scan-sessions/${sess.body.session_id}/batches`, {
+    headers: devHeaders,
+    body: {
+      batch_id: "b-ooo",
+      device_id: "dev_edge",
+      event_id: eventId,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(outOfOrderEvs) },
+      events: outOfOrderEvs,
+    },
+  });
+  assert.equal(oooRes.status, 400);
+  assert.equal(oooRes.body.error.code, "BATCH_OUT_OF_ORDER");
+
+  // Lote válido + consulta GET /batches/:batchId + cierre + >24h CORRECTION_WINDOW_CLOSED
+  const okEvs = [{ sequence: 1, invitation_id: guests[0].invitation_id, scanned_at: "2026-08-20T19:00:00Z" }];
+  const okBatch = await h.request("POST", `/v1/scan-sessions/${sess.body.session_id}/batches`, {
+    headers: devHeaders,
+    body: {
+      batch_id: "b-ok",
+      device_id: "dev_edge",
+      event_id: eventId,
+      seq_desde: 1,
+      seq_hasta: 1,
+      checksum: { alg: "sha256", valor: computeBatchChecksum(okEvs) },
+      events: okEvs,
+    },
+  });
+  assert.equal(okBatch.status, 200);
+  const ackGet = await h.request("GET", `/v1/scan-sessions/${sess.body.session_id}/batches/b-ok`, {
+    headers: devHeaders,
+  });
+  assert.equal(ackGet.status, 200);
+  assert.equal(ackGet.body.batch_id, "b-ok");
+
+  await h.request("POST", `/v1/events/${eventId}/close`, { headers: pLateHeaders });
+  h.advanceMs(25 * 60 * 60 * 1000);
+  const lateLoginP = await h.request("POST", "/v1/auth/login", {
+    body: { email: "edge-planner@orquesta.test", password: "NewPassword123!" },
+  });
+  const lateAnnul = await h.request(
+    "POST",
+    `/v1/events/${eventId}/checkins/${okBatch.body.results[0].checkin_id}/annulments`,
+    {
+      headers: { authorization: `Bearer ${lateLoginP.body.access_token}` },
+      body: { motivo: "Fuera de 24h" },
+    }
+  );
+  assert.equal(lateAnnul.status, 409);
+  assert.equal(lateAnnul.body.error.code, "CORRECTION_WINDOW_CLOSED");
+
+  // NFR-08: Trabajador sin actividad > 12 meses queda anonimizado y sale de búsqueda
+  h.advanceMs(370 * 24 * 60 * 60 * 1000);
+  const retInactive = await h.outboxPoller();
+  assert.ok(retInactive.retention.anonymized_workers >= 2);
+  const loginFinal = await h.request("POST", "/v1/auth/login", {
+    body: { email: "edge-planner@orquesta.test", password: "NewPassword123!" },
+  });
+  const searchEmpty = await h.request("GET", "/v1/workers", {
+    headers: { authorization: `Bearer ${loginFinal.body.access_token}` },
+    query: { categorias: "mesero", zonas: "centro" },
+  });
+  assert.equal(searchEmpty.body.items.length, 0);
+});

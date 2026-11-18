@@ -1,0 +1,242 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Tablero en vivo (RF-06, NFR-03, NFR-10)</h1>
+    <p class="oq-page-subtitle">
+      Actualización cada 3 s (pausada en segundo plano), máx. 25 eventos por página y frescura
+      medida con reloj del servidor (<code>t_ingest → t_visible</code>).
+    </p>
+  </div>
+
+  <div class="oq-row">
+    @if (generadoEn()) {
+      <span class="oq-badge oq-badge-neutral mono">Corte: {{ generadoEn() }}</span>
+    }
+    <label class="oq-row">
+      <span class="oq-hint">Por página (≤ 25):</span>
+      <select
+        class="oq-select"
+        style="width: 78px"
+        [ngModel]="limit()"
+        (ngModelChange)="onLimitChange($event)"
+      >
+        <option [ngValue]="10">10</option>
+        <option [ngValue]="25">25</option>
+      </select>
+    </label>
+    <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="togglePolling()">
+      {{ pollingActive() ? 'Pausar polling 3s' : 'Reanudar polling' }}
+    </button>
+    <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="fetchDashboard()">
+      Refrescar
+    </button>
+    <a class="oq-btn oq-btn-primary oq-btn-sm" routerLink="/planner/events/new">
+      + Crear evento
+    </a>
+  </div>
+</div>
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+
+<div class="oq-grid">
+  @for (ev of items(); track ev.event_id) {
+    <article class="oq-card dash-event-card">
+      <div class="oq-between">
+        <div class="oq-row">
+          <h2 class="dash-event-title">
+            <a [routerLink]="['/planner/events', ev.event_id]">{{ ev.nombre }}</a>
+          </h2>
+          <span
+            class="oq-badge"
+            [class.oq-badge-success]="ev.estado === 'en_curso' || ev.estado === 'publicado'"
+            [class.oq-badge-warning]="ev.estado === 'borrador'"
+            [class.oq-badge-neutral]="ev.estado === 'cerrado'"
+            [class.oq-badge-danger]="ev.estado === 'cancelado'"
+          >
+            {{ ev.estado }}
+          </span>
+          <span class="oq-hint mono">{{ ev.event_id }}</span>
+        </div>
+
+        <div class="oq-row">
+          <span class="oq-badge mono" [ngClass]="lagBadgeClass(ev.frescura.lag_ms)">
+            lag: {{ ev.frescura.lag_ms !== null ? ev.frescura.lag_ms + ' ms' : '—' }}
+            @if (ev.frescura.lag_p95_ms !== null) {
+              · p95: {{ ev.frescura.lag_p95_ms }} ms
+            }
+          </span>
+
+          @if (ev.pendientes.estado === 'desconocido') {
+            <span class="oq-badge oq-badge-warning" title="Sin heartbeat en los últimos 5 min (TR-18)">
+              Pendientes sync: desconocido
+            </span>
+          } @else {
+            <span class="oq-badge oq-badge-info">
+              Pendientes sync: {{ ev.pendientes.valor ?? ev.contadores.pendientes_sincronizar }}
+            </span>
+          }
+        </div>
+      </div>
+
+      <div class="oq-grid-stats dash-counters">
+        <div class="oq-stat">
+          <span class="oq-stat-label">Invitados</span>
+          <span class="oq-stat-value">{{ ev.contadores.invitados }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Confirmados</span>
+          <span class="oq-stat-value">{{ ev.contadores.confirmados }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Asistentes</span>
+          <span class="oq-stat-value">{{ ev.contadores.asistentes }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Aún no llegaron</span>
+          <span class="oq-stat-value">{{ ev.contadores.aun_no_llegaron }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Entregas parciales</span>
+          <span class="oq-stat-value">{{ ev.contadores.entregas_parciales }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">No-show (cierre)</span>
+          <span class="oq-stat-value">
+            @if (ev.estado === 'cerrado' && ev.no_show !== null) {
+              {{ ev.no_show }}
+            } @else {
+              <span class="oq-hint" style="font-size: 0.85rem">Al cierre</span>
+            }
+          </span>
+        </div>
+      </div>
+
+      <div class="oq-between dash-footer">
+        <div class="oq-row">
+          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id]">
+            Gestionar evento
+          </a>
+          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'guests']">
+            Invitados e import
+          </a>
+          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'seating']">
+            Mesas
+          </a>
+          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'workers']">
+            Trabajadores y pagos
+          </a>
+        </div>
+
+        @if ((ev.pendientes.dispositivos?.length ?? 0) > 0) {
+          <button
+            type="button"
+            class="oq-btn oq-btn-secondary oq-btn-sm"
+            (click)="toggleDevices(ev.event_id)"
+          >
+            {{
+              expandedDevices()[ev.event_id]
+                ? 'Ocultar escáneres'
+                : 'Ver escáneres (' + ev.pendientes.dispositivos!.length + ')'
+            }}
+          </button>
+        }
+      </div>
+
+      @if (expandedDevices()[ev.event_id] && ev.pendientes.dispositivos; as devs) {
+        <div class="oq-table-wrap dash-devices-table">
+          <table class="oq-table">
+            <thead>
+              <tr>
+                <th>Device ID</th>
+                <th>Cola reportada</th>
+                <th>Última seq ack</th>
+                <th>Seq confirmada</th>
+                <th>Heartbeat (TR-18)</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (d of devs; track d.device_id) {
+                <tr>
+                  <td class="mono">{{ d.device_id }}</td>
+                  <td class="mono">{{ d.cola_reportada }}</td>
+                  <td class="mono">{{ d.ultima_seq_ackeada }}</td>
+                  <td class="mono">{{ d.seq_confirmada }}</td>
+                  <td>
+                    <span class="mono">{{ d.heartbeat_en }}</span>
+                    @if (isDeviceStale(d.heartbeat_en)) {
+                      <span class="oq-badge oq-badge-warning">desconocido (&gt; 5 min)</span>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </article>
+  } @empty {
+    <section class="oq-card">
+      <p class="oq-hint">
+        {{
+          loading()
+            ? 'Cargando tablero en vivo...'
+            : 'No tienes eventos activos en el tablero aún. Crea tu primer evento para comenzar.'
+        }}
+      </p>
+      <div class="oq-row">
+        <a class="oq-btn oq-btn-primary" routerLink="/planner/events/new">Crear evento</a>
+        <button type="button" class="oq-btn oq-btn-secondary" (click)="toggleAllEventsCatalog()">
+          Ver catálogo GET /v1/events
+        </button>
+      </div>
+    </section>
+  }
+</div>
+
+<div class="oq-between dash-pagination">
+  <button
+    type="button"
+    class="oq-btn oq-btn-secondary oq-btn-sm"
+    [disabled]="cursorStack().length === 0"
+    (click)="prevPage()"
+  >
+    ← Página anterior
+  </button>
+  <button
+    type="button"
+    class="oq-btn oq-btn-secondary oq-btn-sm"
+    [disabled]="!nextCursor()"
+    (click)="nextPage()"
+  >
+    Siguiente página →
+  </button>
+</div>
+
+@if (showAllEventsFallback()) {
+  <section class="oq-card" style="margin-top: 1rem">
+    <h3>Eventos de membresía (GET /v1/events)</h3>
+    <div class="oq-table-wrap">
+      <table class="oq-table">
+        <thead>
+          <tr>
+            <th>Evento</th>
+            <th>Fecha / TZ</th>
+            <th>Aforo</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (ev of allEvents(); track ev.id) {
+            <tr>
+              <td><a [routerLink]="['/planner/events', ev.id]">{{ ev.nombre }}</a></td>
+              <td class="mono">{{ ev.fecha }} ({{ ev.timezone }})</td>
+              <td>{{ ev.aforo }}</td>
+              <td><span class="oq-badge oq-badge-neutral">{{ ev.estado }}</span></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+}

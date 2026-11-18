@@ -1,0 +1,72 @@
+.scan-status-bar {
+  margin-bottom: 1rem;
+}
+
+.scan-sync-actions {
+  margin-top: 1rem;
+}
+
+.scan-verdict {
+  margin-bottom: 1rem;
+  border-width: 2px;
+}
+
+.verdict-success {
+  border-color: var(--oq-success);
+  background: #f0fdf4;
+}
+
+.verdict-warning {
+  border-color: var(--oq-warning);
+  background: #fffbeb;
+}
+
+.verdict-danger {
+  border-color: var(--oq-danger);
+  background: #fef2f2;
+}
+
+.verdict-title {
+  margin-top: 0.4rem;
+  font-size: 1.45rem;
+}
+
+.verdict-guest {
+  font-size: 1.08rem;
+  font-weight: 600;
+}
+
+.scan-camera-box {
+  width: 100%;
+  min-height: 220px;
+  border-radius: var(--oq-radius-sm);
+  background: #0f172a;
+  color: #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.scan-video {
+  width: 100%;
+  max-height: 300px;
+  object-fit: cover;
+}
+
+.scan-camera-placeholder {
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.scan-cam-btns {
+  margin-top: 0.75rem;
+}
+
+.scan-manual-search {
+  margin-bottom: 1rem;
+}
+
+.scan-sub {
+  margin-top: 1.25rem;
+}

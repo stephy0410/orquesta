@@ -1,0 +1,240 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Crear nuevo evento (RF-01)</h1>
+    <p class="oq-page-subtitle">
+      Define venue, zona horaria IANA obligatoria, ventana horaria y límite duro de
+      <code>aforo</code>. El evento nace en <code>borrador</code>.
+    </p>
+  </div>
+  <a class="oq-btn oq-btn-secondary" routerLink="/planner/dashboard">← Volver al tablero</a>
+</div>
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+
+<div class="oq-grid-2">
+  <section class="oq-card">
+    <h2>1. Datos del evento</h2>
+    <form class="oq-form-grid" (ngSubmit)="createEvent()">
+      <div class="oq-field">
+        <label class="oq-label" for="evNombre">Nombre del evento</label>
+        <input
+          id="evNombre"
+          name="nombre"
+          class="oq-input"
+          required
+          placeholder="Ej. Boda Robles"
+          [ngModel]="nombre()"
+          (ngModelChange)="nombre.set($event)"
+        />
+      </div>
+
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="evFecha">Fecha</label>
+          <input
+            id="evFecha"
+            name="fecha"
+            class="oq-input"
+            type="date"
+            required
+            [ngModel]="fecha()"
+            (ngModelChange)="fecha.set($event)"
+          />
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="evAforo">Aforo (límite duro)</label>
+          <input
+            id="evAforo"
+            name="aforo"
+            class="oq-input"
+            type="number"
+            min="1"
+            required
+            [ngModel]="aforo()"
+            (ngModelChange)="aforo.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="evTz">Zona horaria IANA (obligatoria)</label>
+          <select
+            id="evTz"
+            name="timezone"
+            class="oq-select"
+            [ngModel]="timezone()"
+            (ngModelChange)="timezone.set($event)"
+          >
+            @for (tz of timezones; track tz) {
+              <option [value]="tz">{{ tz }}</option>
+            }
+          </select>
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="evTzCustom">O IANA personalizada</label>
+          <input
+            id="evTzCustom"
+            name="customTimezone"
+            class="oq-input mono"
+            placeholder="America/..."
+            [ngModel]="customTimezone()"
+            (ngModelChange)="customTimezone.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="evIni">Ventana inicio</label>
+          <input
+            id="evIni"
+            name="inicio"
+            class="oq-input"
+            type="datetime-local"
+            required
+            [ngModel]="ventanaInicio()"
+            (ngModelChange)="ventanaInicio.set($event)"
+          />
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="evFin">Ventana fin exclusivo</label>
+          <input
+            id="evFin"
+            name="fin"
+            class="oq-input"
+            type="datetime-local"
+            required
+            [ngModel]="ventanaFin()"
+            (ngModelChange)="ventanaFin.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <div class="oq-between">
+          <label class="oq-label" for="evVenue">Venue</label>
+          <button
+            type="button"
+            class="oq-btn oq-btn-secondary oq-btn-sm"
+            (click)="showNewVenue.set(!showNewVenue())"
+          >
+            {{ showNewVenue() ? 'Cerrar formulario venue' : '+ Nuevo venue' }}
+          </button>
+        </div>
+        <select
+          id="evVenue"
+          name="venue_id"
+          class="oq-select"
+          required
+          [ngModel]="venueId()"
+          (ngModelChange)="venueId.set($event)"
+        >
+          @for (v of venues(); track v.id) {
+            <option [value]="v.id">{{ v.nombre }} ({{ v.zona }}) — {{ v.direccion }}</option>
+          }
+        </select>
+      </div>
+
+      <div class="oq-field">
+        <div class="oq-between">
+          <span class="oq-label">Requerimientos iniciales de personal (RF-22)</span>
+          <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="addRequirement()">
+            + Agregar rol
+          </button>
+        </div>
+        @for (req of requerimientos(); track $index) {
+          <div class="oq-row" style="margin-top: 0.35rem">
+            <select
+              class="oq-select"
+              style="flex: 1 1 160px"
+              [ngModel]="req.rol"
+              [ngModelOptions]="{ standalone: true }"
+              (ngModelChange)="updateRequirement($index, 'rol', $event)"
+            >
+              @for (r of roles; track r) {
+                <option [value]="r">{{ r }}</option>
+              }
+            </select>
+            <input
+              class="oq-input"
+              style="width: 90px"
+              type="number"
+              min="1"
+              [ngModel]="req.cantidad"
+              [ngModelOptions]="{ standalone: true }"
+              (ngModelChange)="updateRequirement($index, 'cantidad', $event)"
+            />
+            <button
+              type="button"
+              class="oq-btn oq-btn-danger oq-btn-sm"
+              (click)="removeRequirement($index)"
+            >
+              Quitar
+            </button>
+          </div>
+        }
+      </div>
+
+      <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
+        {{ loading() ? 'Creando evento...' : 'Crear evento' }}
+      </button>
+    </form>
+  </section>
+
+  @if (showNewVenue()) {
+    <section class="oq-card">
+      <h2>2. Registrar nuevo Venue (RF-01)</h2>
+      <p class="oq-hint">
+        El venue es un dato del evento (sin reserva ni aforo propio); su <code>zona</code> se cruza
+        en la búsqueda de trabajadores (RF-07).
+      </p>
+      <form class="oq-form-grid" (ngSubmit)="createVenue()">
+        <div class="oq-field">
+          <label class="oq-label" for="venNombre">Nombre del lugar</label>
+          <input
+            id="venNombre"
+            name="venueNombre"
+            class="oq-input"
+            required
+            placeholder="Ej. Hacienda San Ángel"
+            [ngModel]="venueNombre()"
+            (ngModelChange)="venueNombre.set($event)"
+          />
+        </div>
+
+        <div class="oq-field">
+          <label class="oq-label" for="venZona">Zona</label>
+          <select
+            id="venZona"
+            name="venueZona"
+            class="oq-select"
+            [ngModel]="venueZona()"
+            (ngModelChange)="venueZona.set($event)"
+          >
+            @for (z of zones; track z) {
+              <option [value]="z">{{ z }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="oq-field">
+          <label class="oq-label" for="venDir">Dirección completa</label>
+          <input
+            id="venDir"
+            name="venueDir"
+            class="oq-input"
+            required
+            placeholder="Calle, colonia, ciudad"
+            [ngModel]="venueDireccion()"
+            (ngModelChange)="venueDireccion.set($event)"
+          />
+        </div>
+
+        <button type="submit" class="oq-btn oq-btn-accent">Guardar Venue</button>
+      </form>
+    </section>
+  }
+</div>

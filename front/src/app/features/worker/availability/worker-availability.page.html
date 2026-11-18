@@ -1,0 +1,143 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Ventanas de disponibilidad (RF-22)</h1>
+    <p class="oq-page-subtitle">
+      Solo puedes aceptar solicitudes cuya ventana y rol estén contenidos en una ventana
+      declarada aquí. Sin ventana declarada no hay contratación.
+    </p>
+  </div>
+</div>
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+@if (success()) {
+  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+}
+
+<div class="oq-grid-2">
+  <section class="oq-card">
+    <h2>{{ editingId() ? 'Editar ventana' : 'Declarar nueva ventana [inicio, fin)' }}</h2>
+    <form class="oq-form-grid" (ngSubmit)="saveWindow()">
+      <div class="oq-field">
+        <label class="oq-label" for="winRol">Rol</label>
+        <select
+          id="winRol"
+          name="rol"
+          class="oq-select"
+          [ngModel]="rol()"
+          (ngModelChange)="rol.set($event)"
+        >
+          @for (r of allRoles; track r) {
+            <option [value]="r">{{ r }}</option>
+          }
+        </select>
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="winZona">Zona</label>
+        <select
+          id="winZona"
+          name="zona"
+          class="oq-select"
+          [ngModel]="zona()"
+          (ngModelChange)="zona.set($event)"
+        >
+          @for (z of allZones; track z) {
+            <option [value]="z">{{ z }}</option>
+          }
+        </select>
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="winInicio">Inicio</label>
+        <input
+          id="winInicio"
+          name="inicio"
+          class="oq-input"
+          type="datetime-local"
+          required
+          [ngModel]="inicio()"
+          (ngModelChange)="inicio.set($event)"
+        />
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="winFin">Fin exclusivo</label>
+        <input
+          id="winFin"
+          name="fin"
+          class="oq-input"
+          type="datetime-local"
+          required
+          [ngModel]="fin()"
+          (ngModelChange)="fin.set($event)"
+        />
+      </div>
+
+      <div class="oq-row">
+        <button type="submit" class="oq-btn oq-btn-primary">
+          {{ editingId() ? 'Guardar cambios' : 'Agregar ventana' }}
+        </button>
+        @if (editingId()) {
+          <button type="button" class="oq-btn oq-btn-secondary" (click)="cancelEdit()">
+            Cancelar edición
+          </button>
+        }
+      </div>
+    </form>
+  </section>
+
+  <section class="oq-card">
+    <div class="oq-card-header">
+      <h2>Mis ventanas declaradas</h2>
+      <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadWindows()">
+        Recargar
+      </button>
+    </div>
+
+    <div class="oq-table-wrap">
+      <table class="oq-table">
+        <thead>
+          <tr>
+            <th>Rol / Zona</th>
+            <th>Intervalo</th>
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (w of windows(); track w.window_id) {
+            <tr>
+              <td>
+                <strong>{{ w.rol }}</strong>
+                <div class="oq-hint">{{ w.zona }}</div>
+              </td>
+              <td class="mono">
+                <div>{{ w.inicio }}</div>
+                <div>→ {{ w.fin }}</div>
+              </td>
+              <td>
+                <div class="oq-row">
+                  <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="startEdit(w)">
+                    Editar
+                  </button>
+                  <button
+                    type="button"
+                    class="oq-btn oq-btn-danger oq-btn-sm"
+                    (click)="deleteWindow(w.window_id)"
+                  >
+                    Retirar
+                  </button>
+                </div>
+              </td>
+            </tr>
+          } @empty {
+            <tr>
+              <td colspan="3" class="oq-hint">No tienes ventanas de disponibilidad declaradas.</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>

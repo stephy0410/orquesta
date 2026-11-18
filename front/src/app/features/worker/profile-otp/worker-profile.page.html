@@ -1,0 +1,376 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Perfil contratable y verificación (RF-21, AC-25)</h1>
+    <p class="oq-page-subtitle">
+      Tu perfil aparece en búsquedas solo cuando está <code>publicado</code> y con email y
+      teléfono verificados por OTP. Tus datos de contacto nunca son públicos.
+    </p>
+  </div>
+  <div class="oq-row">
+    <span
+      class="oq-badge"
+      [class.oq-badge-success]="estado() === 'publicado'"
+      [class.oq-badge-warning]="estado() === 'borrador'"
+      [class.oq-badge-danger]="estado() === 'suspendido'"
+    >
+      Estado: {{ estado() }}
+    </span>
+    <span class="oq-badge oq-badge-neutral">
+      Eventos completados: {{ eventosCompletados() }}
+    </span>
+  </div>
+</div>
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+@if (success()) {
+  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+}
+
+<div class="oq-grid-2">
+  <section class="oq-card">
+    <h2>Datos de oferta publicada</h2>
+    <form class="oq-form-grid" (ngSubmit)="saveProfile()">
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="profTipo">Tipo</label>
+          <select
+            id="profTipo"
+            name="tipo"
+            class="oq-select"
+            [ngModel]="tipo()"
+            (ngModelChange)="onTipoChange($event)"
+          >
+            <option value="persona">persona (1 plaza)</option>
+            <option value="empresa">empresa (1–50 plazas)</option>
+          </select>
+        </div>
+
+        <div class="oq-field">
+          <label class="oq-label" for="profPlazas">Plazas ofrecidas</label>
+          <input
+            id="profPlazas"
+            name="plazas"
+            class="oq-input"
+            type="number"
+            min="1"
+            max="50"
+            [disabled]="tipo() === 'persona'"
+            [ngModel]="plazasOfrecidas()"
+            (ngModelChange)="plazasOfrecidas.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="profNombre">Nombre público</label>
+        <input
+          id="profNombre"
+          name="nombre_publico"
+          class="oq-input"
+          required
+          [ngModel]="nombrePublico()"
+          (ngModelChange)="nombrePublico.set($event)"
+        />
+      </div>
+
+      <div class="oq-field">
+        <span class="oq-label">Categorías (1 a 3)</span>
+        <div class="oq-chips">
+          @for (cat of allCategories; track cat) {
+            <button
+              type="button"
+              class="oq-chip-btn"
+              [class.active]="categorias().includes(cat)"
+              (click)="toggleCategory(cat)"
+            >
+              {{ cat }}
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <span class="oq-label">Servicios incluidos (subconjunto de categorías)</span>
+        <div class="oq-chips">
+          @for (srv of availableServices(); track srv) {
+            <button
+              type="button"
+              class="oq-chip-btn"
+              [class.active]="servicios().includes(srv)"
+              (click)="toggleService(srv)"
+            >
+              {{ srv }}
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="oq-grid-3">
+        <div class="oq-field">
+          <label class="oq-label" for="tarifaMonto">Tarifa fija</label>
+          <input
+            id="tarifaMonto"
+            name="tarifa_monto"
+            class="oq-input"
+            type="number"
+            min="1"
+            step="0.01"
+            required
+            [ngModel]="tarifaMonto()"
+            (ngModelChange)="tarifaMonto.set($event)"
+          />
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="tarifaMoneda">Moneda</label>
+          <input
+            id="tarifaMoneda"
+            name="tarifa_moneda"
+            class="oq-input mono"
+            maxlength="3"
+            [ngModel]="tarifaMoneda()"
+            (ngModelChange)="tarifaMoneda.set($event)"
+          />
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="tarifaUnidad">Unidad (TR-20)</label>
+          <select
+            id="tarifaUnidad"
+            name="tarifa_unidad"
+            class="oq-select"
+            [ngModel]="tarifaUnidad()"
+            (ngModelChange)="tarifaUnidad.set($event)"
+          >
+            <option value="hora">hora</option>
+            <option value="persona_hora">persona_hora</option>
+            <option value="evento">evento</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <span class="oq-label">Zonas cubiertas (1 a 5)</span>
+        <div class="oq-chips">
+          @for (z of allZones; track z) {
+            <button
+              type="button"
+              class="oq-chip-btn"
+              [class.active]="zonas().includes(z)"
+              (click)="toggleZone(z)"
+            >
+              {{ z }}
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="radioKm">Radio máximo (km, ≤ 150)</label>
+          <input
+            id="radioKm"
+            name="radio_km"
+            class="oq-input"
+            type="number"
+            min="1"
+            max="150"
+            [ngModel]="radioKm()"
+            (ngModelChange)="radioKm.set($event)"
+          />
+        </div>
+        <div class="oq-field">
+          <label class="oq-label" for="aniosExp">Años de experiencia</label>
+          <input
+            id="aniosExp"
+            name="anios_experiencia"
+            class="oq-input"
+            type="number"
+            min="0"
+            max="70"
+            [ngModel]="aniosExperiencia()"
+            (ngModelChange)="aniosExperiencia.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <span class="oq-label">Idiomas</span>
+        <div class="oq-chips">
+          @for (lang of allLanguages; track lang) {
+            <button
+              type="button"
+              class="oq-chip-btn"
+              [class.active]="idiomas().includes(lang)"
+              (click)="toggleLanguage(lang)"
+            >
+              {{ lang }}
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="telE164">Teléfono E.164 (privado, para OTP SMS)</label>
+        <input
+          id="telE164"
+          name="telefono_e164"
+          class="oq-input mono"
+          placeholder="+525512345678"
+          [ngModel]="telefonoE164()"
+          (ngModelChange)="telefonoE164.set($event)"
+        />
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="fotosTxt">Fotos (hasta 3 URLs, una por línea)</label>
+        <textarea
+          id="fotosTxt"
+          name="fotos"
+          class="oq-textarea"
+          [ngModel]="fotosText()"
+          (ngModelChange)="fotosText.set($event)"
+        ></textarea>
+      </div>
+
+      <div class="oq-field">
+        <label class="oq-label" for="refTxt">Referencias (hasta 3, una por línea)</label>
+        <textarea
+          id="refTxt"
+          name="referencias"
+          class="oq-textarea"
+          [ngModel]="referenciasText()"
+          (ngModelChange)="referenciasText.set($event)"
+        ></textarea>
+      </div>
+
+      <button type="submit" class="oq-btn oq-btn-primary" [disabled]="saving()">
+        {{ saving() ? 'Guardando...' : hasExistingProfile() ? 'Actualizar perfil' : 'Crear perfil' }}
+      </button>
+    </form>
+  </section>
+
+  <section class="oq-grid">
+    <div class="oq-card">
+      <h2>Verificación obligatoria (AC-25)</h2>
+      <p class="oq-hint">
+        Un teléfono verificado solo puede respaldar un perfil. Sin email y SMS OTP verificados,
+        no aparecerás en búsquedas de planners.
+      </p>
+
+      <div class="otp-box">
+        <div class="oq-between">
+          <strong>1. Verificación de Email</strong>
+          <span
+            class="oq-badge"
+            [class.oq-badge-success]="emailVerified()"
+            [class.oq-badge-warning]="!emailVerified()"
+          >
+            {{ emailVerified() ? 'Verificado' : 'Pendiente' }}
+          </span>
+        </div>
+        @if (!emailVerified()) {
+          <div class="oq-row otp-actions">
+            <button
+              type="button"
+              class="oq-btn oq-btn-secondary oq-btn-sm"
+              (click)="requestVerification('email')"
+            >
+              Enviar desafío email
+            </button>
+          </div>
+          @if (emailDesafioId()) {
+            <div class="oq-row otp-actions">
+              <input
+                class="oq-input mono"
+                style="max-width: 180px"
+                placeholder="Código OTP"
+                [ngModel]="emailOtp()"
+                (ngModelChange)="emailOtp.set($event)"
+              />
+              <button
+                type="button"
+                class="oq-btn oq-btn-accent oq-btn-sm"
+                (click)="confirmVerification('email')"
+              >
+                Confirmar email
+              </button>
+            </div>
+          }
+        }
+      </div>
+
+      <div class="otp-box">
+        <div class="oq-between">
+          <strong>2. Verificación por SMS OTP</strong>
+          <span
+            class="oq-badge"
+            [class.oq-badge-success]="phoneVerified()"
+            [class.oq-badge-warning]="!phoneVerified()"
+          >
+            {{ phoneVerified() ? 'Verificado' : 'Pendiente' }}
+          </span>
+        </div>
+        @if (!phoneVerified()) {
+          <div class="oq-row otp-actions">
+            <button
+              type="button"
+              class="oq-btn oq-btn-secondary oq-btn-sm"
+              (click)="requestVerification('telefono')"
+            >
+              Enviar OTP por SMS
+            </button>
+          </div>
+          @if (phoneDesafioId()) {
+            <div class="oq-row otp-actions">
+              <input
+                class="oq-input mono"
+                style="max-width: 180px"
+                placeholder="Código SMS"
+                [ngModel]="phoneOtp()"
+                (ngModelChange)="phoneOtp.set($event)"
+              />
+              <button
+                type="button"
+                class="oq-btn oq-btn-accent oq-btn-sm"
+                (click)="confirmVerification('telefono')"
+              >
+                Confirmar SMS
+              </button>
+            </div>
+          }
+        }
+      </div>
+    </div>
+
+    <div class="oq-card">
+      <h2>Visibilidad en directorio</h2>
+      <p class="oq-hint">
+        Publica tu perfil para aparecer en búsquedas de planners (RF-07) o suspéndelo temporalmente.
+      </p>
+      <div class="oq-row">
+        <button
+          type="button"
+          class="oq-btn oq-btn-accent"
+          [disabled]="!canPublish() || !hasExistingProfile()"
+          (click)="publishProfile()"
+        >
+          Publicar perfil
+        </button>
+        <button
+          type="button"
+          class="oq-btn oq-btn-secondary"
+          [disabled]="estado() !== 'publicado'"
+          (click)="suspendProfile()"
+        >
+          Suspender perfil
+        </button>
+      </div>
+      @if (!canPublish()) {
+        <p class="oq-hint" style="margin-top: 0.75rem; color: var(--oq-warning)">
+          Debes verificar email y teléfono por OTP antes de publicar.
+        </p>
+      }
+    </div>
+  </section>
+</div>

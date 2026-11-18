@@ -1,0 +1,371 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Invitados, Import CSV y Envíos (RF-02, RF-16, RF-20)</h1>
+    <p class="oq-page-subtitle">
+      El import es idempotente y deja a los invitados en <code>pendiente_envio</code> sin enviar
+      mensajes hasta que confirmes explícitamente el disparo por SMS + Email.
+    </p>
+  </div>
+  <a class="oq-btn oq-btn-secondary" [routerLink]="['/planner/events', eventId()]">
+    ← Volver al evento
+  </a>
+</div>
+
+<app-event-subnav [eventId]="eventId()" />
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+@if (success()) {
+  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+}
+
+<div class="oq-grid-2">
+  <section class="oq-card">
+    <div class="oq-card-header">
+      <h2>1. Importar CSV (≤ 20 000 filas)</h2>
+      <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="downloadSampleCsv()">
+        Descargar ejemplo CSV
+      </button>
+    </div>
+
+    <div class="oq-form-grid">
+      <div class="oq-field">
+        <label class="oq-label" for="csvInput">Archivo CSV (nombre, email, telefono)</label>
+        <input
+          id="csvInput"
+          type="file"
+          accept=".csv,text/csv"
+          class="oq-input"
+          (change)="onFileSelected($event)"
+        />
+        @if (fileIdempotencyKey()) {
+          <span class="oq-hint mono">Idempotency-Key: {{ fileIdempotencyKey() }}</span>
+        }
+      </div>
+
+      <button
+        type="button"
+        class="oq-btn oq-btn-primary"
+        [disabled]="!selectedFile() || importing()"
+        (click)="uploadCsv()"
+      >
+        {{ importing() ? 'Procesando import...' : 'Subir CSV' }}
+      </button>
+    </div>
+
+    @if (importJob(); as job) {
+      <div style="margin-top: 1rem">
+        <div class="oq-between">
+          <span class="oq-badge oq-badge-info">{{ job.estado }}</span>
+          <span class="mono">{{ (job.progreso * 100) | number: '1.0-0' }}%</span>
+        </div>
+        <div class="oq-grid-stats" style="margin-top: 0.75rem">
+          <div class="oq-stat">
+            <span class="oq-stat-label">Aceptadas</span>
+            <span class="oq-stat-value">{{ job.aceptadas }}</span>
+          </div>
+          <div class="oq-stat">
+            <span class="oq-stat-label">Rechazadas</span>
+            <span class="oq-stat-value">{{ job.rechazadas }}</span>
+          </div>
+          <div class="oq-stat">
+            <span class="oq-stat-label">Duplicadas</span>
+            <span class="oq-stat-value">{{ job.duplicadas_en_archivo }}</span>
+          </div>
+        </div>
+
+        @if (job.errores.length > 0) {
+          <div class="oq-table-wrap" style="margin-top: 0.85rem; max-height: 200px">
+            <table class="oq-table">
+              <thead>
+                <tr>
+                  <th>Línea</th>
+                  <th>Motivo</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (errRow of job.errores; track $index) {
+                  <tr>
+                    <td class="mono">{{ errRow.linea }}</td>
+                    <td class="mono">{{ errRow.motivo }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+      </div>
+    }
+  </section>
+
+  <section class="oq-card">
+    <div class="oq-card-header">
+      <h2>2. Disparo confirmado de invitaciones (RF-16)</h2>
+      <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadPendingSummary()">
+        Recargar resumen
+      </button>
+    </div>
+
+    @if (pendingSummary(); as sum) {
+      <div class="oq-grid-stats" style="margin-bottom: 1rem">
+        <div class="oq-stat">
+          <span class="oq-stat-label">Pendientes de envío</span>
+          <span class="oq-stat-value">{{ sum.pendiente_envio }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Canal SMS</span>
+          <span class="oq-stat-value">{{ sum.por_canal.sms }}</span>
+        </div>
+        <div class="oq-stat">
+          <span class="oq-stat-label">Canal Email</span>
+          <span class="oq-stat-value">{{ sum.por_canal.email }}</span>
+        </div>
+      </div>
+
+      <div class="oq-row">
+        <button
+          type="button"
+          class="oq-btn oq-btn-accent"
+          [disabled]="sum.destinatarios === 0"
+          (click)="prepareSend('pendiente_envio')"
+        >
+          Enviar a todos los pendientes ({{ sum.destinatarios }})
+        </button>
+
+        <button
+          type="button"
+          class="oq-btn oq-btn-secondary"
+          [disabled]="selectedGuestIds().size === 0"
+          (click)="prepareSend('seleccion')"
+        >
+          Enviar seleccionados ({{ selectedGuestIds().size }})
+        </button>
+      </div>
+    }
+
+    @if (confirmSendOpen()) {
+      <div class="oq-alert oq-alert-warning" style="margin-top: 1rem">
+        <strong>Confirmación explícita requerida (RF-16, D11)</strong>
+        <p>
+          Se encolarán entregas en paralelo por <strong>SMS y Email</strong> para
+          <strong>
+            {{
+              sendAlcance() === 'seleccion'
+                ? selectedGuestIds().size
+                : (pendingSummary()?.destinatarios ?? 0)
+            }}
+          </strong>
+          destinatario(s).
+        </p>
+        <div class="oq-row">
+          <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="confirmAndSend()">
+            Confirmar y disparar envío
+          </button>
+          <button
+            type="button"
+            class="oq-btn oq-btn-secondary oq-btn-sm"
+            (click)="confirmSendOpen.set(false)"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    }
+
+    <hr style="margin: 1.25rem 0; border: none; border-top: 1px solid var(--oq-border)" />
+
+    <h3>Reenvío explícito (TR-12)</h3>
+    <div class="oq-row">
+      <select
+        class="oq-select"
+        style="width: auto"
+        [ngModel]="resendCanal()"
+        (ngModelChange)="resendCanal.set($event)"
+      >
+        <option value="ambos">SMS y Email</option>
+        <option value="sms">Solo SMS</option>
+        <option value="email">Solo Email</option>
+      </select>
+      <input
+        class="oq-input mono"
+        style="width: 130px"
+        placeholder="resend_1"
+        [ngModel]="resendVentana()"
+        (ngModelChange)="resendVentana.set($event)"
+      />
+      <button
+        type="button"
+        class="oq-btn oq-btn-secondary oq-btn-sm"
+        [disabled]="selectedGuestIds().size === 0"
+        (click)="triggerResend()"
+      >
+        Reenviar a seleccionados ({{ selectedGuestIds().size }})
+      </button>
+    </div>
+  </section>
+</div>
+
+<section class="oq-card" style="margin-top: 1rem">
+  <div class="oq-card-header">
+    <h2>Lista de invitados</h2>
+    <div class="oq-row">
+      <label class="oq-row">
+        <input
+          type="checkbox"
+          [ngModel]="filterSinMesa()"
+          (ngModelChange)="filterSinMesa.set($event); loadGuests()"
+        />
+        Solo sin mesa
+      </label>
+      <label class="oq-row">
+        <input
+          type="checkbox"
+          [ngModel]="filterDeleted()"
+          (ngModelChange)="filterDeleted.set($event); loadGuests()"
+        />
+        Incluir bajas (RF-20)
+      </label>
+      <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadGuests()">
+        Recargar
+      </button>
+    </div>
+  </div>
+
+  <div class="oq-table-wrap">
+    <table class="oq-table">
+      <thead>
+        <tr>
+          <th>Sel.</th>
+          <th>Invitado</th>
+          <th>Contacto</th>
+          <th>Envío / RSVP</th>
+          <th>Baja lógica</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (g of guests(); track getGuestId(g)) {
+          @let gid = getGuestId(g);
+          <tr>
+            <td>
+              <input
+                type="checkbox"
+                [checked]="selectedGuestIds().has(gid)"
+                (change)="toggleGuestSelection(gid)"
+              />
+            </td>
+            <td>
+              <strong>{{ g.nombre }}</strong>
+              <div class="oq-hint mono">{{ gid }} @if (g.codigo_corto) { · {{ g.codigo_corto }} }</div>
+            </td>
+            <td class="mono">
+              <div>{{ g.email || '—' }}</div>
+              <div>{{ g.telefono || '—' }}</div>
+            </td>
+            <td>
+              <span class="oq-badge oq-badge-info">{{ g.estado_envio || 'pendiente_envio' }}</span>
+              @if (g.estado_rsvp) {
+                <span class="oq-badge oq-badge-neutral">{{ g.estado_rsvp }}</span>
+              }
+            </td>
+            <td>
+              @if (g.deleted_at) {
+                <span class="oq-badge oq-badge-danger">Baja {{ g.deleted_at }}</span>
+              } @else {
+                <button
+                  type="button"
+                  class="oq-btn oq-btn-danger oq-btn-sm"
+                  (click)="softDeleteGuest(gid)"
+                >
+                  Dar de baja
+                </button>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="5" class="oq-hint">Sin invitados registrados aún.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+
+  @if (guestsNextCursor()) {
+    <div style="margin-top: 0.75rem">
+      <button
+        type="button"
+        class="oq-btn oq-btn-secondary oq-btn-sm"
+        (click)="loadGuests(guestsNextCursor()!)"
+      >
+        Siguiente página →
+      </button>
+    </div>
+  }
+</section>
+
+<section class="oq-card" style="margin-top: 1rem">
+  <div class="oq-card-header">
+    <h2>Monitoreo de entregas por canal (RF-04)</h2>
+    <div class="oq-row">
+      <select
+        class="oq-select"
+        style="width: auto"
+        [ngModel]="deliveryCanal()"
+        (ngModelChange)="deliveryCanal.set($event); loadDeliveries()"
+      >
+        <option value="">Todos canales</option>
+        <option value="sms">SMS</option>
+        <option value="email">Email</option>
+      </select>
+      <select
+        class="oq-select"
+        style="width: auto"
+        [ngModel]="deliveryEstado()"
+        (ngModelChange)="deliveryEstado.set($event); loadDeliveries()"
+      >
+        <option value="">Todos estados</option>
+        <option value="encolado">encolado</option>
+        <option value="entregado">entregado</option>
+        <option value="rebotado">rebotado</option>
+        <option value="indeterminado">indeterminado</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="oq-table-wrap">
+    <table class="oq-table">
+      <thead>
+        <tr>
+          <th>Guest ID</th>
+          <th>Canal</th>
+          <th>Estado</th>
+          <th>Intentos</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (del of deliveries(); track $index) {
+          <tr>
+            <td class="mono">{{ del.guest_id }}</td>
+            <td class="mono">{{ del.canal }}</td>
+            <td>
+              <span
+                class="oq-badge"
+                [class.oq-badge-success]="del.estado === 'entregado'"
+                [class.oq-badge-warning]="del.estado === 'encolado' || del.estado === 'indeterminado'"
+                [class.oq-badge-danger]="del.estado === 'rebotado'"
+              >
+                {{ del.estado }}
+              </span>
+            </td>
+            <td class="mono">{{ del.intentos }}/3</td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="4" class="oq-hint">Sin entregas registradas.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</section>

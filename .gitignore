@@ -1,0 +1,29 @@
+# Terraform
+.terraform/
+terraform/build/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Build / Frontend / Lambda packages
+*.zip
+front/dist/
+front/.angular/
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Node / Python / OS
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

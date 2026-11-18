@@ -1,0 +1,24 @@
+.req-emergency {
+  border-color: var(--oq-danger);
+}
+
+.req-meta {
+  margin: 0.9rem 0;
+}
+
+.req-actions {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--oq-border);
+}
+
+.req-winner-box {
+  margin-top: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: var(--oq-radius-sm);
+}
+
+.req-pay-box {
+  margin-top: 0.75rem;
+  margin-bottom: 0;
+}

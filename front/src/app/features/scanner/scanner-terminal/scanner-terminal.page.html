@@ -1,0 +1,433 @@
+<header class="oq-topbar">
+  <div class="oq-topbar-inner">
+    <a class="oq-brand" routerLink="/scan/terminal">
+      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
+      <span>{{ session()?.event_nombre || session()?.event_id || 'Terminal Check-in' }}</span>
+    </a>
+
+    <div class="oq-row">
+      <span
+        class="oq-badge"
+        [class.oq-badge-success]="connectivity.isOnline()"
+        [class.oq-badge-danger]="!connectivity.isOnline()"
+      >
+        {{
+          connectivity.isOnline()
+            ? 'Online' + (connectivity.latencyMs() !== null ? ' · ' + connectivity.latencyMs() + ' ms' : '')
+            : 'Sin red (Offline)'
+        }}
+      </span>
+
+      <span class="oq-badge" [class.oq-badge-warning]="queueDepth() > 0" [class.oq-badge-neutral]="queueDepth() === 0">
+        Cola: {{ queueDepth() }}
+      </span>
+
+      <button type="button" class="oq-btn oq-btn-sm oq-btn-secondary" (click)="switchSession()">
+        Cambiar sesión
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="oq-container">
+  <section class="oq-card scan-status-bar">
+    <div class="oq-grid-stats">
+      <div class="oq-stat">
+        <span class="oq-stat-label">Roster local</span>
+        <span class="oq-stat-value">{{ rosterCount() }}</span>
+      </div>
+      <div class="oq-stat">
+        <span class="oq-stat-label">Cola offline</span>
+        <span class="oq-stat-value">{{ queueDepth() }}</span>
+      </div>
+      <div class="oq-stat">
+        <span class="oq-stat-label">Seq local / ack</span>
+        <span class="oq-stat-value mono">{{ lastSequence() }} / {{ lastAckedSequence() }}</span>
+      </div>
+      <div class="oq-stat">
+        <span class="oq-stat-label">Revocaciones (TTL 2 h)</span>
+        <span class="oq-stat-value">
+          @if (revocationsExpired()) {
+            <span class="oq-badge oq-badge-warning">Vencida (&gt; 2 h)</span>
+          } @else {
+            <span class="oq-badge oq-badge-success">Vigente</span>
+          }
+        </span>
+      </div>
+    </div>
+
+    <div class="oq-row scan-sync-actions">
+      <button
+        type="button"
+        class="oq-btn oq-btn-primary"
+        [disabled]="sync.syncing() || queueDepth() === 0"
+        (click)="syncNow()"
+      >
+        {{ sync.syncing() ? 'Sincronizando...' : 'Sincronizar cola (' + queueDepth() + ')' }}
+      </button>
+      <button type="button" class="oq-btn oq-btn-secondary" (click)="refreshRosterNow()">
+        Refrescar roster y revocaciones
+      </button>
+      <button type="button" class="oq-btn oq-btn-secondary" (click)="connectivity.checkHealth()">
+        Probar /health
+      </button>
+    </div>
+  </section>
+
+  @if (bannerError()) {
+    <div class="oq-alert oq-alert-error">{{ bannerError() }}</div>
+  }
+  @if (bannerInfo()) {
+    <div class="oq-alert oq-alert-success">{{ bannerInfo() }}</div>
+  }
+
+  @if (lastVerdict(); as v) {
+    <section
+      class="oq-card scan-verdict"
+      [class.verdict-success]="v.tone === 'success'"
+      [class.verdict-warning]="v.tone === 'warning'"
+      [class.verdict-danger]="v.tone === 'danger'"
+    >
+      <div class="oq-between">
+        <span class="oq-badge oq-badge-neutral mono">{{ v.verdict }}</span>
+        <span class="mono oq-hint">
+          {{ v.durationMs }} ms @if (v.sequence) { · seq #{{ v.sequence }} }
+        </span>
+      </div>
+      <h2 class="verdict-title">{{ v.title }}</h2>
+      @if (v.guestName) {
+        <p class="verdict-guest">
+          {{ v.guestName }}
+          @if (v.codigoCorto) { · código <strong class="mono">{{ v.codigoCorto }}</strong> }
+          @if (v.mesa) { · Mesa <strong>{{ v.mesa }}</strong> }
+        </p>
+      }
+      <p>{{ v.subtitle }}</p>
+
+      @if (v.pendingConditionalEvaluation) {
+        <button type="button" class="oq-btn oq-btn-accent" (click)="confirmConditionalNoEnRoster()">
+          Admitir condicionalmente y marcar para revisión
+        </button>
+      }
+    </section>
+  }
+
+  <div class="oq-tabs" role="tablist">
+    <button
+      type="button"
+      class="oq-tab"
+      [class.active]="activeTab() === 'escaner'"
+      (click)="activeTab.set('escaner')"
+    >
+      Escáner QR (Cámara / Token)
+    </button>
+    <button
+      type="button"
+      class="oq-tab"
+      [class.active]="activeTab() === 'manual'"
+      (click)="activeTab.set('manual')"
+    >
+      Fallback manual (Nombre / 6 dígitos)
+    </button>
+    <button
+      type="button"
+      class="oq-tab"
+      [class.active]="activeTab() === 'actividad'"
+      (click)="activeTab.set('actividad'); loadServerCheckins()"
+    >
+      Cola local y Anulación (RF-14)
+    </button>
+  </div>
+
+  @if (activeTab() === 'escaner') {
+    <section class="oq-grid-2">
+      <div class="oq-card">
+        <div class="oq-card-header">
+          <h2>Cámara del dispositivo</h2>
+          @if (cameraSupported()) {
+            <span class="oq-badge oq-badge-success">BarcodeDetector nativo</span>
+          } @else {
+            <span class="oq-badge oq-badge-warning">Sin BarcodeDetector</span>
+          }
+        </div>
+
+        @if (cameraError()) {
+          <div class="oq-alert oq-alert-warning">{{ cameraError() }}</div>
+        }
+
+        <div class="scan-camera-box">
+          @if (cameraActive()) {
+            <video #videoPreview class="scan-video" playsinline muted></video>
+          } @else {
+            <div class="scan-camera-placeholder">
+              <p>Apunta la cámara al QR del invitado para verificar firma ES256 sin red.</p>
+            </div>
+          }
+        </div>
+
+        <div class="oq-row scan-cam-btns">
+          @if (!cameraActive()) {
+            <button type="button" class="oq-btn oq-btn-primary" (click)="startCamera()">
+              Encender cámara
+            </button>
+          } @else {
+            <button type="button" class="oq-btn oq-btn-danger" (click)="stopCamera()">
+              Detener cámara
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="oq-card">
+        <h2>Entrada directa de token QR</h2>
+        <p class="oq-hint">
+          Útil para lectores USB/Bluetooth o pruebas sin cámara. Ejecuta la verificación ECDSA P-256
+          y guarda en IndexedDB antes de emitir veredicto.
+        </p>
+        <form class="oq-form-grid" (ngSubmit)="submitQrInput()">
+          <div class="oq-field">
+            <label class="oq-label" for="qrTokenInput">Token JWS del QR</label>
+            <textarea
+              id="qrTokenInput"
+              name="qrTokenInput"
+              class="oq-textarea mono"
+              placeholder="eyJhbGciOiJFUzI1NiIs..."
+              [ngModel]="qrTokenInput()"
+              (ngModelChange)="qrTokenInput.set($event)"
+            ></textarea>
+          </div>
+          <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg">
+            Verificar QR offline
+          </button>
+        </form>
+      </div>
+    </section>
+  }
+
+  @if (activeTab() === 'manual') {
+    <section class="oq-card">
+      <div class="oq-card-header">
+        <div>
+          <h2>Fallback manual sin cámara (RF-13)</h2>
+          <p class="oq-hint">
+            Busca localmente en IndexedDB por nombre o código corto de 6 dígitos.
+          </p>
+        </div>
+        @if (connectivity.isOnline()) {
+          <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="searchOnServer()">
+            Consultar también en servidor
+          </button>
+        }
+      </div>
+
+      <div class="oq-field scan-manual-search">
+        <label class="oq-label" for="manualQuery">Nombre o código corto de 6 dígitos</label>
+        <input
+          id="manualQuery"
+          name="manualQuery"
+          class="oq-input"
+          type="text"
+          placeholder="Ej. Ana Rojas o 483920"
+          [ngModel]="manualQuery()"
+          (ngModelChange)="runManualSearch($event)"
+        />
+      </div>
+
+      <div class="oq-table-wrap">
+        <table class="oq-table">
+          <thead>
+            <tr>
+              <th>Invitado</th>
+              <th>Código corto</th>
+              <th>Zona / Mesa</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (guest of manualResults(); track guest.invitation_id) {
+              <tr>
+                <td>
+                  <strong>{{ guest.nombre }}</strong>
+                  <div class="oq-hint mono">{{ guest.invitation_id }}</div>
+                </td>
+                <td class="mono"><strong>{{ guest.codigo_corto }}</strong></td>
+                <td>{{ guest.zona || '—' }} / Mesa {{ guest.mesa ?? '—' }}</td>
+                <td>
+                  <button
+                    type="button"
+                    class="oq-btn oq-btn-accent oq-btn-sm"
+                    (click)="admitManualGuest(guest)"
+                  >
+                    Admitir manual
+                  </button>
+                </td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="4" class="oq-hint">Sin coincidencias en el roster local.</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      @if (serverSearchResults().length > 0) {
+        <h3 class="scan-sub">Resultados adicionales en servidor</h3>
+        <div class="oq-table-wrap">
+          <table class="oq-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Código corto</th>
+                <th>Estado</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (item of serverSearchResults(); track item.invitation_id) {
+                <tr>
+                  <td>{{ item.nombre }}</td>
+                  <td class="mono">{{ item.codigo_corto }}</td>
+                  <td>{{ item.estado || 'vigente' }}</td>
+                  <td>
+                    <button
+                      type="button"
+                      class="oq-btn oq-btn-primary oq-btn-sm"
+                      (click)="admitManualGuest(item)"
+                    >
+                      Admitir
+                    </button>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+    </section>
+  }
+
+  @if (activeTab() === 'actividad') {
+    <section class="oq-grid-2">
+      <div class="oq-card">
+        <h2>Cola durable local (IndexedDB)</h2>
+        <p class="oq-hint">Secuencia monotónica del dispositivo: {{ session()?.device_id }}</p>
+        <div class="oq-table-wrap">
+          <table class="oq-table">
+            <thead>
+              <tr>
+                <th>Seq</th>
+                <th>Invitación</th>
+                <th>Veredicto local</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (ev of recentLocalQueue(); track ev.sequence) {
+                <tr>
+                  <td class="mono">#{{ ev.sequence }}</td>
+                  <td>
+                    <div>{{ ev.guest_nombre || ev.invitation_id }}</div>
+                    <div class="oq-hint mono">{{ ev.modo }} · {{ ev.scanned_at }}</div>
+                  </td>
+                  <td>
+                    <span class="oq-badge oq-badge-info mono">{{ ev.verdict_local }}</span>
+                    @if (ev.server_result?.resolucion_al_sincronizar) {
+                      <div class="oq-hint mono">
+                        {{ ev.server_result?.resolucion_al_sincronizar }}
+                      </div>
+                    }
+                  </td>
+                  <td>
+                    @if (ev.synced === 1) {
+                      <span class="oq-badge oq-badge-success">Sincronizado</span>
+                    } @else {
+                      <span class="oq-badge oq-badge-warning">En cola</span>
+                    }
+                  </td>
+                </tr>
+              } @empty {
+                <tr>
+                  <td colspan="4" class="oq-hint">Aún no hay escaneos registrados en este dispositivo.</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="oq-card">
+        <div class="oq-card-header">
+          <h2>Check-ins en servidor y anulación (RF-14)</h2>
+          <button
+            type="button"
+            class="oq-btn oq-btn-secondary oq-btn-sm"
+            [disabled]="!connectivity.isOnline()"
+            (click)="loadServerCheckins()"
+          >
+            Recargar
+          </button>
+        </div>
+
+        <div class="oq-table-wrap">
+          <table class="oq-table">
+            <thead>
+              <tr>
+                <th>Check-in</th>
+                <th>Kind / Verdict</th>
+                <th>Anulación</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (chk of serverCheckins(); track chk.checkin_id) {
+                <tr>
+                  <td>
+                    <div class="mono">{{ chk.checkin_id }}</div>
+                    <div class="oq-hint mono">{{ chk.invitation_id }}</div>
+                    @if (chk.tardio) {
+                      <span class="oq-badge oq-badge-warning">tardio</span>
+                    }
+                  </td>
+                  <td>
+                    <span class="oq-badge oq-badge-neutral mono">{{ chk.kind }}</span>
+                    <div class="mono">{{ chk.verdict }}</div>
+                  </td>
+                  <td>
+                    @if (chk.kind === 'admitido' && canAnnul()) {
+                      <div class="oq-row">
+                        <input
+                          class="oq-input"
+                          type="text"
+                          placeholder="Motivo obligatorio"
+                          [ngModel]="annulMotivoMap()[chk.checkin_id] || ''"
+                          (ngModelChange)="setAnnulMotivo(chk.checkin_id, $event)"
+                        />
+                        <button
+                          type="button"
+                          class="oq-btn oq-btn-danger oq-btn-sm"
+                          (click)="annulCheckin(chk.checkin_id)"
+                        >
+                          Anular
+                        </button>
+                      </div>
+                    } @else if (chk.kind === 'anulacion') {
+                      <span class="oq-hint mono">Anula a {{ chk.annuls_checkin_id }}</span>
+                    } @else {
+                      <span class="oq-hint">—</span>
+                    }
+                  </td>
+                </tr>
+              } @empty {
+                <tr>
+                  <td colspan="3" class="oq-hint">
+                    {{ connectivity.isOnline() ? 'Sin check-ins cargados aún.' : 'Disponible al recuperar conectividad.' }}
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  }
+</main>

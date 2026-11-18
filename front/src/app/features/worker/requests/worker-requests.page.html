@@ -1,0 +1,179 @@
+<div class="oq-page-header">
+  <div>
+    <h1>Bandeja de solicitudes y reservas (RF-17)</h1>
+    <p class="oq-page-subtitle">
+      El precio mostrado (<code>costo_congelado</code>) es inmutable desde que se creó la solicitud
+      (TR-20). Las solicitudes pendientes no bloquean tus plazas hasta que aceptas una.
+    </p>
+  </div>
+
+  <div class="oq-row">
+    <select
+      class="oq-select"
+      style="width: auto"
+      [ngModel]="filterEstado()"
+      (ngModelChange)="filterEstado.set($event); loadRequests()"
+    >
+      <option value="">Todos los estados</option>
+      <option value="solicitada">solicitada</option>
+      <option value="aceptada">aceptada</option>
+      <option value="rechazada">rechazada</option>
+      <option value="cancelada">cancelada</option>
+      <option value="cancelada_pagada">cancelada_pagada</option>
+      <option value="expirada">expirada</option>
+      <option value="completada">completada</option>
+    </select>
+    <button type="button" class="oq-btn oq-btn-secondary" (click)="loadRequests()">
+      Actualizar
+    </button>
+  </div>
+</div>
+
+@if (error()) {
+  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+}
+@if (success()) {
+  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+}
+
+@if (overlapConflict(); as conf) {
+  <section class="oq-alert oq-alert-warning" role="alert">
+    <strong>Conflicto de horario / plazas (409 RESERVATION_OVERLAP)</strong>
+    <p>{{ conf.message }} — La solicitud permanece en estado <code>solicitada</code>.</p>
+    @if (conf.ganadora; as g) {
+      <div class="mono req-winner-box">
+        Reserva ganadora: <strong>{{ g.reservation_id }}</strong> · Evento: {{ g.event_id }}
+        @if (g.plazas) { · Plazas ocupadas: {{ g.plazas }} }
+        @if (g.ventana) { · Ventana: {{ g.ventana.inicio }} → {{ g.ventana.fin }} }
+      </div>
+    }
+  </section>
+}
+
+<div class="oq-grid">
+  @for (item of requests(); track getReqId(item)) {
+    @let reqId = getReqId(item);
+    <article class="oq-card" [class.req-emergency]="item.modo_emergencia">
+      <div class="oq-between">
+        <div class="oq-row">
+          <strong class="mono">{{ reqId }}</strong>
+          <span
+            class="oq-badge"
+            [class.oq-badge-info]="item.estado === 'solicitada'"
+            [class.oq-badge-success]="item.estado === 'aceptada' || item.estado === 'completada'"
+            [class.oq-badge-danger]="item.estado === 'rechazada' || item.estado === 'cancelada' || item.estado === 'cancelada_pagada'"
+            [class.oq-badge-warning]="item.estado === 'expirada'"
+          >
+            {{ item.estado }}
+          </span>
+          @if (item.modo_emergencia) {
+            <span class="oq-badge oq-badge-danger">Modo emergencia (SLA 15 min)</span>
+          }
+        </div>
+
+        @if (item.estado === 'solicitada' && item.expira_en) {
+          <span class="oq-badge oq-badge-warning mono">
+            Expira en: {{ countdownLabel(item.expira_en) }}
+          </span>
+        }
+      </div>
+
+      <div class="oq-grid-3 req-meta">
+        <div>
+          <span class="oq-stat-label">Evento y zona</span>
+          <strong>{{ item.evento?.nombre || item.event_id || 'Evento' }}</strong>
+          <div class="oq-hint">Zona: {{ item.zona || '—' }}</div>
+        </div>
+        <div>
+          <span class="oq-stat-label">Rol, plazas y llegada</span>
+          <strong>{{ item.rol }} · {{ item.plazas }} plaza(s)</strong>
+          <div class="oq-hint mono">Llegada: {{ item.hora_llegada }}</div>
+          @if (item.ventana) {
+            <div class="oq-hint mono">{{ item.ventana.inicio }} → {{ item.ventana.fin }}</div>
+          }
+        </div>
+        <div>
+          <span class="oq-stat-label">Costo congelado (TR-20)</span>
+          <strong class="mono">
+            {{ item.costo_congelado.monto }} {{ item.costo_congelado.moneda }} /
+            {{ item.costo_congelado.unidad }}
+          </strong>
+        </div>
+      </div>
+
+      @if (item.estado === 'solicitada') {
+        <div class="oq-row req-actions">
+          @if (workerTipo() === 'empresa' && item.plazas > 1) {
+            <label class="oq-row">
+              <span class="oq-hint">Plazas a aceptar:</span>
+              <input
+                class="oq-input"
+                style="width: 82px"
+                type="number"
+                min="1"
+                [max]="item.plazas"
+                [ngModel]="partialPlazas()[reqId] ?? item.plazas"
+                (ngModelChange)="setPartialPlazas(reqId, $event)"
+              />
+            </label>
+          }
+
+          <button type="button" class="oq-btn oq-btn-accent" (click)="acceptRequest(item)">
+            Aceptar solicitud
+          </button>
+
+          <input
+            class="oq-input"
+            style="max-width: 240px"
+            placeholder="Motivo (opcional rechazo)"
+            [ngModel]="actionMotivo()[reqId] || ''"
+            (ngModelChange)="setMotivo(reqId, $event)"
+          />
+          <button type="button" class="oq-btn oq-btn-secondary" (click)="rejectRequest(item)">
+            Rechazar
+          </button>
+        </div>
+      }
+
+      @if (item.estado === 'aceptada' || item.estado === 'completada' || item.estado === 'cancelada_pagada') {
+        <div class="oq-row req-actions">
+          @if (item.estado === 'aceptada') {
+            <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="registerArrival(item)">
+              Registrar llegada
+            </button>
+
+            <input
+              class="oq-input"
+              style="max-width: 240px"
+              placeholder="Motivo si cancelas (alerta emergencia)"
+              [ngModel]="actionMotivo()[reqId] || ''"
+              (ngModelChange)="setMotivo(reqId, $event)"
+            />
+            <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="cancelReservation(item)">
+              Cancelar reserva
+            </button>
+          }
+
+          <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="checkPaymentStatus(item)">
+            Consultar estado de pago (RF-11)
+          </button>
+        </div>
+
+        @if (paymentByRes()[reqId]; as pay) {
+          <div class="oq-alert oq-alert-info req-pay-box">
+            Pago <strong class="mono">{{ pay.payment_id }}</strong>:
+            <span class="oq-badge oq-badge-neutral mono">{{ pay.estado }}</span>
+            · {{ pay.monto }} {{ pay.moneda || item.costo_congelado.moneda }}
+            @if (pay.reverso_de) { · Reverso de {{ pay.reverso_de }} }
+          </div>
+        }
+      }
+    </article>
+  } @empty {
+    <section class="oq-card">
+      <p class="oq-hint">
+        {{ loading() ? 'Cargando solicitudes...' : 'No hay solicitudes en esta bandeja todavía.' }}
+      </p>
+    </section>
+  }
+</div>
