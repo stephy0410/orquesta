@@ -1,35 +1,59 @@
+/*
+ * Orquesta · identidad visual
+ * Paleta olivo / papel crema inspirada en papelería de bodas; tipografía editorial
+ * (Bodoni Moda para títulos, Figtree para interfaz, Pinyon Script solo como acento de marca). Todos los pares de texto
+ * cumplen WCAG 2.2 AA (≥ 4.5:1); el salvia solo se usa como decoración.
+ */
 :root {
-  --oq-bg: #f4f6fb;
-  --oq-surface: #ffffff;
-  --oq-surface-muted: #f8fafc;
-  --oq-ink: #0f172a;
-  --oq-ink-muted: #475569;
-  --oq-ink-subtle: #64748b;
-  --oq-border: #e2e8f0;
-  --oq-border-strong: #cbd5e1;
+  /* Papel y tinta */
+  --oq-bg: #f5f2e8;
+  --oq-surface: #fbfaf4;
+  --oq-surface-muted: #f0ede1;
+  --oq-ink: #2b2e1b;
+  --oq-ink-muted: #5f614f;
+  --oq-ink-subtle: #6b6d5a;
+  --oq-border: #dfdbc9;
+  --oq-border-strong: #7e826a; /* ≥ 3:1 contra el papel: bordes de inputs */
 
-  --oq-primary: #1d4ed8;
-  --oq-primary-hover: #1e40af;
-  --oq-primary-soft: #dbeafe;
-  --oq-accent: #0d9488;
-  --oq-accent-soft: #ccfbf1;
+  /* Olivo, salvia y corteza */
+  --oq-olive: #56602a;
+  --oq-olive-deep: #3f4720;
+  --oq-sage: #a9b28e;
+  --oq-sage-soft: #e6e8d6;
+  --oq-bark: #7b5236;
+  --oq-bark-soft: #f3e7d9;
 
-  --oq-success: #15803d;
-  --oq-success-bg: #dcfce7;
-  --oq-warning: #b45309;
-  --oq-warning-bg: #fef3c7;
-  --oq-danger: #b91c1c;
-  --oq-danger-bg: #fee2e2;
-  --oq-neutral: #334155;
-  --oq-neutral-bg: #e2e8f0;
+  /* Alias semánticos que usan las páginas existentes */
+  --oq-primary: var(--oq-olive);
+  --oq-primary-hover: var(--oq-olive-deep);
+  --oq-primary-soft: var(--oq-sage-soft);
+  --oq-accent: var(--oq-olive-deep);
+  --oq-accent-soft: var(--oq-sage-soft);
 
-  --oq-radius-sm: 6px;
-  --oq-radius-md: 10px;
-  --oq-radius-lg: 16px;
-  --oq-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --oq-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
-  --oq-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --oq-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --oq-success: #3f4720;
+  --oq-success-bg: #e6e8d6;
+  --oq-warning: #7b5236;
+  --oq-warning-bg: #f3e7d9;
+  --oq-danger: #8e3a2a;
+  --oq-danger-bg: #f6e1da;
+  --oq-neutral: #4c4e3d;
+  --oq-neutral-bg: #e9e6d9;
+
+  --oq-radius-sm: 2px;
+  --oq-radius-md: 3px;
+  --oq-radius-lg: 4px;
+  --oq-radius-pill: 999px;
+  --oq-radius-arch: 999px 999px 6px 6px;
+  --oq-shadow-sm: 0 1px 0 rgba(43, 46, 27, 0.04);
+  --oq-shadow-md: 0 18px 40px -24px rgba(43, 46, 27, 0.35);
+
+  --oq-font-display: 'Bodoni Moda Variable', 'Bodoni Moda', Didot, 'Times New Roman', serif;
+  --oq-font-script: 'Pinyon Script', 'Snell Roundhand', cursive;
+  --oq-font-sans: 'Figtree Variable', 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --oq-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --oq-focus: 0 0 0 2px var(--oq-bg), 0 0 0 4px var(--oq-olive);
+  color-scheme: light;
 }
 
 *,
@@ -47,8 +71,9 @@ body {
   color: var(--oq-ink);
   font-family: var(--oq-font-sans);
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
@@ -56,9 +81,59 @@ h2,
 h3,
 h4 {
   margin: 0 0 0.5rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-family: var(--oq-font-display);
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: -0.005em;
+  line-height: 1.12;
   color: var(--oq-ink);
+}
+
+h1 {
+  font-size: clamp(2rem, 1.5rem + 1.9vw, 3rem);
+  line-height: 1.02;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+
+h2 {
+  font-size: 1.55rem;
+}
+
+h3 {
+  font-size: 1.22rem;
+}
+
+h4 {
+  font-size: 1.05rem;
+}
+
+/* Acento caligráfico de marca: solo para firmas cortas, nunca para texto que haya que leer */
+.oq-script {
+  font-family: var(--oq-font-script);
+  font-weight: 400;
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+/* Enlace editorial subrayado ("Ver más") */
+.oq-link-cta {
+  display: inline-block;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid currentColor;
+  color: var(--oq-ink);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.oq-link-cta:hover {
+  color: var(--oq-olive);
 }
 
 p {
@@ -66,185 +141,262 @@ p {
 }
 
 a {
-  color: var(--oq-primary);
-  text-decoration: none;
+  color: var(--oq-olive);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--oq-olive) 35%, transparent);
+  text-underline-offset: 0.2em;
 }
 
 a:hover {
-  text-decoration: underline;
+  text-decoration-color: currentColor;
 }
 
 code,
 .mono {
   font-family: var(--oq-font-mono);
-  font-size: 0.9em;
+  font-size: 0.86em;
+}
+
+::selection {
+  background: var(--oq-sage-soft);
+}
+
+/* Foco visible y consistente (WCAG 2.4.7 / 2.4.11) */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--oq-focus);
+  border-radius: var(--oq-radius-sm);
+}
+
+.oq-skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -100px;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  background: var(--oq-olive-deep);
+  color: var(--oq-bg);
+  border-radius: var(--oq-radius-pill);
+  text-decoration: none;
+}
+
+.oq-skip-link:focus {
+  top: 0.75rem;
+}
+
+.oq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Layout containers */
 .oq-container {
   width: 100%;
-  max-width: 1240px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 1.25rem;
+  padding: 2rem 1.5rem 4rem;
 }
 
 .oq-container-narrow {
   width: 100%;
   max-width: 560px;
   margin: 0 auto;
-  padding: 1.25rem;
+  padding: 2rem 1.25rem;
 }
 
 .oq-page-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 1.25rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--oq-border);
+}
+
+.oq-page-header h1 {
+  margin-bottom: 0.35rem;
 }
 
 .oq-page-subtitle {
   color: var(--oq-ink-muted);
-  font-size: 0.95rem;
+  font-size: 0.98rem;
+  max-width: 62ch;
   margin: 0;
 }
 
 .oq-grid {
   display: grid;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 .oq-grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.25rem;
 }
 
 .oq-grid-3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 .oq-grid-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--oq-border);
+  border-bottom: 1px solid var(--oq-border);
 }
 
-/* Cards */
+/* Cards: papel con borde fino, sin sombras de "SaaS" */
 .oq-card {
   background: var(--oq-surface);
   border: 1px solid var(--oq-border);
   border-radius: var(--oq-radius-md);
-  padding: 1.25rem;
-  box-shadow: var(--oq-shadow-sm);
+  padding: 1.5rem;
 }
 
 .oq-card-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
 
+/* Contadores: numerales serif grandes, separados por filetes */
 .oq-stat {
-  background: var(--oq-surface-muted);
+  padding: 0.9rem 1rem;
+  border-right: 1px solid var(--oq-border);
+}
+
+.oq-grid-stats .oq-stat:last-child {
+  border-right: none;
+}
+
+.oq-grid > .oq-stat,
+.oq-grid-2 > .oq-stat,
+.oq-grid-3 > .oq-stat {
   border: 1px solid var(--oq-border);
   border-radius: var(--oq-radius-sm);
-  padding: 0.75rem;
+  background: var(--oq-bg);
 }
 
 .oq-stat-label {
   display: block;
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--oq-ink-subtle);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--oq-ink-muted);
 }
 
 .oq-stat-value {
   display: block;
-  font-size: 1.4rem;
-  font-weight: 700;
+  font-family: var(--oq-font-display);
+  font-size: 2rem;
+  font-weight: 400;
+  line-height: 1.1;
+  font-variant-numeric: lining-nums tabular-nums;
   color: var(--oq-ink);
-  margin-top: 0.2rem;
+  margin-top: 0.15rem;
 }
 
-/* Buttons */
+/* Buttons: píldoras como las de la invitación */
 .oq-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.45rem;
-  min-height: 40px;
-  padding: 0.5rem 1rem;
+  min-height: 42px;
+  padding: 0.55rem 1.3rem;
   border-radius: var(--oq-radius-sm);
   border: 1px solid transparent;
   font-family: inherit;
-  font-size: 0.9rem;
+  font-size: 0.74rem;
   font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  text-decoration: none;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.oq-btn:hover {
   text-decoration: none;
 }
 
 .oq-btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .oq-btn-primary {
-  background: var(--oq-primary);
-  color: #ffffff;
+  background: var(--oq-olive);
+  color: var(--oq-bg);
 }
 .oq-btn-primary:hover:not(:disabled) {
-  background: var(--oq-primary-hover);
-  text-decoration: none;
+  background: var(--oq-olive-deep);
 }
 
 .oq-btn-secondary {
-  background: var(--oq-surface);
-  color: var(--oq-ink);
+  background: transparent;
+  color: var(--oq-olive-deep);
   border-color: var(--oq-border-strong);
 }
 .oq-btn-secondary:hover:not(:disabled) {
-  background: var(--oq-surface-muted);
-  text-decoration: none;
+  background: var(--oq-sage-soft);
+  border-color: var(--oq-olive);
 }
 
 .oq-btn-accent {
-  background: var(--oq-accent);
-  color: #ffffff;
+  background: var(--oq-sage-soft);
+  color: var(--oq-olive-deep);
+  border-color: var(--oq-sage);
 }
 .oq-btn-accent:hover:not(:disabled) {
-  background: #0f766e;
-  text-decoration: none;
+  background: #d9dcc4;
 }
 
 .oq-btn-danger {
   background: var(--oq-danger);
-  color: #ffffff;
+  color: #fdf6f3;
 }
 .oq-btn-danger:hover:not(:disabled) {
-  background: #991b1b;
-  text-decoration: none;
+  background: #74301f;
 }
 
 .oq-btn-sm {
-  min-height: 32px;
-  padding: 0.3rem 0.7rem;
-  font-size: 0.82rem;
+  min-height: 34px;
+  padding: 0.3rem 0.9rem;
+  font-size: 0.68rem;
 }
 
 .oq-btn-lg {
-  min-height: 48px;
-  padding: 0.75rem 1.25rem;
-  font-size: 1rem;
+  min-height: 52px;
+  padding: 0.8rem 1.9rem;
+  font-size: 0.78rem;
 }
 
 /* Badges */
@@ -252,32 +404,37 @@ code,
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.2rem 0.6rem;
-  border-radius: 999px;
+  padding: 0.18rem 0.65rem;
+  border-radius: var(--oq-radius-pill);
   font-size: 0.78rem;
-  font-weight: 600;
-  line-height: 1.3;
+  font-weight: 550;
+  line-height: 1.35;
   white-space: nowrap;
+  border: 1px solid transparent;
 }
 
 .oq-badge-success {
   color: var(--oq-success);
   background: var(--oq-success-bg);
+  border-color: #cfd3b6;
 }
 
 .oq-badge-warning {
   color: var(--oq-warning);
   background: var(--oq-warning-bg);
+  border-color: #e4cfb6;
 }
 
 .oq-badge-danger {
   color: var(--oq-danger);
   background: var(--oq-danger-bg);
+  border-color: #ebc4b8;
 }
 
 .oq-badge-info {
-  color: var(--oq-primary);
-  background: var(--oq-primary-soft);
+  color: var(--oq-olive-deep);
+  background: transparent;
+  border-color: var(--oq-sage);
 }
 
 .oq-badge-neutral {
@@ -285,10 +442,10 @@ code,
   background: var(--oq-neutral-bg);
 }
 
-/* Forms */
+/* Forms: campos subrayados, como las líneas de la tarjeta de respuesta */
 .oq-form-grid {
   display: grid;
-  gap: 1rem;
+  gap: 1.15rem;
 }
 
 .oq-field {
@@ -298,8 +455,8 @@ code,
 }
 
 .oq-label {
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.86rem;
+  font-weight: 550;
   color: var(--oq-ink);
 }
 
@@ -307,66 +464,88 @@ code,
 .oq-select,
 .oq-textarea {
   width: 100%;
-  min-height: 40px;
-  padding: 0.5rem 0.75rem;
+  min-height: 42px;
+  padding: 0.5rem 0.8rem;
   font-family: inherit;
-  font-size: 0.92rem;
+  font-size: 0.95rem;
   color: var(--oq-ink);
   background: var(--oq-surface);
   border: 1px solid var(--oq-border-strong);
   border-radius: var(--oq-radius-sm);
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.oq-input::placeholder,
+.oq-textarea::placeholder {
+  color: #8a8c78;
 }
 
 .oq-textarea {
-  min-height: 84px;
+  min-height: 90px;
   resize: vertical;
 }
 
-.oq-input:focus,
-.oq-select:focus,
-.oq-textarea:focus {
-  border-color: var(--oq-primary);
-  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.15);
+.oq-input:focus-visible,
+.oq-select:focus-visible,
+.oq-textarea:focus-visible {
+  border-color: var(--oq-olive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--oq-olive) 22%, transparent);
+  border-radius: var(--oq-radius-sm);
+}
+
+.oq-input[aria-invalid='true'] {
+  border-color: var(--oq-danger);
 }
 
 .oq-hint {
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   color: var(--oq-ink-subtle);
+}
+
+.oq-field-error {
+  font-size: 0.82rem;
+  color: var(--oq-danger);
 }
 
 /* Alerts */
 .oq-alert {
-  padding: 0.85rem 1rem;
+  padding: 0.85rem 1.1rem;
   border-radius: var(--oq-radius-sm);
   border: 1px solid transparent;
-  font-size: 0.9rem;
+  border-left-width: 3px;
+  font-size: 0.92rem;
   margin-bottom: 1rem;
 }
 
 .oq-alert-error {
   background: var(--oq-danger-bg);
   color: var(--oq-danger);
-  border-color: #fecaca;
+  border-color: #ebc4b8;
+  border-left-color: var(--oq-danger);
 }
 
 .oq-alert-warning {
   background: var(--oq-warning-bg);
   color: var(--oq-warning);
-  border-color: #fde68a;
+  border-color: #e4cfb6;
+  border-left-color: var(--oq-bark);
 }
 
 .oq-alert-success {
   background: var(--oq-success-bg);
   color: var(--oq-success);
-  border-color: #bbf7d0;
+  border-color: #cfd3b6;
+  border-left-color: var(--oq-olive);
 }
 
 .oq-alert-info {
-  background: var(--oq-primary-soft);
-  color: var(--oq-primary);
-  border-color: #bfdbfe;
+  background: var(--oq-surface);
+  color: var(--oq-olive-deep);
+  border-color: var(--oq-border);
+  border-left-color: var(--oq-sage);
 }
 
 /* Tables */
@@ -381,24 +560,22 @@ code,
 .oq-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.88rem;
+  font-size: 0.9rem;
   text-align: left;
 }
 
 .oq-table th {
   background: var(--oq-surface-muted);
   color: var(--oq-ink-muted);
-  font-weight: 600;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.65rem 0.85rem;
+  font-weight: 550;
+  font-size: 0.8rem;
+  padding: 0.65rem 0.9rem;
   border-bottom: 1px solid var(--oq-border);
   white-space: nowrap;
 }
 
 .oq-table td {
-  padding: 0.7rem 0.85rem;
+  padding: 0.75rem 0.9rem;
   border-bottom: 1px solid var(--oq-border);
   vertical-align: middle;
 }
@@ -430,51 +607,82 @@ code,
 }
 
 .oq-chip-btn {
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  border-radius: var(--oq-radius-sm);
   border: 1px solid var(--oq-border-strong);
-  background: var(--oq-surface);
+  background: transparent;
   color: var(--oq-ink-muted);
-  font-size: 0.82rem;
-  font-weight: 600;
+  font-family: inherit;
+  font-size: 0.84rem;
+  font-weight: 550;
   cursor: pointer;
 }
 
 .oq-chip-btn.active {
-  background: var(--oq-primary);
-  border-color: var(--oq-primary);
-  color: #ffffff;
+  background: var(--oq-olive);
+  border-color: var(--oq-olive);
+  color: var(--oq-bg);
 }
 
-/* Top nav shell */
+/* Top bar: logotipo centrado, navegación a los lados (como un membrete) */
 .oq-topbar {
   position: sticky;
   top: 0;
   z-index: 30;
-  background: #0f172a;
-  color: #f8fafc;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--oq-bg) 94%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--oq-ink);
+  border-bottom: 1px solid var(--oq-border);
 }
 
 .oq-topbar-inner {
-  max-width: 1240px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 0.7rem 1.25rem;
-  display: flex;
-  flex-wrap: wrap;
+  padding: 0.85rem 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.75rem 1.5rem;
+}
+
+.oq-topbar-inner > .oq-brand {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.oq-topbar-start {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+}
+
+.oq-topbar-end {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
 }
 
 .oq-brand {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.55rem;
-  color: #ffffff;
-  font-weight: 700;
-  font-size: 1.05rem;
+  color: var(--oq-ink);
+  font-family: var(--oq-font-display);
+  font-weight: 400;
+  font-size: 1.45rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
   text-decoration: none;
+}
+
+.oq-brand small {
+  font-family: var(--oq-font-script);
+  font-size: 1.05rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--oq-olive);
+  margin-top: -0.1rem;
 }
 
 .oq-brand:hover {
@@ -485,49 +693,150 @@ code,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.25rem 1.4rem;
 }
 
 .oq-nav-link {
-  color: #cbd5e1;
-  font-size: 0.88rem;
-  font-weight: 500;
-  padding: 0.4rem 0.75rem;
-  border-radius: var(--oq-radius-sm);
+  color: var(--oq-ink-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.35rem 0;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
 }
 
 .oq-nav-link:hover {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.1);
-  text-decoration: none;
+  color: var(--oq-ink);
+  border-bottom-color: var(--oq-sage);
 }
 
 .oq-nav-link.active {
-  color: #ffffff;
-  background: rgba(56, 189, 248, 0.22);
+  color: var(--oq-olive-deep);
+  border-bottom-color: var(--oq-olive);
 }
 
+.oq-topbar .oq-hint {
+  color: var(--oq-ink-muted);
+}
+
+@media (max-width: 900px) {
+  .oq-topbar-inner {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  .oq-topbar-inner > .oq-brand,
+  .oq-topbar-start,
+  .oq-topbar-end {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: center;
+  }
+}
+
+/* Tabs del evento */
 .oq-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.25rem 1.5rem;
   border-bottom: 1px solid var(--oq-border);
-  margin-bottom: 1rem;
-  padding-bottom: 0.5rem;
+  margin-bottom: 1.5rem;
 }
 
 .oq-tab {
-  padding: 0.45rem 0.85rem;
-  border-radius: var(--oq-radius-sm);
-  border: 1px solid transparent;
+  padding: 0.55rem 0;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--oq-ink-muted);
+  font-family: inherit;
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  text-decoration: none;
   cursor: pointer;
 }
 
+.oq-tab:hover {
+  color: var(--oq-ink);
+}
+
 .oq-tab.active {
-  background: var(--oq-primary-soft);
-  color: var(--oq-primary);
+  color: var(--oq-olive-deep);
+  border-bottom-color: var(--oq-olive);
+}
+
+/* Ornamento: ramita de olivo usada como separador */
+.oq-ornament {
+  display: block;
+  color: var(--oq-olive);
+}
+
+/* Auth: pantalla dividida (formulario + panel en arco) */
+.oq-auth {
+  min-height: calc(100vh - 64px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+}
+
+.oq-auth-form {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+}
+
+.oq-auth-form .oq-card {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.oq-auth-form .oq-page-subtitle {
+  margin-bottom: 1.75rem;
+}
+
+.oq-auth-art {
+  position: relative;
+  margin: 1.5rem;
+  border-radius: 999px 999px 0 0;
+  background: var(--oq-olive);
+  color: var(--oq-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5rem;
+  padding: 6rem 2.5rem 3rem;
+  overflow: hidden;
+  text-align: center;
+}
+
+.oq-auth-art app-tablescape-art {
+  width: 135%;
+  flex: none;
+}
+
+.oq-auth-art blockquote {
+  margin: 0;
+  font-family: var(--oq-font-script);
+  font-size: 2rem;
+  line-height: 1.15;
+  max-width: 18ch;
+  transform: rotate(-4deg);
+}
+
+@media (max-width: 860px) {
+  .oq-auth {
+    grid-template-columns: 1fr;
+  }
+  .oq-auth-art {
+    display: none;
+  }
 }

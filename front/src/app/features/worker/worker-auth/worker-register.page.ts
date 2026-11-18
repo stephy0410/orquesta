@@ -4,28 +4,30 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { WorkerTipo } from '../../../core/api/models';
+import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-worker-register-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Trabajador</span>
+          Orquesta <small>para proveedores</small>
         </a>
-        <div class="oq-nav-links">
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
           <a class="oq-nav-link" routerLink="/worker/login">Iniciar sesión</a>
-        </div>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Registro de Trabajador (RF-19)</h1>
+        <h1>Registra tu perfil de proveedor</h1>
         <p class="oq-page-subtitle">
           Crea tu cuenta como persona independiente o empresa con cuadrilla (1–50 plazas).
         </p>
@@ -105,6 +107,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           ¿Ya verificaste tu correo? <a routerLink="/worker/login">Ir al login</a>
         </p>
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-tablescape-art stroke="#f5f2e8" fill="#56602a" />
+        <blockquote>Que las planners te encuentren cuando más te necesitan.</blockquote>
+      </aside>
     </main>
   `,
 })

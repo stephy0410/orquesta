@@ -1,9 +1,9 @@
 <div class="oq-page-header">
   <div>
-    <h1>Acomodo de Mesas y Seating (RF-12, TR-10)</h1>
+    <h1 data-requisitos="RF-12, TR-10">Acomodo de mesas</h1>
     <p class="oq-page-subtitle">
-      Asignación transaccional con capacidad estricta. Cuando un RSVP pasa a <code>declina</code>,
-      el asiento se libera automáticamente y devuelve su capacidad.
+      Asigna a cada invitado una mesa con lugar disponible. Si alguien declina la invitación, su
+      lugar se libera solo.
     </p>
   </div>
   <a class="oq-btn oq-btn-secondary" [routerLink]="['/planner/events', eventId()]">

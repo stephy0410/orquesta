@@ -1,26 +1,25 @@
 <main class="inv-shell">
   <div class="oq-container-narrow">
     <header class="inv-brand">
-      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="32" height="32" />
-      <span>Orquesta · Invitación digital</span>
+      <span class="oq-brand">Orquesta</span>
     </header>
 
     @if (!token()) {
       <section class="oq-card inv-card">
         <h1>Abre tu invitación</h1>
         <p class="oq-page-subtitle">
-          El enlace de invitación usa un token privado en el fragmento de URL (<code>#t=...</code>)
-          para cuidar tu privacidad y no requerir cuenta.
+          Abre el enlace que te llegó por SMS o correo. Si solo tienes el código de tu invitación,
+          pégalo aquí.
         </p>
-        <form class="oq-form-grid" (ngSubmit)="openManualToken()">
+        <form class="oq-form-grid inv-manual" (ngSubmit)="openManualToken()">
           <div class="oq-field">
-            <label class="oq-label" for="rsvpTokenInput">Token de RSVP</label>
+            <label class="oq-label" for="rsvpTokenInput">Código de invitación</label>
             <input
               id="rsvpTokenInput"
               name="rsvpTokenInput"
               class="oq-input mono"
               type="text"
-              placeholder="rsvp_..."
+              autocomplete="off"
               [ngModel]="manualTokenInput()"
               (ngModelChange)="manualTokenInput.set($event)"
             />
@@ -54,7 +53,7 @@
     } @else if (state(); as inv) {
       <section class="oq-card inv-card">
         <div class="oq-between">
-          <span class="oq-badge oq-badge-info">Sin cuenta requerida</span>
+          <span class="oq-hint">No necesitas crear cuenta</span>
           @if (inv.respuesta === 'confirma') {
             <span class="oq-badge oq-badge-success">Asistencia confirmada</span>
           } @else if (inv.respuesta === 'declina') {
@@ -64,7 +63,9 @@
           }
         </div>
 
+        <p class="inv-kicker oq-script">Tienes una invitación a</p>
         <h1 class="inv-title">{{ inv.evento.nombre }}</h1>
+        <app-olive-sprig class="inv-sprig" [width]="150" />
 
         <dl class="inv-meta">
           <div>
