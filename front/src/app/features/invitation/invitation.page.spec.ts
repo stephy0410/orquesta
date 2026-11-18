@@ -100,4 +100,53 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     expect(comp.state()?.respuesta).toBe('declina');
     expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
   });
+
+  it('loads cacheable event summary without hitting origin GET /rsvp when eventId (e=...) is present in hash (NFR-02, AC-23)', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '#t=rsvp_tok_xyz&e=evt_01&c=483920&q=chk_qr_token_1',
+    );
+    const fixture = TestBed.createComponent(InvitationPage);
+    fixture.detectChanges();
+
+    httpMock.expectNone('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp');
+    const summaryReq = httpMock.expectOne(
+      'https://api.orquesta.test/v1/public/events/evt_01/summary',
+    );
+    expect(summaryReq.request.method).toBe('GET');
+    expect(summaryReq.request.withCredentials).toBe(false);
+    expect(summaryReq.request.headers.has('Authorization')).toBe(false);
+
+    summaryReq.flush({
+      event_id: 'evt_01',
+      nombre: 'Gala Cacheada',
+      fecha: '2026-06-15',
+      inicio: '19:00',
+      venue: { nombre: 'Salon Norte', zona: 'norte', direccion: 'Av. 1' },
+    });
+
+    await new Promise((r) => setTimeout(r, 25));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Gala Cacheada');
+    expect(el.textContent).toContain('483920');
+    expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
+
+    const postPromise = fixture.componentInstance.respond('confirma');
+    const postReq = httpMock.expectOne(
+      'https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp',
+    );
+    expect(postReq.request.method).toBe('POST');
+    postReq.flush({
+      respuesta: 'confirma',
+      respondido_en: '2026-06-01T12:00:00Z',
+      qr: { token: 'chk_qr_token_1', codigo_corto: '483920' },
+      evento: { nombre: 'Gala Cacheada', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Norte' },
+    });
+    await postPromise;
+    expect(fixture.componentInstance.state()?.respuesta).toBe('confirma');
+  });
 });

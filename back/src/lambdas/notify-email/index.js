@@ -39,9 +39,14 @@ export function createNotifyEmailHandler(ctx) {
 
         const eventName = dCtx.event?.nombre || "Evento Orquesta";
         const baseUrl = (process.env.PUBLIC_BASE_URL || "https://orquesta.app").replace(/\/+$/, "");
-        const rsvpUrl = dCtx.invitation?.rsvp_token_plano
-          ? `${baseUrl}/invitacion/#t=${dCtx.invitation.rsvp_token_plano}`
-          : "";
+        let rsvpUrl = "";
+        if (dCtx.invitation?.rsvp_token_plano) {
+          const params = new URLSearchParams({ t: dCtx.invitation.rsvp_token_plano });
+          if (dCtx.event?.id) params.set("e", dCtx.event.id);
+          if (dCtx.invitation?.codigo_corto) params.set("c", dCtx.invitation.codigo_corto);
+          if (dCtx.invitation?.qr_token_plano) params.set("q", dCtx.invitation.qr_token_plano);
+          rsvpUrl = `${baseUrl}/invitacion/#${params.toString()}`;
+        }
         const qrUrl = dCtx.invitation?.qr_s3_key
           ? ctx.objectStorage.getPublicUrl({ key: dCtx.invitation.qr_s3_key })
           : "";
