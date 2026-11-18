@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
 import QRCode from "qrcode";
 import { attachPgStoreMethods } from "./pg-store-methods.js";
@@ -120,10 +120,16 @@ export async function withTx(pool, fn) {
   }
 }
 
-export async function runMigrations(
-  pool,
-  migrationPath = new URL("../../migrations/001_initial_schema.sql", import.meta.url)
-) {
+const DEFAULT_MIGRATIONS_DIR = new URL("../../migrations/", import.meta.url);
+
+/**
+ * Runner de migraciones versionadas: aplica en orden lexicográfico cada `NNN_*.sql`
+ * de `back/migrations/` que no esté en `schema_migrations`, todo en UNA transacción
+ * serializada por advisory lock (varias Lambdas en cold start no compiten).
+ * Las migraciones publicadas son inmutables: un cambio de esquema es un archivo nuevo.
+ */
+export async function runMigrations(pool, migrationsDir = DEFAULT_MIGRATIONS_DIR) {
+  const files = (await readdir(migrationsDir)).filter((f) => /^\d{3}_.+\.sql$/.test(f)).sort();
   return withTx(pool, async (client) => {
     await client.query(`SELECT pg_advisory_xact_lock(794821001)`);
     await client.query(`
@@ -132,23 +138,23 @@ export async function runMigrations(
         applied_at timestamptz NOT NULL DEFAULT now()
       )
     `);
-    const already = await client.query(
-      `SELECT version FROM schema_migrations WHERE version = '001_initial_schema.sql'`
-    );
-    if (already.rowCount > 0) return { migrated: false };
-
-    const reg = await client.query(`SELECT to_regclass('public.event') AS reg`);
-    if (!reg.rows[0]?.reg) {
-      const rawSql = await readFile(migrationPath, "utf8");
+    const appliedRes = await client.query(`SELECT version FROM schema_migrations`);
+    const applied = new Set(appliedRes.rows.map((r) => r.version));
+    const migrated = [];
+    for (const file of files) {
+      if (applied.has(file)) continue;
+      const rawSql = await readFile(new URL(file, migrationsDir), "utf8");
+      // Cada archivo trae su propio BEGIN/COMMIT para poder correrse con psql;
+      // aquí se quitan porque el runner ya abrió la transacción.
       const strippedSql = rawSql
-        .replace(/^\s*(--[^\n]*\n)*\s*BEGIN;\s*/i, "")
+        .replace(/^\s*(--[^\n]*\n|\s)*BEGIN;\s*/i, "")
         .replace(/\s*COMMIT;\s*$/i, "");
       await client.query(strippedSql);
+      // ON CONFLICT: algunos archivos se registran a sí mismos para poder aplicarse con psql.
+      await client.query(`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, [file]);
+      migrated.push(file);
     }
-    await client.query(
-      `INSERT INTO schema_migrations (version) VALUES ('001_initial_schema.sql') ON CONFLICT DO NOTHING`
-    );
-    return { migrated: true };
+    return { migrated: migrated.length > 0, applied: migrated };
   });
 }
 
@@ -816,43 +822,58 @@ export class PgStore {
     return paginateArray(items, limit, cursor);
   }
 
-  async grantStaffAssignment({ eventId, userId, permisos = ["roster", "checkin"], grantedByUserId }) {
-    const evRes = await this.pool.query(`SELECT ventana_fin, estado FROM event WHERE id = $1`, [eventId]);
-    if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
-    const ev = evRes.rows[0];
-    if (ev.estado === "cerrado" || ev.estado === "cancelado") {
-      throw new AppError("EVENT_STATE_INVALID", "Evento cerrado o cancelado");
+  async grantStaffAssignment({ eventId, userId, permisos = ["roster", "checkin"], grantedByUserId, now = new Date() }) {
+    const validPermisos = ["roster", "checkin", "anulacion"];
+    if (!Array.isArray(permisos) || permisos.length === 0 || !permisos.every((p) => validPermisos.includes(p))) {
+      throw validationError("permisos inválidos", "permisos");
     }
-    const id = ulid();
-    const res = await this.pool.query(
-      `INSERT INTO staff_assignment (id, event_id, user_id, permisos, otorgado_por_user_id, expira_en)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (event_id, user_id) WHERE deleted_at IS NULL DO UPDATE
-         SET permisos = EXCLUDED.permisos, otorgado_por_user_id = EXCLUDED.otorgado_por_user_id, expira_en = EXCLUDED.expira_en
-       RETURNING *`,
-      [id, eventId, userId, permisos, grantedByUserId, toIso(ev.ventana_fin)]
-    );
-    return {
-      staff_assignment_id: res.rows[0].id,
-      event_id: eventId,
-      user_id: userId,
-      permisos: res.rows[0].permisos,
-      expira_en: toIso(res.rows[0].expira_en),
-    };
+    const userRes = await this.pool.query(`SELECT id FROM "user" WHERE id = $1 AND deleted_at IS NULL`, [userId]);
+    if (userRes.rowCount === 0) throw new AppError("NOT_FOUND", "Usuario destino no encontrado");
+    const ev = await this._assertEventOpenForAccess(eventId, now);
+    const nowIso = toIso(now);
+    const uniquePermisos = [...new Set(permisos)];
+    return withTx(this.pool, async (client) => {
+      const res = await client.query(
+        `INSERT INTO staff_assignment (id, event_id, user_id, permisos, otorgado_por_user_id, expira_en, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+         ON CONFLICT (event_id, user_id) WHERE deleted_at IS NULL DO UPDATE
+           SET permisos = EXCLUDED.permisos, otorgado_por_user_id = EXCLUDED.otorgado_por_user_id,
+               expira_en = EXCLUDED.expira_en
+         RETURNING *, (xmax = 0) AS inserted`,
+        [ulid(), eventId, userId, uniquePermisos, grantedByUserId, toIso(ev.ventana_fin), nowIso]
+      );
+      const row = res.rows[0];
+      if (row.inserted) {
+        await this._insertAudit(client, {
+          eventId,
+          actorId: grantedByUserId,
+          accion: "acceso_otorgado",
+          entidad: "staff_assignment",
+          entidadId: row.id,
+          motivo: "Habilitación de escaneo en evento",
+          ts: nowIso,
+          detalle: { target_user_id: userId, permisos: row.permisos },
+        });
+      }
+      return {
+        staff_assignment_id: row.id,
+        event_id: eventId,
+        user_id: userId,
+        permisos: row.permisos,
+        expira_en: toIso(row.expira_en),
+      };
+    });
   }
 
-  async createEventAccessToken({ eventId, rol, emittedByUserId }) {
-    const evRes = await this.pool.query(`SELECT ventana_fin, estado FROM event WHERE id = $1`, [eventId]);
-    if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
-    const ev = evRes.rows[0];
-    if (ev.estado === "cerrado" || ev.estado === "cancelado") {
-      throw new AppError("EVENT_STATE_INVALID", "Evento cerrado o cancelado");
-    }
+  async createEventAccessToken({ eventId, rol, emittedByUserId, now = new Date() }) {
+    if (!isValidRol(rol)) throw validationError(`rol inválido: ${rol}`, "rol");
+    const ev = await this._assertEventOpenForAccess(eventId, now);
     const rawToken = generateOpaqueToken("evtqr_");
+    const nowIso = toIso(now);
     const res = await this.pool.query(
-      `INSERT INTO event_access_token (id, event_id, rol, token_hash, emitido_por_user_id, expira_en)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [ulid(), eventId, rol, sha256Hex(rawToken), emittedByUserId, toIso(ev.ventana_fin)]
+      `INSERT INTO event_access_token (id, event_id, rol, token_hash, emitido_por_user_id, expira_en, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7) RETURNING *`,
+      [ulid(), eventId, rol, sha256Hex(rawToken), emittedByUserId, toIso(ev.ventana_fin), nowIso]
     );
     return {
       access_token_id: res.rows[0].id,
@@ -861,6 +882,23 @@ export class PgStore {
       qr_token: rawToken,
       expira_en: toIso(res.rows[0].expira_en),
     };
+  }
+
+  /** Accesos de staff/QR solo para eventos vivos cuya ventana no ha terminado (RF-19). */
+  async _assertEventOpenForAccess(eventId, now) {
+    const evRes = await this.pool.query(
+      `SELECT ventana_fin, estado FROM event WHERE id = $1 AND deleted_at IS NULL`,
+      [eventId]
+    );
+    if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
+    const ev = evRes.rows[0];
+    if (ev.estado === "cerrado" || ev.estado === "cancelado") {
+      throw new AppError("EVENT_STATE_INVALID", "Evento cerrado o cancelado");
+    }
+    if (new Date(ev.ventana_fin).getTime() <= new Date(now).getTime()) {
+      throw validationError("La ventana del evento ya finalizó", "expira_en");
+    }
+    return ev;
   }
 
   async exchangeEventAccessToken({ rawToken, deviceId, now = new Date() }) {
@@ -892,7 +930,7 @@ export class PgStore {
   }
 
   async replaceEventRequirements({ eventId, requerimientos }) {
-    return withTx(this.pool, async (client) => {
+    await withTx(this.pool, async (client) => {
       const roles = requerimientos.map((r) => r.rol);
       await client.query(
         `UPDATE event_requirement SET deleted_at = now()
@@ -907,9 +945,10 @@ export class PgStore {
           [ulid(), eventId, r.rol, Number(r.cantidad)]
         );
       }
-      const { items, cobertura } = await this.getEventRequirements({ eventId });
-      return { requerimientos: items, cobertura };
     });
+    // Lectura después del COMMIT (otra conexión del pool no ve la tx abierta).
+    const { items, cobertura } = await this.getEventRequirements({ eventId });
+    return { requerimientos: items, cobertura };
   }
 
   async getEventRequirements({ eventId }) {
@@ -1009,7 +1048,7 @@ export class PgStore {
     objectStorage,
     assetsBucket = process.env.ASSETS_BUCKET || "orquesta-assets",
   }) {
-    return withTx(this.pool, async (client) => {
+    await withTx(this.pool, async (client) => {
       await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 1))`, [eventId]);
       const evRes = await client.query(`SELECT * FROM event WHERE id = $1 FOR UPDATE`, [eventId]);
       if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
@@ -1167,8 +1206,9 @@ export class PgStore {
           WHERE id = $1`,
         [importId, deltaInvitados, rechazadas, duplicadas, JSON.stringify(errores)]
       );
-      return this.getImportJob({ eventId, importId });
     });
+    // Lectura después del COMMIT (otra conexión del pool no ve la tx abierta).
+    return this.getImportJob({ eventId, importId });
   }
 
   // ==========================================================================
@@ -1290,7 +1330,7 @@ export class PgStore {
   }
 
   async acceptWorkerReservation({ userId, reservationId, plazas = null, now = new Date() }) {
-    return withTx(this.pool, async (client) => {
+    const accepted = await withTx(this.pool, async (client) => {
       const wpRes = await client.query(
         `SELECT wp.id, wp.telefono_cifrado, u.email_cifrado
            FROM worker_profile wp
@@ -1335,13 +1375,7 @@ export class PgStore {
           }
         }
 
-        return {
-          reservation_id: row.reservation_id,
-          estado: row.estado,
-          plazas_aceptadas: row.plazas_aceptadas,
-          plazas_devueltas: row.plazas_devueltas,
-          aceptada_en: toIso(row.aceptada_en),
-        };
+        return row;
       } catch (err) {
         const mapped = mapPgError(err);
         if (mapped?.code === "RESERVATION_OVERLAP" && this.metrics) {
@@ -1350,6 +1384,28 @@ export class PgStore {
         throw mapped;
       }
     });
+
+    // Respuesta completa del contrato (03b §accept) leída después del COMMIT.
+    const wrRes = await this.pool.query(`SELECT * FROM worker_reservation WHERE id = $1`, [reservationId]);
+    const wr = wrRes.rows[0];
+    const { cobertura } = await this.getEventRequirements({ eventId: wr.event_id });
+    return {
+      reservation_id: accepted.reservation_id,
+      estado: accepted.estado,
+      plazas_solicitadas: wr.plazas_solicitadas,
+      plazas_aceptadas: accepted.plazas_aceptadas,
+      plazas_devueltas: accepted.plazas_devueltas,
+      costo_congelado: {
+        modo: wr.costo_congelado_modo,
+        monto: Number(wr.costo_congelado_monto),
+        moneda: wr.costo_congelado_moneda,
+        unidad: wr.costo_congelado_unidad,
+      },
+      ventana: { inicio: toIso(wr.inicio), fin: toIso(wr.fin) },
+      hora_llegada: toIso(wr.hora_llegada),
+      aceptada_en: toIso(accepted.aceptada_en),
+      cobertura_requerimiento: cobertura.por_rol.find((r) => r.rol === wr.rol) || null,
+    };
   }
 
   async processReservationPayment({ reservationId, eventId = null, paymentProvider, now = new Date() }) {
@@ -1368,9 +1424,9 @@ export class PgStore {
       let pRes = await client.query(`SELECT * FROM payment WHERE reservation_id = $1 FOR UPDATE`, [res.id]);
       if (pRes.rowCount === 0) {
         pRes = await client.query(
-          `INSERT INTO payment (id, reservation_id, idempotency_key, monto, moneda, estado_psp)
-           VALUES ($1, $2, $3, $4, $5, 'pendiente') RETURNING *`,
-          [ulid(), res.id, idempotencyKey, res.costo_congelado_monto, res.costo_congelado_moneda]
+          `INSERT INTO payment (id, reservation_id, idempotency_key, monto, moneda, estado_psp, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, 'pendiente', $6, $6) RETURNING *`,
+          [ulid(), res.id, idempotencyKey, res.costo_congelado_monto, res.costo_congelado_moneda, toIso(now)]
         );
       }
       const payment = pRes.rows[0];
@@ -1406,31 +1462,7 @@ export class PgStore {
       try {
         const q = await paymentProvider.queryByKey(payment.idempotency_key);
         if (q?.found && q.status === "succeeded") {
-          return withTx(this.pool, async (client) => {
-            const txId = ulid();
-            await client.query(
-              `UPDATE payment SET estado_psp = 'confirmado', psp_charge_id = $2, cobrado_en = $3 WHERE id = $1`,
-              [payment.id, q.psp_charge_id, nowIso]
-            );
-            await client.query(
-              `INSERT INTO payment_entry (id, pago_id, transaccion_id, movimiento, cuenta, tipo, importe, moneda)
-               VALUES ($1, $2, $3, 'cobro', 'psp_clearing', 'debito', $4, $5),
-                      ($6, $2, $3, 'cobro', 'worker_payable', 'credito', $7, $5)
-               ON CONFLICT (pago_id) WHERE movimiento = 'cobro' DO NOTHING`,
-              [ulid(), payment.id, txId, payment.monto, payment.moneda, ulid(), -Number(payment.monto)]
-            );
-            return {
-              statusCode: 201,
-              body: {
-                payment_id: payment.id,
-                estado: "confirmado",
-                monto: Number(payment.monto),
-                moneda: payment.moneda,
-                idempotency_key: payment.idempotency_key,
-                ledger_tx_id: txId,
-              },
-            };
-          });
+          return this._confirmPaymentCharge({ paymentId: payment.id, pspChargeId: q.psp_charge_id, nowIso });
         }
       } catch {
         // continuar al flujo normal de charge/desconocido
@@ -1446,7 +1478,7 @@ export class PgStore {
         metadata: { reservation_id: res.id, event_id: res.event_id },
       });
     } catch (err) {
-      await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1`, [payment.id]);
+      await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
       if (this.metrics) this.metrics.pspError(err?.isTimeout ? "timeout" : "charge_exception");
       return {
         statusCode: 202,
@@ -1461,7 +1493,7 @@ export class PgStore {
     }
 
     if (!pspRes || pspRes.status === "unknown" || pspRes.status === "pending") {
-      await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1`, [payment.id]);
+      await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
       if (this.metrics) this.metrics.pspError("unknown_status");
       return {
         statusCode: 202,
@@ -1476,36 +1508,64 @@ export class PgStore {
     }
 
     if (pspRes.status === "succeeded") {
-      return withTx(this.pool, async (client) => {
-        const txId = ulid();
-        await client.query(
-          `UPDATE payment SET estado_psp = 'confirmado', psp_charge_id = $2, cobrado_en = $3 WHERE id = $1`,
-          [payment.id, pspRes.psp_charge_id, nowIso]
-        );
-        await client.query(
-          `INSERT INTO payment_entry (id, pago_id, transaccion_id, movimiento, cuenta, tipo, importe, moneda)
-           VALUES ($1, $2, $3, 'cobro', 'psp_clearing', 'debito', $4, $5),
-                  ($6, $2, $3, 'cobro', 'worker_payable', 'credito', $7, $5)
-           ON CONFLICT (pago_id) WHERE movimiento = 'cobro' DO NOTHING`,
-          [ulid(), payment.id, txId, payment.monto, payment.moneda, ulid(), -Number(payment.monto)]
-        );
-        return {
-          statusCode: 201,
-          body: {
-            payment_id: payment.id,
-            estado: "confirmado",
-            monto: Number(payment.monto),
-            moneda: payment.moneda,
-            idempotency_key: payment.idempotency_key,
-            ledger_tx_id: txId,
-          },
-        };
-      });
+      return this._confirmPaymentCharge({ paymentId: payment.id, pspChargeId: pspRes.psp_charge_id, nowIso });
     }
 
-    await this.pool.query(`UPDATE payment SET estado_psp = 'fallido' WHERE id = $1`, [payment.id]);
+    await this.pool.query(`UPDATE payment SET estado_psp = 'fallido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
     if (this.metrics) this.metrics.pspError("charge_failed");
     throw new AppError("PSP_ERROR", pspRes.error || "El cobro fue rechazado por el proveedor de pagos");
+  }
+
+  /**
+   * Confirma un cobro y asienta el ledger de doble entrada exactamente una vez (TR-09, AC-08).
+   * Reintentos y peticiones concurrentes con la misma clave llegan aquí tras la respuesta
+   * (deduplicada) del PSP: el `FOR UPDATE` sobre `payment` los serializa y solo el primero
+   * escribe; los demás leen la transacción ya asentada y devuelven la misma respuesta.
+   */
+  async _confirmPaymentCharge({ paymentId, pspChargeId = null, nowIso }) {
+    return withTx(this.pool, async (client) => {
+      const pRes = await client.query(`SELECT * FROM payment WHERE id = $1 FOR UPDATE`, [paymentId]);
+      const p = pRes.rows[0];
+      const ledgerTxId = await this._postCobroLedger(client, p, pspChargeId, nowIso);
+      return {
+        statusCode: 201,
+        body: {
+          payment_id: p.id,
+          estado: "confirmado",
+          monto: Number(p.monto),
+          moneda: p.moneda,
+          idempotency_key: p.idempotency_key,
+          ledger_tx_id: ledgerTxId,
+        },
+      };
+    });
+  }
+
+  /**
+   * Asiento de cobro idempotente. Precondición: la fila `payment` ya está bloqueada
+   * (`FOR UPDATE`) en `client`. Devuelve el `transaccion_id` (nuevo o existente).
+   */
+  async _postCobroLedger(client, payment, pspChargeId, nowIso) {
+    if (payment.cobrado_en) {
+      const tx = await client.query(
+        `SELECT transaccion_id FROM payment_entry WHERE pago_id = $1 AND movimiento = 'cobro' LIMIT 1`,
+        [payment.id]
+      );
+      return tx.rows[0]?.transaccion_id || null;
+    }
+    const txId = ulid();
+    await client.query(
+      `UPDATE payment SET estado_psp = 'confirmado', psp_charge_id = COALESCE($2, psp_charge_id), cobrado_en = $3
+        WHERE id = $1`,
+      [payment.id, pspChargeId, nowIso]
+    );
+    await client.query(
+      `INSERT INTO payment_entry (id, pago_id, transaccion_id, movimiento, cuenta, tipo, importe, moneda, created_at, updated_at)
+       VALUES ($1, $2, $3, 'cobro', 'psp_clearing', 'debito', $4, $5, $8, $8),
+              ($6, $2, $3, 'cobro', 'worker_payable', 'credito', $7, $5, $8, $8)`,
+      [ulid(), payment.id, txId, payment.monto, payment.moneda, ulid(), -Number(payment.monto), nowIso]
+    );
+    return txId;
   }
 }
 

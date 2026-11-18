@@ -243,6 +243,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     qrSigner,
     objectStorage,
     assetsBucket = process.env.ASSETS_BUCKET || "orquesta-assets",
+    now = new Date(),
   }) {
     return withTx(this.pool, async (client) => {
       const invRes = await client.query(
@@ -251,7 +252,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       );
       if (invRes.rowCount === 0) throw new AppError("NOT_FOUND", "Invitación no encontrada");
       const inv = invRes.rows[0];
-      const nowIso = new Date().toISOString();
+      const nowIso = toIso(now);
       const newVersion = Number(inv.token_version) + 1;
       const { key_id: keyId } = await qrSigner.getPublicKey();
       const rsvpRaw = generateOpaqueToken("rsvp_", 24);
@@ -324,6 +325,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     destinatariosConfirmados,
     canalesActivos = ["sms", "email"],
     actorId,
+    now = new Date(),
   }) {
     return withTx(this.pool, async (client) => {
       const evRes = await client.query(`SELECT * FROM event WHERE id = $1 FOR UPDATE`, [eventId]);
@@ -351,7 +353,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       }
 
       const envioId = ulid();
-      const nowIso = new Date().toISOString();
+      const nowIso = toIso(now);
       const reminderTimes = computeReminderTimes(toIso(ev.ventana_inicio));
       let entregasEncoladas = 0;
 
@@ -371,11 +373,11 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           const dest = buildTr12Destinatario(g.id, addr, canal);
           const delId = ulid();
           const insDel = await client.query(
-            `INSERT INTO invitation_delivery (id, event_id, invitation_id, destinatario, direccion_cifrada, canal, plantilla, ventana)
-             VALUES ($1, $2, $3, $4, $5, $6, 'invitacion', 'envio_inicial')
+            `INSERT INTO invitation_delivery (id, event_id, invitation_id, destinatario, direccion_cifrada, canal, plantilla, ventana, estado_en)
+             VALUES ($1, $2, $3, $4, $5, $6, 'invitacion', 'envio_inicial', $7)
              ON CONFLICT (destinatario, plantilla, ventana) DO NOTHING
              RETURNING id`,
-            [delId, eventId, g.invitation_id, dest, this._enc(addr), canal]
+            [delId, eventId, g.invitation_id, dest, this._enc(addr), canal, nowIso]
           );
           if (insDel.rowCount > 0) {
             entregasEncoladas += 1;
@@ -426,6 +428,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     ventana = "resend_1",
     canalesActivos = ["sms", "email"],
     actorId,
+    now = new Date(),
   }) {
     if (!/^resend_[1-9][0-9]*$/.test(String(ventana))) {
       throw validationError("ventana debe seguir patrón resend_<n>", "ventana");
@@ -457,10 +460,10 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           if (!addr) continue;
           const delId = ulid();
           const ins = await client.query(
-            `INSERT INTO invitation_delivery (id, event_id, invitation_id, destinatario, direccion_cifrada, canal, plantilla, ventana)
-             VALUES ($1, $2, $3, $4, $5, $6, 'invitacion', $7)
+            `INSERT INTO invitation_delivery (id, event_id, invitation_id, destinatario, direccion_cifrada, canal, plantilla, ventana, estado_en)
+             VALUES ($1, $2, $3, $4, $5, $6, 'invitacion', $7, $8)
              ON CONFLICT (destinatario, plantilla, ventana) DO NOTHING`,
-            [delId, eventId, g.invitation_id, buildTr12Destinatario(g.id, addr, ch), this._enc(addr), ch, ventana]
+            [delId, eventId, g.invitation_id, buildTr12Destinatario(g.id, addr, ch), this._enc(addr), ch, ventana, toIso(now)]
           );
           if (ins.rowCount > 0) {
             entregasEncoladas += 1;
@@ -772,7 +775,39 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     });
   };
 
-  proto.createTable = async function ({ eventId, numero = null, nombre = null, capacidad }) {
+  /** Versión actual del plano de mesas (control optimista FR7). */
+  proto.getSeatingVersion = async function (eventId, client = this.pool) {
+    const r = await client.query(`SELECT version FROM seating_plan WHERE event_id = $1`, [eventId]);
+    return r.rowCount > 0 ? Number(r.rows[0].version) : 0;
+  };
+
+  /**
+   * Incrementa la versión del plano dentro de la transacción de la mutación. Con
+   * `expectedVersion` actúa como compare-and-set: si otro editor ya cambió el plano, aborta
+   * con SEATING_VERSION_CONFLICT (la tx completa hace ROLLBACK, nada se sobrescribe).
+   */
+  proto._bumpSeatingVersion = async function (client, eventId, expectedVersion = null) {
+    await client.query(
+      `INSERT INTO seating_plan (event_id, version) VALUES ($1, 0) ON CONFLICT (event_id) DO NOTHING`,
+      [eventId]
+    );
+    const r = await client.query(
+      `UPDATE seating_plan SET version = version + 1, updated_at = now()
+        WHERE event_id = $1 AND ($2::bigint IS NULL OR version = $2::bigint)
+        RETURNING version`,
+      [eventId, expectedVersion === null || expectedVersion === undefined ? null : Number(expectedVersion)]
+    );
+    if (r.rowCount === 0) {
+      const actual = await this.getSeatingVersion(eventId, client);
+      throw new AppError("SEATING_VERSION_CONFLICT", "El plano cambió desde tu última lectura; recarga y reintenta", {
+        version_esperada: Number(expectedVersion),
+        version_actual: actual,
+      });
+    }
+    return Number(r.rows[0].version);
+  };
+
+  proto.createTable = async function ({ eventId, numero = null, nombre = null, capacidad, expectedVersion = null }) {
     const cap = Number(capacidad);
     if (!Number.isInteger(cap) || cap <= 0) throw validationError("capacidad inválida", "capacidad");
     return withTx(this.pool, async (client) => {
@@ -788,7 +823,9 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         `INSERT INTO event_table (id, event_id, numero, nombre, capacidad) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
         [ulid(), eventId, num, nombre || `Mesa ${num}`, cap]
       );
-      return { ...res.rows[0], ocupacion: 0 };
+      const planVersion = await this._bumpSeatingVersion(client, eventId, expectedVersion);
+      const t = res.rows[0];
+      return { id: t.id, event_id: t.event_id, numero: t.numero, nombre: t.nombre, capacidad: t.capacidad, ocupacion: 0, plan_version: planVersion };
     });
   };
 
@@ -803,10 +840,10 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         ORDER BY t.numero ASC`,
       [eventId]
     );
-    return paginateArray(res.rows, limit, cursor);
+    return { ...paginateArray(res.rows, limit, cursor), plan_version: await this.getSeatingVersion(eventId) };
   };
 
-  proto.assignSeat = async function ({ eventId, guestId, tableId, actorId }) {
+  proto.assignSeat = async function ({ eventId, guestId, tableId, actorId, expectedVersion = null, now = new Date() }) {
     return withTx(this.pool, async (client) => {
       await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 2))`, [eventId]);
       const gRes = await client.query(
@@ -830,7 +867,14 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       );
       const current = curRes.rows[0];
       if (current && current.table_id === tableId) {
-        return { created: false, body: { id: current.id, guest_id: guestId, table_id: tableId, estado: "asignado", estado_asiento: current.estado } };
+        // No-op idempotente: no cambia el plano, no consume versión.
+        return {
+          created: false,
+          body: {
+            id: current.id, guest_id: guestId, table_id: tableId, estado: "asignado",
+            estado_asiento: current.estado, plan_version: await this.getSeatingVersion(eventId, client),
+          },
+        };
       }
 
       const rsvpRes = gRes.rows[0].invitation_id
@@ -852,7 +896,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         throw new AppError("MESA_SIN_CAPACIDAD", "La mesa alcanzó su capacidad máxima");
       }
 
-      const nowIso = new Date().toISOString();
+      const nowIso = toIso(now);
       if (current) {
         await client.query(
           `UPDATE seat_assignment SET estado = 'liberado', ocupa_capacidad = false, liberado_en = $2, motivo_liberacion = 'reasignado' WHERE id = $1`,
@@ -877,16 +921,30 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           ts: nowIso,
         });
       }
-      return { created: !current, body: { id: seatId, guest_id: guestId, table_id: tableId, estado: "asignado", estado_asiento: seatEstado } };
+      const planVersion = await this._bumpSeatingVersion(client, eventId, expectedVersion);
+      return {
+        created: !current,
+        body: { id: seatId, guest_id: guestId, table_id: tableId, estado: "asignado", estado_asiento: seatEstado, plan_version: planVersion },
+      };
     });
   };
 
-  proto.releaseSeat = async function ({ eventId, guestId }) {
-    await this.pool.query(
-      `UPDATE seat_assignment SET estado = 'liberado', ocupa_capacidad = false, liberado_en = now(), motivo_liberacion = 'reasignado'
-        WHERE event_id = $1 AND guest_id = $2 AND estado IN ('confirmado','pendiente')`,
-      [eventId, guestId]
-    );
+  proto.releaseSeat = async function ({ eventId, guestId, expectedVersion = null, now = new Date() }) {
+    return withTx(this.pool, async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 2))`, [eventId]);
+      const gRes = await client.query(`SELECT id FROM guest WHERE id = $1 AND event_id = $2`, [guestId, eventId]);
+      if (gRes.rowCount === 0) throw new AppError("NOT_FOUND", "Invitado no encontrado");
+      const upd = await client.query(
+        `UPDATE seat_assignment SET estado = 'liberado', ocupa_capacidad = false, liberado_en = $3, motivo_liberacion = 'reasignado'
+          WHERE event_id = $1 AND guest_id = $2 AND estado IN ('confirmado','pendiente')`,
+        [eventId, guestId, toIso(now)]
+      );
+      const planVersion =
+        upd.rowCount > 0
+          ? await this._bumpSeatingVersion(client, eventId, expectedVersion)
+          : await this.getSeatingVersion(eventId, client);
+      return { liberados: upd.rowCount, plan_version: planVersion };
+    });
   };
 
   proto.listUnseatedGuests = async function ({ eventId, limit = 20, cursor = null }) {
@@ -937,7 +995,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
   };
 
   proto.createWorkerProfile = async function ({ userId, data }) {
-    return withTx(this.pool, async (client) => {
+    await withTx(this.pool, async (client) => {
       const exRes = await client.query(
         `SELECT id FROM worker_profile WHERE user_id = $1 AND deleted_at IS NULL`,
         [userId]
@@ -1007,8 +1065,9 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           phone ? this._hmac(phone) : null,
         ]
       );
-      return this.getWorkerProfileByUserId(userId);
     });
+    // Lectura después del COMMIT: dentro de la tx otra conexión del pool no ve la fila.
+    return this.getWorkerProfileByUserId(userId);
   };
 
   proto.searchWorkers = async function (filters) {
@@ -1278,12 +1337,17 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     const nowIso = toIso(now);
     const cutoff = new Date(new Date(now).getTime() - 15 * 60 * 1000).toISOString();
     return withTx(this.pool, async (client) => {
+      // `RETURNING` no admite DISTINCT: se deduplica event_id en un CTE.
       const res = await client.query(
-        `UPDATE invitation_delivery SET estado = 'indeterminado', estado_en = $2
-          WHERE estado = 'encolado' AND estado_en <= $1
-          RETURNING DISTINCT event_id`,
+        `WITH moved AS (
+           UPDATE invitation_delivery SET estado = 'indeterminado', estado_en = $2
+            WHERE estado = 'encolado' AND estado_en <= $1
+            RETURNING event_id
+         )
+         SELECT event_id, count(*)::integer AS n FROM moved GROUP BY event_id`,
         [cutoff, nowIso]
       );
+      const transitioned = res.rows.reduce((acc, r) => acc + r.n, 0);
       for (const row of res.rows) {
         const cntRes = await client.query(
           `SELECT count(*)::integer AS cnt FROM (
@@ -1303,7 +1367,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           tIngest: nowIso,
         });
       }
-      return { transitioned: res.rowCount };
+      return { transitioned };
     });
   };
   proto.sweepRetention = async function ({ now = new Date() }) {
@@ -1357,7 +1421,13 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         );
         chkCount = chkRes.rowCount;
       }
-      await client.query(`DELETE FROM audit_entry WHERE ts <= $1`, [c24.toISOString()]);
+      // El trigger guard_audit_entry_immutable solo permite borrar filas con más de 24 meses
+      // según el reloj de la BD (autoridad de inmutabilidad); se filtra con ambos relojes para
+      // que un desfase del reloj de la app nunca aborte el barrido completo de retención.
+      await client.query(
+        `DELETE FROM audit_entry WHERE ts <= $1 AND ts <= now() - interval '24 months'`,
+        [c24.toISOString()]
+      );
 
       const wpRes = await client.query(
         `UPDATE worker_profile wp
@@ -1483,11 +1553,15 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         throw validationError("estado inválido", "estado");
       }
       if (patch.estado === "publicado") {
-        if (!cur.email_verificado_en || !cur.telefono_verificado_en) {
-          throw new AppError("PROFILE_NOT_VERIFIED", "El perfil debe verificar email y teléfono por OTP");
+        // Publicabilidad (02c invariante 3): tarifa completa + teléfono. La verificación OTP
+        // NO bloquea el PATCH: solo condiciona la visibilidad en búsqueda (invariante 2, AC-25).
+        const nextTarifa = patch.tarifa !== undefined ? patch.tarifa : {
+          monto: cur.tarifa_monto, moneda: cur.tarifa_moneda, unidad: cur.tarifa_unidad,
+        };
+        const nextTelefono = patch.telefono_e164 !== undefined ? patch.telefono_e164 : cur.telefono_cifrado;
+        if (!nextTarifa?.monto || !nextTarifa?.moneda || !nextTarifa?.unidad || !nextTelefono) {
+          throw validationError("Para publicar se requiere tarifa y teléfono", "estado");
         }
-        const nextTarifa = patch.tarifa !== undefined ? patch.tarifa?.monto : cur.tarifa_monto;
-        if (!nextTarifa) throw new AppError("TRABAJADOR_SIN_TARIFA", "Sin tarifa publicada");
       }
       fields.push(`estado = $${idx++}`);
       params.push(patch.estado);
@@ -1579,8 +1653,8 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         `INSERT INTO worker_reservation (
            id, worker_id, event_id, rol, inicio, fin, hora_llegada, plazas, plazas_solicitadas,
            costo_congelado_modo, costo_congelado_monto, costo_congelado_moneda, costo_congelado_unidad,
-           modo_emergencia, expira_en
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14)`,
+           modo_emergencia, expira_en, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
         [
           id,
           workerId,
@@ -1596,6 +1670,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           wp.tarifa_unidad,
           modoEmergencia,
           expiraEn,
+          new Date(now).toISOString(),
         ]
       );
       return {
@@ -2088,6 +2163,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       let tardios = 0;
       let duplicados = 0;
       let rechazados = 0;
+      let invalidadosAlSincronizar = 0;
       let asistentesDelta = 0;
       let maxSeq = 0;
 
@@ -2097,7 +2173,15 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         const scannedMs = new Date(item.scanned_at).getTime();
         if (isClosed && (scannedMs < new Date(ev.ventana_inicio).getTime() || scannedMs >= new Date(ev.ventana_fin).getTime())) {
           rechazados += 1;
-          results.push({ sequence: seq, invitation_id: item.invitation_id, status: 400, error: "FUERA_DE_VENTANA_EVENTO" });
+          results.push({
+            sequence: seq,
+            invitation_id: item.invitation_id,
+            status: 400,
+            error: "FUERA_DE_VENTANA_EVENTO",
+            verdict: "no_corresponde_al_evento",
+            tardio: false,
+            duplicado: false,
+          });
           continue;
         }
         const tardio = isClosed;
@@ -2106,8 +2190,19 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           [item.invitation_id, batch.device_id, seq]
         );
         if (existingSeq.rowCount > 0) {
+          // Replay del mismo (invitation, device, sequence): conserva el veredicto original (AC-03).
           const e = existingSeq.rows[0];
-          results.push({ sequence: seq, invitation_id: item.invitation_id, checkin_id: e.id, verdict: e.veredicto, tardio: e.tardio, duplicado: e.kind === "duplicado_tardio" });
+          results.push({
+            sequence: seq,
+            invitation_id: item.invitation_id,
+            checkin_id: e.id,
+            kind: e.kind,
+            verdict: e.veredicto,
+            tardio: e.tardio,
+            duplicado: e.kind === "duplicado_tardio",
+            ...(e.vigente_checkin_id ? { vigente_checkin_id: e.vigente_checkin_id } : {}),
+            ...(e.resolucion_al_sincronizar ? { resolucion_al_sincronizar: e.resolucion_al_sincronizar } : {}),
+          });
           continue;
         }
         const invRes = await client.query(
@@ -2132,12 +2227,22 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
             item.verdict_local === "no_verificable_offline" || item.verdict_local === "admitido"
               ? "invalidado_al_sincronizar"
               : null;
+          if (resolucion) invalidadosAlSincronizar += 1;
           await client.query(
             `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo, escaneado_en, recibido_en, tardio, verdict_local, resolucion_al_sincronizar)
              VALUES ($1,$2,$3,$4,$5,'duplicado_tardio','invitacion_revocada',$6,$7,$8,$9,$10,$11)`,
             [revId, ev.id, item.invitation_id, batch.device_id, seq, cycRev.rows[0].cycle, toIso(item.scanned_at), tIngest, tardio, item.verdict_local || null, resolucion]
           );
-          results.push({ sequence: seq, invitation_id: item.invitation_id, checkin_id: revId, verdict: "invitacion_revocada", resolucion_al_sincronizar: resolucion, tardio, duplicado: false });
+          results.push({
+            sequence: seq,
+            invitation_id: item.invitation_id,
+            checkin_id: revId,
+            verdict: "invitacion_revocada",
+            verdict_local: item.verdict_local || null,
+            resolucion_al_sincronizar: resolucion,
+            tardio,
+            duplicado: false,
+          });
           continue;
         }
         const cycRes = await client.query(
@@ -2145,13 +2250,19 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           [item.invitation_id]
         );
         const cycle = cycRes.rows[0].cycle;
+        // El veredicto persistido lo decide el servidor: del cliente solo se aceptan las
+        // admisiones condicionales marcadas (RF-13); cualquier otro valor cuenta como `admitido`.
+        const finalVerdict =
+          item.verdict_local === "no_en_roster" || item.verdict_local === "no_verificable_offline"
+            ? item.verdict_local
+            : "admitido";
         const chkId = ulid();
         const insAdm = await client.query(
           `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo, escaneado_en, recibido_en, tardio, modo, verdict_local)
            VALUES ($1,$2,$3,$4,$5,'admitido',$6,$7,$8,$9,$10,$11,$12)
            ON CONFLICT (invitation_id, admision_ciclo) WHERE kind = 'admitido' DO NOTHING
            RETURNING *`,
-          [chkId, ev.id, item.invitation_id, batch.device_id, seq, item.verdict_local || "admitido", cycle, toIso(item.scanned_at), tIngest, tardio, item.modo || "camara", item.verdict_local || null]
+          [chkId, ev.id, item.invitation_id, batch.device_id, seq, finalVerdict, cycle, toIso(item.scanned_at), tIngest, tardio, item.modo || "camara", item.verdict_local || null]
         );
         if (insAdm.rowCount > 0) {
           aceptados += 1;
@@ -2159,6 +2270,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           if (tardio) tardios += 1;
           results.push({ sequence: seq, invitation_id: item.invitation_id, checkin_id: chkId, verdict: insAdm.rows[0].veredicto, tardio, duplicado: false });
         } else {
+          // Convergencia cross-dispositivo (TR-17, AC-05): gana la admisión ya registrada.
           const winRes = await client.query(
             `SELECT id FROM checkin_event WHERE invitation_id = $1 AND kind = 'admitido' AND admision_ciclo = $2`,
             [item.invitation_id, cycle]
@@ -2170,7 +2282,16 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
             [dupId, ev.id, item.invitation_id, batch.device_id, seq, cycle, toIso(item.scanned_at), tIngest, tardio, winRes.rows[0]?.id || null]
           );
           duplicados += 1;
-          results.push({ sequence: seq, invitation_id: item.invitation_id, checkin_id: dupId, kind: "duplicado_tardio", verdict: "ya_registrado", tardio, duplicado: true });
+          results.push({
+            sequence: seq,
+            invitation_id: item.invitation_id,
+            checkin_id: dupId,
+            kind: "duplicado_tardio",
+            verdict: "ya_registrado",
+            vigente_checkin_id: winRes.rows[0]?.id || null,
+            tardio,
+            duplicado: true,
+          });
         }
       }
 
@@ -2197,7 +2318,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         estado: "aplicado",
         recibido_en: tIngest,
         ack_hasta_sequence: maxSeq,
-        contadores: { aceptados, tardios, duplicados, invalidados_al_sincronizar: 0, rechazados },
+        contadores: { aceptados, tardios, duplicados, invalidados_al_sincronizar: invalidadosAlSincronizar, rechazados },
         results,
         sync_state: { device_id: batch.device_id, pendientes: Number(batch.cola_reportada ?? 0), ultima_seq_ackeada: maxSeq, heartbeat_en: tIngest },
       };
@@ -2239,9 +2360,15 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     return { device_id: sess.device_id, pendientes: derived.valor, ultima_seq_ackeada: res.rows[0].ultima_seq_ackeada, heartbeat_en: hb };
   };
 
+  /**
+   * Anulación de check-in (RF-14, AC-16). Append-only: inserta un `checkin_event` de tipo
+   * `anulacion` que referencia la admisión original (nunca la borra ni la edita) y su
+   * `AuditEntry` en la misma transacción. Idempotente por (checkin_id, actor_id).
+   */
   proto.annulCheckin = async function ({ eventId, checkinId, actorId, motivo, now = new Date() }) {
-    if (!motivo || String(motivo).trim().length === 0) {
-      throw validationError("motivo es obligatorio", "motivo");
+    const motivoTrim = String(motivo ?? "").trim();
+    if (motivoTrim.length === 0 || motivoTrim.length > 280) {
+      throw validationError("motivo es obligatorio (1..280 caracteres)", "motivo");
     }
     return withTx(this.pool, async (client) => {
       const evRes = await client.query(`SELECT * FROM event WHERE id = $1 AND deleted_at IS NULL`, [eventId]);
@@ -2255,39 +2382,67 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         throw new AppError("CORRECTION_WINDOW_CLOSED", "Expiró la ventana de corrección de 24 h");
       }
 
+      // FOR UPDATE serializa anulaciones concurrentes del mismo check-in: solo la primera
+      // emite el delta -1 al tablero.
       const targetRes = await client.query(
-        `SELECT * FROM checkin_event WHERE id = $1 AND event_id = $2 AND kind = 'admitido'`,
+        `SELECT * FROM checkin_event WHERE id = $1 AND event_id = $2 AND kind = 'admitido' FOR UPDATE`,
         [checkinId, eventId]
       );
-      if (targetRes.rowCount === 0) throw new AppError("CHECKIN_NOT_FOUND", "Check-in no encontrado");
+      if (targetRes.rowCount === 0) throw new AppError("CHECKIN_NOT_FOUND", "Check-in admitido no encontrado");
       const target = targetRes.rows[0];
+
+      const toBody = async (row) => ({
+        annulment_id: row.id,
+        checkin_id: row.id,
+        annuls_checkin_id: checkinId,
+        actor_id: actorId,
+        kind: "anulacion",
+        motivo: row.motivo,
+        scanned_at: toIso(row.escaneado_en),
+        asistentes: (await this._computeCorte(client, eventId)).asistentes,
+      });
+
       const existing = await client.query(
         `SELECT * FROM checkin_event WHERE anula_a = $1 AND actor_id = $2 AND kind = 'anulacion'`,
         [checkinId, actorId]
       );
       if (existing.rowCount > 0) {
-        return { replayed: true, body: { annulment_id: existing.rows[0].id, annuls_checkin_id: checkinId, actor_id: actorId, kind: "anulacion" } };
+        return { replayed: true, body: await toBody(existing.rows[0]) };
       }
       const alreadyAnnulledRes = await client.query(
         `SELECT 1 FROM checkin_event WHERE anula_a = $1 AND kind = 'anulacion' LIMIT 1`,
         [checkinId]
       );
       const alreadyAnnulled = alreadyAnnulledRes.rowCount > 0;
+      const consoleDevice = `console:${actorId}`;
       const seqRes = await client.query(
         `SELECT COALESCE(max(sequence), 0)::bigint + 1 AS next_seq FROM checkin_event WHERE invitation_id = $1 AND device_id = $2`,
-        [target.invitation_id, `console:${actorId}`]
+        [target.invitation_id, consoleDevice]
       );
       const annId = ulid();
       const nowIso = toIso(now);
-      await client.query(
-        `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo, escaneado_en, recibido_en, anula_a, actor_id, motivo)
-         VALUES ($1,$2,$3,$4,$5,'anulacion',$6,$7,$8,$8,$9,$10,$11)`,
-        [annId, eventId, target.invitation_id, `console:${actorId}`, seqRes.rows[0].next_seq, target.veredicto, target.admision_ciclo, nowIso, checkinId, actorId, motivo]
+      const insRes = await client.query(
+        `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo,
+                                    escaneado_en, recibido_en, tardio, anula_a, actor_id, motivo, modo)
+         VALUES ($1,$2,$3,$4,$5,'anulacion',$6,$7,$8,$8,$9,$10,$11,$12,'consola')
+         RETURNING *`,
+        [annId, eventId, target.invitation_id, consoleDevice, seqRes.rows[0].next_seq, target.veredicto,
+         target.admision_ciclo, nowIso, ev.estado === "cerrado", checkinId, actorId, motivoTrim]
       );
+      await this._insertAudit(client, {
+        eventId,
+        actorId,
+        accion: "checkin_anulado",
+        entidad: "checkin_event",
+        entidadId: checkinId,
+        motivo: motivoTrim,
+        ts: nowIso,
+        detalle: { annulment_id: annId, invitation_id: target.invitation_id },
+      });
       if (!alreadyAnnulled) {
         await this._insertOutbox(client, { eventId, topic: "projection", eventType: "checkin_annulled", payload: { asistentes_delta: -1 }, tIngest: nowIso });
       }
-      return { replayed: false, body: { annulment_id: annId, annuls_checkin_id: checkinId, actor_id: actorId, kind: "anulacion", scanned_at: nowIso } };
+      return { replayed: false, body: await toBody(insRes.rows[0]) };
     });
   };
 
@@ -2314,17 +2469,55 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     return paginateArray(res.rows, limit, cursor);
   };
 
+  /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */
+  proto.listUnresolvedPayments = async function ({ olderThan, limit = 25 }) {
+    const res = await this.pool.query(
+      `SELECT id AS payment_id, reservation_id, estado_psp
+         FROM payment
+        WHERE cobrado_en IS NULL AND deleted_at IS NULL
+          AND estado_psp IN ('pendiente','desconocido')
+          AND created_at <= $1
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [toIso(olderThan), limit]
+    );
+    return res.rows;
+  };
+
   proto.listReservationPayments = async function ({ reservationId }) {
     const rRes = await this.pool.query(`SELECT event_id, worker_id FROM worker_reservation WHERE id = $1`, [reservationId]);
     if (rRes.rowCount === 0) throw new AppError("NOT_FOUND", "Reserva no encontrada");
     const pRes = await this.pool.query(`SELECT * FROM payment WHERE reservation_id = $1`, [reservationId]);
     if (pRes.rowCount === 0) return { reservation_event_id: rRes.rows[0].event_id, worker_id: rRes.rows[0].worker_id, items: [] };
     const p = pRes.rows[0];
-    const eRes = await this.pool.query(`SELECT * FROM payment_entry WHERE pago_id = $1 ORDER BY created_at ASC`, [p.id]);
+    const eRes = await this.pool.query(
+      `SELECT id, transaccion_id, movimiento, cuenta, tipo, importe, moneda
+         FROM payment_entry WHERE pago_id = $1 ORDER BY created_at ASC, id ASC`,
+      [p.id]
+    );
     return {
       reservation_event_id: rRes.rows[0].event_id,
       worker_id: rRes.rows[0].worker_id,
-      items: [{ payment_id: p.id, estado: p.estado_psp, monto: Number(p.monto), moneda: p.moneda, idempotency_key: p.idempotency_key, cobrado_en: toIso(p.cobrado_en), ledger_entries: eRes.rows }],
+      items: [
+        {
+          payment_id: p.id,
+          estado: p.estado_psp,
+          monto: Number(p.monto),
+          moneda: p.moneda,
+          idempotency_key: p.idempotency_key,
+          cobrado_en: toIso(p.cobrado_en),
+          // DTO explícito: `numeric` llega de pg como string y no debe filtrarse al contrato.
+          ledger_entries: eRes.rows.map((e) => ({
+            id: e.id,
+            transaccion_id: e.transaccion_id,
+            movimiento: e.movimiento,
+            cuenta: e.cuenta,
+            tipo: e.tipo,
+            importe: Number(e.importe),
+            moneda: e.moneda,
+          })),
+        },
+      ],
     };
   };
 
@@ -2363,20 +2556,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           if (this.metrics) this.metrics.pspError("webhook_amount_mismatch");
           return { conciliado: false, estado: p.estado_psp };
         }
-        const nowIso = toIso(now);
-        const txId = ulid();
-        await client.query(`UPDATE payment SET estado_psp = 'confirmado', psp_charge_id = COALESCE($2, psp_charge_id), cobrado_en = $3 WHERE id = $1`, [
-          p.id,
-          pspChargeId,
-          nowIso,
-        ]);
-        await client.query(
-          `INSERT INTO payment_entry (id, pago_id, transaccion_id, movimiento, cuenta, tipo, importe, moneda)
-           VALUES ($1,$2,$3,'cobro','psp_clearing','debito',$4,$5),
-                  ($6,$2,$3,'cobro','worker_payable','credito',$7,$5)
-           ON CONFLICT (pago_id) WHERE movimiento = 'cobro' DO NOTHING`,
-          [ulid(), p.id, txId, p.monto, p.moneda, ulid(), -Number(p.monto)]
-        );
+        await this._postCobroLedger(client, p, pspChargeId, toIso(now));
         return { conciliado: true, estado: "confirmado" };
       }
       return { conciliado: true, estado: p.estado_psp };

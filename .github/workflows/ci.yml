@@ -1,0 +1,111 @@
+# CI de Orquesta: se ejecuta en cada PR y en cada push a main.
+# Un PR solo se integra con los cuatro jobs en verde (configurar como required checks
+# en Settings → Branches → main).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call: # gate reutilizado por deploy.yml
+
+concurrency:
+  # github.workflow = "Deploy" cuando se invoca vía workflow_call: no cancela el CI del push.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-memory:
+    name: Backend · aceptación (InMemoryStore)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: back
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20 # mismo runtime que las Lambdas (nodejs20.x)
+          cache: npm
+          cache-dependency-path: back/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  backend-postgres:
+    name: Backend · aceptación (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: back
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orquesta_admin
+          POSTGRES_PASSWORD: orquesta
+          POSTGRES_DB: orquesta
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orquesta_admin -d orquesta"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: orquesta_admin
+      PGPASSWORD: orquesta
+      PGDATABASE: orquesta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: back/package-lock.json
+      - run: npm ci
+      # Corre migraciones 001..N sobre un esquema limpio por test y ejecuta la misma suite
+      # contra PgStore: es el camino que usa producción (RDS / Aurora).
+      - run: npm run test:pg
+
+  frontend:
+    name: Frontend · build + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # Angular CLI 22 exige Node >= 22.22 / 24.15
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - run: npm ci
+      - run: npx ng build
+      - run: npx ng test --watch=false
+
+  terraform:
+    name: Infra · fmt + validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate

@@ -1,79 +1,363 @@
 # Orquesta
-## Requisitos funcionales
-Las planners crean eventos e importan invitados; cada invitado recibe una invitación con QR único y confirma sin crear cuenta.
-El staff hace check in escaneando el QR en el venue, incluso con mala o nula conectividad.
-Los planners monitorean todos sus eventos en vivo desde un solo tablero, casi en tiempo real.
-Los planners pueden buscar proveedores y asignarlos al evento antes del evento y por alguna emergencia en el evento.
-Recordatorios automáticos: RSVP para invitados y hora de llegada para proveedores.
-El planner puede pagar a los proveedores.
-Los planners pueden organizar el acomodo de mesas de los invitados
-Los invitados reciben su invitación por SMS y email.
 
-#### Fuera de alcance: facturación CFDI, presupuestos, asistente de IA, apps nativas y portal del anfitrión.
+[![CI](https://github.com/stephy0410/orquesta/actions/workflows/ci.yml/badge.svg)](https://github.com/stephy0410/orquesta/actions/workflows/ci.yml)
 
-## Estimación de capacidad
-Objetivo de diseño: 5 mil planners, por 4 eventos al mes, por 200 invitados, da aproximadamente 4 millones de invitados al mes.
-Pico: la mayoría de los eventos caen en viernes, sábado y domingo, y el sábado en la noche es el peor caso. Son unos 4,600 eventos por semana; con alrededor del 40% en sábado, son unos 2 mil eventos esa noche. Con llegadas concentradas en 90 minutos, son 400 mil check ins en 5,400 segundos, aproximadamente 75 escrituras por segundo en promedio. Como la mayoría llega en los primeros 30 minutos, el pico real es unas 5 veces el promedio: unas 400 escrituras por segundo. Diseñamos para 500 por segundo, con margen. 
-Sincronización offline: cuando un venue recupera señal, los escáneres mandan de golpe todo lo pendiente. Eso agrega ráfagas cortas sobre el pico, y por eso la sincronización es por lotes.
-RSVP: cada invitado abre su invitación unas 10 veces y responde una o dos, alrededor de 10 lecturas por escritura. Son unos 40 millones de lecturas al mes, unas 15 por segundo en promedio, con picos justo después de enviar invitaciones. Se resuelve con caché en CloudFront.
-Almacenamiento: alrededor de 1 kilobyte por invitado, unos 4 gigabytes al mes y unos 50 al año, más los registros de check in y de notificaciones.
-Conclusión: el almacenamiento no es el problema. Lo difícil son las ráfagas de escritura del check in, la idempotencia en check in y pagos, el fan out del tablero y la concurrencia en reservas y mesas.
-## Requerimientos No funcionales
-Invitaciones y RSVP (FR 1). Objetivo: importar 1,000 invitados en menos de 30 segundos. El token del QR está firmado con HMAC, no se puede adivinar y no contiene datos personales. La página de RSVP carga en menos de 2.5 segundos (LCP p75) en 4G.
-Check in (FR 2). Objetivo: p99 menor a 300 milisegundos en línea y menor a 100 milisegundos sin conexión. Soporta 500 escrituras por segundo en el pico. Cero check ins perdidos, y un QR nunca admite más personas que su cupo. Al recuperar señal, 500 registros pendientes se sincronizan en menos de 30 segundos. 
-Tablero en vivo (FR 3). Objetivo: un cambio aparece en menos de 3 segundos. Soporta 10 mil conexiones abiertas a la vez y reconecta solo en menos de 5 segundos. 
-Proveedores (FR 4). Objetivo: buscar proveedores en un radio de 25 km tarda menos de 500 milisegundos (p95). Un proveedor nunca queda asignado a dos eventos que se traslapan. En emergencias, los primeros proveedores reciben la solicitud en menos de 60 segundos, y nunca se asignan más proveedores que lugares. 
-Recordatorios (FR 5). Objetivo: se envían a la hora programada con un margen de 5 minutos, en la zona horaria del evento, y nunca dos veces. 
-Pagos a proveedores (FR 6). Objetivo: ningún pago se cobra ni se envía dos veces, porque cada pago lleva una llave de idempotencia. No guardamos datos de tarjetas ni de cuentas; los maneja el procesador de pagos. Cada movimiento queda en un libro contable que solo se agrega y nunca se edita, con conciliación diaria contra el procesador. Si el procesador falla, el pago queda pendiente y se reintenta; nunca se pierde. 
-Acomodo de mesas (FR 7). Objetivo: ningún invitado queda en dos mesas y ninguna mesa rebasa su capacidad. Si dos personas editan el mismo plano a la vez, el segundo cambio se rechaza con aviso en lugar de sobrescribir el primero (control de versión optimista). Guardar un cambio tarda menos de 1 segundo, con soporte para 500 invitados en 50 mesas. 
-Envío por SMS y email (FR 8). Objetivo: 200 invitaciones se encolan en menos de 1 segundo y se entregan en menos de 5 minutos, con reintentos automáticos y una cola para mensajes fallidos. Ningún invitado recibe la misma invitación dos veces por el mismo canal, y si falla un canal, el otro se entrega igual. Se respeta la baja del invitado, y el dominio usa SPF, DKIM y DMARC para no caer en spam.
-Transversales. Aplican a toda la plataforma.
-Disponibilidad: 99.9% para la plataforma y 99.95% para check in de viernes a domingo de 17:00 a 02:00, con congelamiento de despliegues los sábados.
-Aislamiento de fallas: si fallan Notification, Live o el procesador de pagos, el check in y la asignación de proveedores siguen funcionando. Es la razón de ser de los microservicios.
-Durabilidad y recuperación: si cae una zona de disponibilidad, no se pierde ningún pago ni check in confirmado, gracias a la réplica síncrona en varias zonas. Ante corrupción o un borrado accidental, se restaura a cualquier punto de los últimos 7 días, perdiendo como máximo 5 minutos de datos (RPO), y el servicio vuelve en menos de 1 hora (RTO).
-Seguridad y privacidad: TLS en todo el tráfico y cifrado en reposo con KMS. Cada organización solo ve sus datos y el QR no contiene datos personales. Aviso de privacidad conforme a la LFPDPPP, y los teléfonos de los invitados se borran 90 días después del evento.
-Escalabilidad: crecer 10 veces, a unas 5 mil escrituras por segundo, sin rediseñar; solo se agrega capacidad.
-Accesibilidad: WCAG 2.2 AA en toda la aplicación web.
-Observabilidad: alarmas de p99, errores 5xx y colas atascadas, para detectar un problema en menos de 5 minutos, antes que el usuario.
-Preparado para internacional: fechas en UTC con zona horaria IANA por evento, idioma y moneda por organización, y arquitectura por celdas, con una celda por país o región y residencia de datos. Las traducciones se manejan con POEditor. México ya tiene 4 zonas horarias, por ejemplo las bodas en Cancún.
-La consistencia se elige por funcionalidad, no por sistema
-Es la idea clave para la presentación.
-Pagos: CP, consistencia fuerte y exactamente una vez. Un cobro doble es peor que un pago que tarda.
-Asignación de proveedores, antes del evento y en emergencias: CP, sin doble reserva.
-Check in: AP en el borde con reconciliación. Una puerta que deja de funcionar por falta de señal es peor que un duplicado ocasional.
-Tablero: consistencia eventual, en menos de 3 segundos.
-Acomodo de mesas: control de versión optimista. Cada quien ve sus propios cambios al instante, y un conflicto se avisa en lugar de sobrescribirse.
-Notificaciones: entrega al menos una vez con deduplicación, que para el invitado equivale a exactamente una vez.
-Entidades principales y su dueño
-Event Service es dueño de Organization, User con su rol, Event, Guest, Invitation, Rsvp, SeatingPlan, Table y SeatAssignment.
-Checkin Service es dueño de Manifest (una réplica), Admission y CheckinRecord.
-Dispatch Service es dueño de Vendor, VendorCategory, Availability, Booking, EmergencyRequest y EmergencyAssignment.
-Notification Service es dueño de Notification, DeliveryAttempt, Reminder y Unsubscribe.
-Payment Service es dueño de Payment, Payout, LedgerEntry e IdempotencyKey.
-Live Service no tiene entidades persistentes, solo proyecciones efímeras en Valkey.
-Regla: cada entidad tiene un solo servicio dueño. Los demás reciben copias por eventos y nunca leen su base de datos.
-Arquitectura de eventdriving
-Principio: dividimos por perfil de consistencia y de escalamiento, no por sustantivos. Seis servicios, cada uno con una razón defendible para existir.
-Event Service
-Responsabilidad: organizaciones, eventos, invitados, invitaciones, RSVP, importación CSV y acomodo de mesas. Datos: PostgreSQL con esquema propio. Por qué es independiente: lectura intensa en RSVP y es el dueño del ciclo de vida del evento. Responsable: Hannah.
-Checkin Service
-Responsabilidad: manifiesto, check in y sincronización offline. Datos: DynamoDB on demand. Por qué es independiente: es la ruta de escritura más caliente, con ráfagas de 500 por segundo; escala sola y usa escrituras condicionales. Responsable: Stephanie.
-Dispatch Service
-Responsabilidad: catálogo de proveedores, búsqueda geoespacial, contratación antes del evento, emergencias y asignación. Datos: PostgreSQL con PostGIS y esquema propio. Por qué es independiente: necesita consistencia fuerte y es el único dueño de las reservas y la asignación. Responsable: Emmanuel.
-Notification Service
-Responsabilidad: invitaciones y avisos por email y SMS, y recordatorios. Datos: PostgreSQL con el registro de entregas y las bajas. Por qué es independiente: integra proveedores externos lentos e inestables y aísla sus fallas. Responsable: Emmanuel.
-Live Service
-Responsabilidad: conexiones SSE del tablero. Datos: Valkey, efímero. Por qué es independiente: mantiene miles de conexiones abiertas, un perfil de escalamiento distinto al resto. Responsable: Hannah.
-Payment Service
-Responsabilidad: pagos de la planner a proveedores, anticipos y liquidaciones, y conciliación diaria con el procesador de pagos. Datos: PostgreSQL con esquema propio y un libro contable de solo agregar. Por qué es independiente: es la única parte que mueve dinero, exige consistencia fuerte y concentra el alcance de PCI DSS; aislarla reduce la superficie de riesgo y permite auditarla por separado. Responsable: Stephanie.
-Cómo fluye una petición
-Esta es la descripción del diagrama de arquitectura, paso a paso.
-Los cuatro clientes (tablero de la planner, escáner PWA offline, página de RSVP del invitado y app del proveedor) entran por CloudFront con WAF.
-CloudFront sirve la aplicación web desde S3 y manda las llamadas de API al ALB.
-El ALB enruta por path hacia Event, Checkin, Dispatch, Payment o Live Service, todos en ECS Fargate.
-Event usa su esquema de PostgreSQL. Dispatch usa su esquema de PostgreSQL con PostGIS. Notification y Payment usan cada uno su propio esquema. Checkin usa DynamoDB.
-Event, Dispatch y Payment publican eventos al bus de EventBridge con un outbox. Checkin los publica con DynamoDB Streams y EventBridge Pipes. EventBridge Scheduler publica los recordatorios.
-El bus entrega cada evento a una cola SQS por consumidor, cada una con su DLQ.
-Checkin, Notification, Live, Event, Dispatch y Payment consumen de sus propias colas.
-Live reparte las actualizaciones entre sus instancias con pub/sub de Valkey y las empuja por SSE al tablero.
-Notification envía email por SES y SMS por AWS End User Messaging. El procesador de pagos confirma cada pago con un webhook firmado hacia Payment Service.
+Plataforma para *wedding & event planners*: invitaciones con QR, RSVP sin cuenta, check-in offline en el venue, tablero en vivo de todos los eventos, contratación y pago de proveedores, y acomodo de mesas.
+
+Este README sigue el **delivery framework** de system design (Requirements → Core Entities → API → Data Flow → High-Level Design → Deep Dives) y agrega lo que un equipo necesita para operar el sistema: estado de entrega, calidad, CI/CD, cómo correrlo, responsables y riesgos.
+
+> **Fuente de verdad.** La especificación normativa (22 RF, 12 NFR, 20 TR, 29 AC y decisiones D1–D11) vive en [`docs/requerimientos.md`](docs/requerimientos.md). La narrativa de diseño detallada está en [`docs/delivery/`](docs/delivery/README.md). Este README resume y enlaza; si hay contradicción, gana `docs/requerimientos.md`.
+
+## Contenido
+
+0. [Estado de entrega](#0-estado-de-entrega)
+1. [Requirements](#1-requirements)
+2. [Core Entities](#2-core-entities)
+3. [API](#3-api)
+4. [Data Flow](#4-data-flow)
+5. [High-Level Design](#5-high-level-design)
+6. [Deep Dives](#6-deep-dives)
+7. [Calidad y trazabilidad](#7-calidad-y-trazabilidad)
+8. [CI/CD](#8-cicd)
+9. [Cómo correrlo](#9-cómo-correrlo)
+10. [Estructura del repositorio](#10-estructura-del-repositorio)
+11. [Equipo y responsables](#11-equipo-y-responsables)
+12. [Riesgos y trabajo pendiente](#12-riesgos-y-trabajo-pendiente)
+
+---
+
+## 0. Estado de entrega
+
+| # | Requisito funcional | Backend | Evidencia (test de aceptación en `back/test/`) |
+| --- | --- | --- | --- |
+| FR1 | Eventos, importación de invitados, invitación con QR único, RSVP sin cuenta | ✅ | *Ciclo completo del invitado* |
+| FR2 | Check-in por QR con mala o nula conectividad | ✅ | *Check-in offline, replay idempotente, convergencia cross-dispositivo…* |
+| FR3 | Tablero de todos los eventos casi en tiempo real | ✅ (polling ≤ 5 s p95, ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)) | *Check-in…* (contadores), *Retención…* (agregados) |
+| FR4 | Buscar y asignar proveedores, antes y en emergencia | ✅ | *Contratación: 100 solicitudes concurrentes…*, *Bordes normativos…* |
+| FR5 | Recordatorios: RSVP a invitados y hora de llegada a proveedores | ✅ | *Ciclo completo del invitado* (RSVP), *Recordatorio de llegada al proveedor* |
+| FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…* |
+| FR7 | Acomodo de mesas (con control de versión optimista) | ✅ | *Seating: 50 asignaciones concurrentes…*, *Seating: control de versión optimista* |
+| FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
+
+- **12/12 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
+- **82 endpoints HTTP**, **6 Lambdas**, **5 migraciones versionadas**.
+- Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
+
+---
+
+## 1. Requirements
+
+### 1.1 Funcionales
+
+1. **FR1** — Las planners crean eventos e importan invitados; cada invitado recibe una invitación con QR único y confirma sin crear cuenta.
+2. **FR2** — El staff hace check-in escaneando el QR en el venue, incluso con mala o nula conectividad.
+3. **FR3** — Los planners monitorean todos sus eventos en vivo desde un solo tablero, casi en tiempo real.
+4. **FR4** — Los planners pueden buscar proveedores y asignarlos al evento antes del evento y por alguna emergencia en el evento.
+5. **FR5** — Recordatorios automáticos: RSVP para invitados y hora de llegada para proveedores.
+6. **FR6** — El planner puede pagar a los proveedores.
+7. **FR7** — Los planners pueden organizar el acomodo de mesas de los invitados.
+8. **FR8** — Los invitados reciben su invitación por SMS y email.
+
+**Fuera de alcance:** facturación CFDI, presupuestos, asistente de IA, apps nativas y portal del anfitrión.
+
+La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/requerimientos.md` §2 y §12](docs/requerimientos.md).
+
+### 1.2 No funcionales
+
+| Área | Objetivo | Cómo se cumple hoy |
+| --- | --- | --- |
+| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS en páginas de 500 filas; QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. |
+| **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
+| **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; emergencia con expiración de 15 min. |
+| **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
+| **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **barrido de conciliación** de pagos `pendiente`/`desconocido` por llave de idempotencia. |
+| **Mesas** (FR7) | Nadie en dos mesas; ninguna mesa sobre capacidad; edición concurrente rechazada con aviso (versión optimista); guardar < 1 s con 500 invitados / 50 mesas. | Lock por evento + conteo transaccional (AC-14); **`plan_version` + `If-Match`** → `409 SEATING_VERSION_CONFLICT`. |
+| **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`. |
+
+**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, LFPDPPP y borrado de teléfonos de invitados; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
+
+### 1.3 Estimación de capacidad (lo que sí cambia el diseño)
+
+- **Objetivo:** 5 000 planners × 4 eventos/mes × 200 invitados ≈ **4 M invitados/mes**.
+- **Pico de check-in:** ~2 000 eventos el sábado en la noche → 400 000 check-ins en 90 min ≈ 75 escrituras/s promedio, ~**400/s** reales en los primeros 30 min. Diseñamos para **500/s**.
+- **Reconexión offline:** al volver la señal los escáneres envían todo lo pendiente → ráfagas sobre el pico ⇒ **sincronización por lotes**.
+- **RSVP:** ~10 lecturas por escritura, ~40 M lecturas/mes ⇒ **caché de CDN** para el shell y el QR.
+- **Almacenamiento:** ~1 KB/invitado ≈ 50 GB/año: **no es el problema**.
+
+**Conclusión:** lo difícil son las ráfagas de escritura del check-in, la idempotencia en check-in y pagos, el *fan-out* del tablero y la concurrencia en reservas y mesas. Las [Deep Dives](#6-deep-dives) atacan exactamente eso.
+
+---
+
+## 2. Core Entities
+
+Cada entidad tiene **un solo módulo dueño**; los demás reciben copias por eventos de outbox o leen proyecciones. Detalle de columnas e invariantes: [`docs/delivery/02-entidades.md`](docs/delivery/02-entidades.md).
+
+| Dominio (servicio lógico) | Entidades | Responsable |
+| --- | --- | --- |
+| **Event** | `User`, `EventMembership`, `Venue`, `Event`, `EventRequirement`, `Guest`, `Invitation`, `RsvpResponse`, `ImportJob`, `Table`, `SeatAssignment`, `SeatingPlan` | Hannah |
+| **Checkin** | `EventAccessToken`, `StaffAssignment`, `ScanSession`, `CheckinEvent` (append-only), `DeviceSyncState`, `CheckinBatchAck` | Stephanie |
+| **Dispatch** | `WorkerProfile`, `AvailabilityWindow`, `WorkerReservation`, `PlannerAlert` | Emmanuel |
+| **Notification** | `InvitationDelivery`, `ReminderJob`, `VerificationChallenge` | Emmanuel |
+| **Payment** | `Payment`, `PaymentEntry` (ledger append-only), `WebhookEvent` | Stephanie |
+| **Live** | `event_counters` (read model), `outbox_event`, `projector_applied` | Hannah |
+| Transversal | `AuditEntry` (append-only), `idempotency_record` | — |
+
+---
+
+## 3. API
+
+REST/JSON sobre API Gateway HTTP API v2, prefijo `/v1`. Contratos completos: [`03a` planner e invitado](docs/delivery/03a-api-planner-invitado.md) y [`03b` trabajador y escaneo](docs/delivery/03b-api-trabajador-scan.md).
+
+| Superficie | Endpoints clave |
+| --- | --- |
+| Auth | `POST /auth/register · /auth/login · /auth/verify-email · /auth/password-reset · /auth/event-session` |
+| Eventos | `POST /events`, `GET /events`, `PATCH /events/{id}`, `POST /events/{id}/publish · start · close · cancel`, `members`, `staff-assignments`, `access-tokens` |
+| Invitados e invitaciones | `POST /events/{id}/guests/import`, `GET …/imports/{import_id}`, `GET …/invitations/pending-summary`, `POST …/invitations/send · resend` |
+| Invitado (público, sin cuenta) | `GET · POST /public/invitations/{rsvp_token}/rsvp` |
+| Tablero | `GET /dashboard?limit≤25&cursor` |
+| Mesas | `POST · GET /events/{id}/tables`, `POST /events/{id}/seat-assignments`, `DELETE …/seat-assignments/{guest_id}` (con `If-Match`) |
+| Check-in | `POST /scan-sessions`, `GET …/roster · revocations`, `POST …/batches` (≤ 500), `PUT …/sync-state`, `POST /events/{id}/checkins/{id}/annulments` |
+| Proveedores | `GET /workers`, `PUT /events/{id}/requirements`, `POST /events/{id}/worker-requests`, `POST …/replacements`, `POST /worker/requests/{id}/accept · reject` |
+| Pagos | `POST · GET /reservations/{id}/payments`, `POST /webhooks/psp` |
+
+**Convenciones:** `Idempotency-Key` en todo POST no idempotente (misma clave + mismo cuerpo = misma respuesta; cuerpo distinto = `409 IDEMPOTENCY_CONFLICT`); envelope de error `{error:{code,message,details}}` con catálogo cerrado; paginación por cursor; cookie `httpOnly` en navegador y `Bearer` para la PWA de escaneo; `404` si nunca tuviste relación con el evento, `403` si la tuviste y se revocó.
+
+---
+
+## 4. Data Flow
+
+1. **Invitación (FR1, FR8):** CSV → S3 → `import-worker` (valida aforo atómicamente, deduplica, genera QR) → invitados `pendiente_envío` → el planner confirma el envío → outbox → SNS → colas SMS y email **en paralelo** → `InvitationDelivery` por canal.
+2. **RSVP (FR1, FR5):** invitado abre `/invitacion/#t=<token>` (shell cacheado) → `POST …/rsvp` → nueva `RsvpResponse` (la anterior queda *superseded*) → cancela recordatorios RSVP pendientes → si declina, libera su asiento.
+3. **Check-in (FR2):** la PWA descarga roster firmado + revocaciones → verifica cada QR **localmente** y escribe en IndexedDB antes de mostrar el veredicto → al haber red, envía lotes ≤ 500 → el servidor deduplica, converge duplicados entre dispositivos y emite el delta al tablero.
+4. **Tablero (FR3):** toda escritura que mueve contadores inserta en `outbox_event` en la misma transacción → *flush* inmediato → `projector` agrega por evento en ventanas de 1 s → `event_counters` → `GET /dashboard`.
+5. **Contratación y pago (FR4, FR6):** búsqueda → solicitud con `costo_congelado` → el proveedor acepta (lock por trabajador) → recordatorios de llegada T-24 h / T-2 h → el planner paga → PSP con llave de idempotencia → ledger de doble entrada → webhook o barrido de conciliación confirman.
+
+Detalle: [`docs/delivery/04-data-flow.md`](docs/delivery/04-data-flow.md).
+
+---
+
+## 5. High-Level Design
+
+### 5.1 Arquitectura entregada
+
+```mermaid
+flowchart LR
+  subgraph Clientes
+    P[Consola planner]:::c
+    S[PWA de escaneo<br/>offline-first]:::c
+    I[Página RSVP<br/>sin cuenta]:::c
+    W[Consola proveedor]:::c
+  end
+  CDN[CloudFront + S3<br/>shell, QR PNG]
+  APIGW[API Gateway<br/>HTTP API v2]
+  API[Lambda api<br/>82 endpoints]
+  DB[(PostgreSQL 16<br/>RDS / Aurora Sv2)]
+  OB[[outbox_event]]
+  SNS[SNS<br/>orquesta-notifications]
+  QS[SQS notify_sms + DLQ]
+  QE[SQS notify_email + DLQ]
+  QP[SQS projection + DLQ]
+  QI[SQS import_jobs + DLQ]
+  NS[Lambda notify-sms]
+  NE[Lambda notify-email]
+  PR[Lambda projector]
+  IW[Lambda import-worker]
+  OP[Lambda outbox-poller<br/>cada 1 min]
+  PSP[(Procesador de pagos)]
+
+  P & S & I & W --> CDN
+  P & S & I & W --> APIGW --> API --> DB
+  API -. misma tx .-> OB
+  API -- flush inmediato --> SNS & QP
+  OP -- rezagados, recordatorios,<br/>expiraciones, retención,<br/>conciliación --> DB
+  OP --> SNS & QP
+  OP <--> PSP
+  API <--> PSP
+  PSP -- webhook HMAC --> APIGW
+  SNS --> QS --> NS
+  SNS --> QE --> NE
+  QP --> PR --> DB
+  API --> QI --> IW --> DB
+```
+
+### 5.2 Servicios lógicos → módulos
+
+Los seis servicios del diseño original se conservan como **límites de dominio** (dueños de entidades, eventos de outbox entre ellos), desplegados como un **monolito modular serverless**:
+
+| Servicio lógico | Dónde vive | Notas |
+| --- | --- | --- |
+| Event | `routes/{events,guests,invitations,public-rsvp,seating}.js`, `import-worker` | Mesas con versión optimista (migración `005`) |
+| Checkin | `routes/scan.js`, `front/src/app/features/scanner` | Escrituras append-only + índice único parcial |
+| Dispatch | `routes/workers.js`, función SQL `aceptar_worker_reservation` | Lock por trabajador, conflicto determinista |
+| Notification | `notify-sms`, `notify-email`, barridos del `outbox-poller` | Colas independientes por canal |
+| Payment | `routes/payments.js`, `shared/payment-reconciliation.js` | Ledger de doble entrada, conciliación |
+| Live | `routes/dashboard.js`, `projector` | Read model `event_counters` |
+
+### 5.3 Decisiones de arquitectura (ADR)
+
+#### ADR-1 · Monolito modular en Lambda en lugar de 6 servicios en ECS Fargate
+- **Contexto:** el entorno de entrega es AWS Learner Lab (USD 100, sesiones de 4 h, sin `iam:CreateRole`, `cloudfront:*` ni `ses:*`).
+- **Decisión:** una Lambda HTTP + 5 Lambdas de trabajo, compartiendo dominio; los límites de servicio se mantienen como módulos con dueño único.
+- **Consecuencias:** costo ~0 en reposo y escalado por invocación; el aislamiento de fallas se logra por **colas independientes** (notificaciones, proyección, import) y por el barrido de conciliación que nunca propaga errores del PSP. Para separar un servicio basta mover su router y sus consumidores: no hay lecturas cruzadas de tablas de otro dominio en las rutas.
+
+#### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
+- **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
+- **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre. El pico de diseño (500/s) se absorbe en ~1–2 transacciones/s por venue gracias al batching.
+- **Riesgo:** no está probado con carga real (ver [§12](#12-riesgos-y-trabajo-pendiente)); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con condicionales.
+
+#### ADR-3 · Tablero por polling con read model en lugar de SSE + Valkey
+- **Decisión:** `event_counters` alimentado por outbox; el cliente consulta cada 3 s con `limit ≤ 25`.
+- **Por qué:** ElastiCache/Valkey no está disponible en el entorno y 10 000 conexiones SSE no son viables en Lambda. NFR-03 de la spec vigente fija **≤ 5 s p95**, más laxo que los 3 s del objetivo original.
+- **Riesgo:** con muchos planners conectados el polling cuesta lecturas; la evolución natural es API Gateway WebSocket o SSE en un contenedor, alimentado por el mismo outbox.
+
+#### ADR-4 · Zonas + radio en lugar de PostGIS para la búsqueda de proveedores
+- **Decisión:** catálogo cerrado de zonas por perfil más `radio_km`, con índice parcial de visibilidad.
+- **Por qué:** suficiente para el MVP en una ciudad y sin extensión adicional. El objetivo de 25 km con PostGIS queda como evolución.
+
+#### ADR-5 · Un solo reloj: el de la aplicación
+- **Decisión:** toda marca temporal que participa en una regla de negocio (expiraciones, `estado_en`, recordatorios, pagos) la fija la aplicación (`ctx.now()`), no `DEFAULT now()` de la base.
+- **Por qué:** evita reglas evaluadas con dos relojes distintos y hace testeable el tiempo (las pruebas viajan meses hacia adelante). Los guardias de inmutabilidad de la BD siguen usando su propio reloj como defensa en profundidad.
+
+Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delivery/05-high-level-design.md) · [`07-system-design-back-front.md`](docs/delivery/07-system-design-back-front.md).
+
+---
+
+## 6. Deep Dives
+
+**La consistencia se elige por funcionalidad, no por sistema.**
+
+| Funcionalidad | Modelo | Mecanismo implementado |
+| --- | --- | --- |
+| **Pagos** | CP, exactamente una vez. *Un cobro doble es peor que un pago que tarda.* | Llave `pay:{reservation_id}` hacia el PSP; `FOR UPDATE` sobre `payment` antes de asentar; ledger con unicidad `(pago, movimiento, cuenta)` y trigger diferido de balance; webhook idempotente por `event_id`; conciliación periódica por llave. |
+| **Asignación de proveedores** (antes y en emergencia) | CP, sin doble reserva. | `pg_advisory_xact_lock(worker)` + suma de plazas aceptadas solapadas con `tstzrange`; la perdedora recibe `409 RESERVATION_OVERLAP` con la ganadora. |
+| **Check-in** | AP en el borde con reconciliación. *Una puerta que no abre por falta de señal es peor que un duplicado ocasional.* | Veredicto local en < 100 ms; lote idempotente por `(invitation, device, sequence)`; el segundo dispositivo queda `duplicado_tardio` apuntando al check-in vigente; el servidor decide el veredicto persistido. |
+| **Tablero** | Eventual, ≤ 5 s p95. | Outbox en la misma transacción + *flush* inmediato + proyector con *coalescing* de 1 s y dedupe por `outbox_event_id`. |
+| **Mesas** | Versión optimista. *Cada quien ve sus cambios al instante; un conflicto se avisa en lugar de sobrescribirse.* | `seating_plan.version` con compare-and-set dentro de la transacción de la mutación; invariantes de capacidad bajo lock por evento. |
+| **Notificaciones** | Al menos una vez + deduplicación = exactamente una vez para el invitado. | Unicidad `(destinatario, plantilla, ventana)`; canales en colas separadas; reenvío explícito como nueva ventana `resend_n`. |
+
+Los siete problemas difíciles y qué se rompe si falta cada mecanismo: [`docs/delivery/06-deep-dives.md`](docs/delivery/06-deep-dives.md).
+
+---
+
+## 7. Calidad y trazabilidad
+
+### 7.1 Estrategia de pruebas
+
+| Nivel | Qué cubre | Comando |
+| --- | --- | --- |
+| Aceptación (memoria) | 12 escenarios end-to-end a través del handler HTTP real y los 5 workers; retroalimentación en ~3 s | `cd back && npm test` |
+| Aceptación (PostgreSQL) | **La misma suite** contra PgStore, migraciones 001–005 y un esquema limpio por escenario: valida SQL, triggers, constraints y concurrencia real | `cd back && npm run db:up && npm run test:pg` |
+| Frontend | Build de producción + tests unitarios (Vitest) | `cd front && npx ng build && npx ng test --watch=false` |
+| Infraestructura | `terraform fmt -check` + `validate` | `cd terraform && terraform validate` |
+
+### 7.2 Trazabilidad FR → criterios de aceptación → escenario
+
+| FR | AC de la spec | Escenario |
+| --- | --- | --- |
+| FR1 | AC-06, AC-12, AC-20, AC-21, AC-23 | Ciclo completo del invitado |
+| FR2 | AC-03, AC-05, AC-16, AC-17 (AC-01 y AC-04 requieren prueba de carga, ver §12) | Check-in offline, replay idempotente, convergencia… |
+| FR3 | AC-05, AC-16 (tablero = asistentes reales) | Check-in…; Retención… |
+| FR4 | AC-07, AC-22, AC-25, AC-26, AC-27, AC-29 | Contratación…; Auth, OTP…; Bordes normativos… |
+| FR5 | AC-12 (RSVP), RF-10 (llegada) | Ciclo completo del invitado; Recordatorio de llegada al proveedor |
+| FR6 | AC-08, AC-09, AC-26 | Pagos: contract test PSP…; Pagos: conciliación automática… |
+| FR7 | AC-14 + versión optimista | Seating: 50 asignaciones…; Seating: control de versión optimista |
+| FR8 | AC-21, RF-04 (`indeterminado`), RF-20 (bajas) | Ciclo completo del invitado; Bordes normativos… |
+
+### 7.3 Defectos encontrados al correr contra PostgreSQL
+
+Correr la suite contra la base real (antes solo corría en memoria) destapó defectos que habrían fallado en producción:
+
+| Defecto | Impacto | Corrección |
+| --- | --- | --- |
+| Índice único `payment_entry(pago_id) WHERE movimiento='cobro'` impedía la 2.ª línea del asiento doble | **Ningún pago podía registrarse** | Migración `003`: unicidad `(pago_id, movimiento, cuenta)` |
+| Columnas OUT de `aceptar_worker_reservation` ambiguas con las de la tabla | **Ningún proveedor podía aceptar** una solicitud | Migración `002`: `#variable_conflict use_column` |
+| 5 pagos concurrentes asentaban el ledger en paralelo | Error 500 / riesgo de doble asiento | Asiento único bajo `FOR UPDATE` (`_postCobroLedger`) |
+| Lecturas con otra conexión antes del `COMMIT` (`createWorkerProfile`, import, requerimientos) | Respuestas `null` → 500 | Lectura después del commit |
+| `RETURNING DISTINCT` (SQL inválido) en el barrido `indeterminado` | El `outbox-poller` fallaba completo cada minuto | CTE + `GROUP BY` |
+| Veredicto de check-in tomado tal cual del cliente | Un cliente podía persistir un veredicto arbitrario | El servidor solo acepta admisiones condicionales conocidas |
+| Anulación de check-in sin `AuditEntry` ni lock | Incumplía RF-14; dos anulaciones restaban 2 | Auditoría en la misma tx + `FOR UPDATE` |
+| Cierre de evento fallaba si un acceso se emitía en el mismo instante | Evento imposible de cerrar | Migración `004` |
+| Errores 500 sin log | Alarma de 5xx sin causa raíz | Log estructurado (sin PII) en `errorResponse` |
+
+---
+
+## 8. CI/CD
+
+| Workflow | Disparador | Qué hace |
+| --- | --- | --- |
+| [`ci.yml`](.github/workflows/ci.yml) | Cada PR y push a `main` | 4 jobs en paralelo: backend en memoria (Node 20 = runtime Lambda) + lint; backend contra **PostgreSQL 16** como service container; frontend build + tests (Node 24); Terraform `fmt` + `validate`. |
+| [`deploy.yml`](.github/workflows/deploy.yml) | Manual (`workflow_dispatch`) | Reutiliza `ci.yml` como gate → build del front → `npm ci --omit=dev` → `terraform plan` (y `apply` si se marca) con estado remoto en S3 → *smoke test* de `/health`. Bloquea `apply` a `prod` en sábado (congelamiento). |
+
+**Configuración inicial (una vez):**
+1. *Settings → Branches → main*: exigir PR y los 4 checks de `CI` en verde.
+2. *Settings → Environments*: crear `lab` (y `prod` con revisores obligatorios).
+3. En cada environment: secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (en Learner Lab se renuevan cada sesión) y variable `TF_STATE_BUCKET` con un bucket S3 existente para el estado de Terraform.
+
+Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con advisory lock; son **inmutables**: un cambio de esquema es un archivo `NNN_*.sql` nuevo.
+
+---
+
+## 9. Cómo correrlo
+
+**Requisitos:** Node 20+ (backend), Node 24 (frontend, Angular CLI 22), Docker (PostgreSQL local), Terraform ≥ 1.5.
+
+```bash
+# Backend
+cd back
+npm ci
+npm test               # suite de aceptación en memoria
+npm run db:up          # PostgreSQL 16 en localhost:55432
+npm run test:pg        # misma suite contra PostgreSQL
+npm run db:down
+
+# Frontend
+cd front
+npm ci
+npx ng serve           # http://localhost:4200
+
+# Infraestructura (Learner Lab)
+cd terraform
+terraform init && terraform plan -out=tfplan && terraform apply tfplan
+terraform destroy      # al terminar la sesión, para no consumir crédito
+```
+
+Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`…): [`terraform/README.md`](terraform/README.md). Backend: [`back/README.md`](back/README.md). Frontend: [`front/README.md`](front/README.md).
+
+---
+
+## 10. Estructura del repositorio
+
+```text
+orquesta/
+├── .github/workflows/   # CI (4 jobs) y CD manual a AWS
+├── docs/                # requerimientos.md (normativo) + delivery/ (framework 01–07)
+├── back/                # 6 Lambdas Node.js, dominio compartido, migraciones, suite de aceptación
+├── front/               # Angular 22 + PWA: planner, proveedor, invitación, escáner
+└── terraform/           # API Gateway, Lambdas, RDS/Aurora, SNS/SQS, S3, KMS, alarmas
+```
+
+---
+
+## 11. Equipo y responsables
+
+| Persona | Servicios lógicos | Superficie principal |
+| --- | --- | --- |
+| **Hannah** | Event, Live | Eventos, invitados, RSVP, mesas, tablero |
+| **Stephanie** | Checkin, Payment | Escaneo offline, pagos y ledger; integración y calidad del backend |
+| **Emmanuel** | Dispatch, Notification | Proveedores, emergencias, SMS/email, recordatorios; infraestructura |
+
+Flujo de trabajo: rama por cambio → PR con CI en verde → revisión de otro integrante → merge a `main`. El trabajo abierto vive en [GitHub Issues](https://github.com/stephy0410/orquesta/issues).
+
+---
+
+## 12. Riesgos y trabajo pendiente
+
+| Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
+| --- | --- | --- |
+| Sin prueba de carga del check-in (500 escrituras/s) ni del import (1 000 en < 30 s) | NFR no demostrados | Prueba con k6 / Artillery contra el entorno `lab` |
+| Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
+| Front aún no envía `If-Match` en mesas | El aviso de conflicto no se ve en la UI | Issue para el front; luego activar `SEATING_REQUIRE_IF_MATCH=true` |
+| Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |
+| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN en `lab` | Activar en `prod` (`email_provider_mode=ses`, `enable_cloudfront=true`) |
+| PSP simulado (`MockStripeTestAdapter`) | Sin integración real | Adaptador Stripe en modo test detrás del puerto `PaymentProvider` (el contract test ya existe) |
