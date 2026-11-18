@@ -9,25 +9,34 @@ Servicios serverless en Node.js 20 (ESM) sobre AWS Lambda y PostgreSQL 16 (RDS /
 | `migrations/` | DDL versionado `NNN_*.sql`, aplicado en orden por `runMigrations` (ver abajo) |
 | `src/lambdas/api/` | Handler HTTP (API Gateway HTTP API v2): 82 endpoints en `routes/*.js` + *flush* inmediato del outbox |
 | `src/lambdas/import-worker/` | SQS `import_jobs`: CSV ≤ 20 000 filas, aforo atómico, QR PNG |
-| `src/lambdas/outbox-poller/` | EventBridge cada minuto: outbox rezagado, recordatorios, expiraciones 48 h / 15 min, `indeterminado`, retención NFR-08 y **conciliación de pagos** |
+| `src/lambdas/outbox-poller/` | EventBridge cada minuto: outbox rezagado, recordatorios, expiraciones 48 h / 15 min, `indeterminado`, retención NFR-08, **reintento de pagos sin confirmar** y **conciliación diaria** |
 | `src/lambdas/projector/` | SQS `projection`: *coalescing* de 1 s sobre `event_counters` (tablero) |
 | `src/lambdas/notify-sms/`, `notify-email/` | SQS por canal (alimentadas por SNS), reintentos y DLQ |
 | `src/shared/store.js` | `InMemoryStore`: implementación de referencia para pruebas rápidas |
 | `src/shared/db.js` + `pg-store-methods.js` | `PgStore`: implementación de producción sobre PostgreSQL |
-| `src/shared/payment-reconciliation.js` | Barrido de pagos `pendiente`/`desconocido` contra el PSP |
+| `src/shared/payment-reconciliation.js` | Barrido de pagos `pendiente`/`desconocido` y conciliación diaria ledger ↔ procesador |
+| `src/shared/qr-png.js` | Render del PNG del QR (filtro PNG fijo: ~2× más rápido, mismo tamaño) |
+| `dev/server.js` | Servidor local de desarrollo (API + workers en proceso) |
+| `load/` | Pruebas de carga del check-in y del import ([`load/README.md`](load/README.md)) |
 | `src/shared/{http,crypto,ports,observability}.js` | Auth cookie/Bearer, idempotencia, AES-256-GCM, ES256, puertos SMS/Email/PSP/QR, métricas EMF |
 
 Ambos stores exponen **la misma interfaz** y la suite de aceptación corre contra los dos.
+
+## Servidor local
+
+`npm run dev` levanta el API en `http://localhost:3000` (el front en modo desarrollo apunta ahí) con los workers en proceso y CORS para `http://localhost:4200`. Usa PostgreSQL de `npm run db:up`, o `npm run dev -- --memory` para no necesitar Docker. Email y SMS se imprimen en consola (tokens, OTP, links de invitación). Código: [`dev/server.js`](dev/server.js).
 
 ## Pruebas
 
 ```bash
 npm ci
-npm test            # 12 escenarios de aceptación con InMemoryStore (~3 s)
+npm test            # 14 escenarios de aceptación con InMemoryStore (~3 s)
 npm run db:up       # PostgreSQL 16 en localhost:55432 (docker compose)
 npm run test:pg     # la misma suite contra PgStore + migraciones reales
 npm run test:all    # ambas
 npm run lint        # chequeo de sintaxis de todo src/ y test/
+npm run load:checkin   # carga del check-in (AC-01, AC-04)
+npm run load:import    # carga del import (1 000 en < 30 s; 5 000; 20 000)
 npm run db:down
 ```
 
@@ -46,6 +55,7 @@ npm run db:down
 | `003_fix_payment_entry_unicidad.sql` | Unicidad del ledger por `(pago, movimiento, cuenta)` (TR-09) |
 | `004_permitir_revocacion_inmediata.sql` | Cerrar un evento con accesos emitidos en el mismo instante |
 | `005_seating_plan_version.sql` | Versión optimista del plano de mesas (FR7) |
+| `006_payment_reconciliation.sql` | Resultado de la conciliación diaria ledger ↔ procesador (FR6) |
 
 - Se aplican automáticamente en el *cold start* (`AUTO_MIGRATE=true`), en **una** transacción serializada con advisory lock, registrando cada archivo en `schema_migrations`.
 - Cada archivo trae su propio `BEGIN/COMMIT` para poder aplicarse también con `psql -f`.

@@ -16,6 +16,7 @@ import {
   signWebhookHmac,
   verifyEs256Jws,
 } from "../src/shared/crypto.js";
+import { parseGuestsCsv } from "../src/shared/domain-helpers.js";
 import { verifyPaymentProviderContract } from "../src/shared/ports.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2335,4 +2336,146 @@ test("Pagos: conciliación automática de pagos desconocidos, sin doble cobro y 
   const again = await h.outboxPoller();
   assert.equal(again.payments.revisados, 0);
   assert.equal(psp.chargeExecutions - chargesBefore, 1);
+});
+
+// ============================================================================
+// RF-02 / AC-20 en el worker: si el aforo se agota entre la validación de la ruta y el
+// procesamiento (dos imports compitiendo), el job queda `fallido` de forma PERSISTENTE con 0 creados.
+// ============================================================================
+test("Import: aforo excedido en el worker deja el job fallido (no colgado en en_proceso) y no crea invitados", async () => {
+  const h = await createTestHarness();
+  const planner = await h.registerAndLoginUser({ email: "aforo-worker@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Salón chico", zona: "centro", direccion: "Calle 3" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Cena íntima",
+      fecha: "2026-07-01",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-07-01T18:00:00-06:00", fin: "2026-07-02T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 2,
+    },
+  });
+  const eventId = evt.body.id;
+  const csv = "nombre,email,telefono\nAna,ana@x.com,\nLuis,luis@x.com,\nEva,eva@x.com,\n";
+  const job = await h.ctx.store.createImportJob({ eventId, s3Key: "imports/race.csv", fileHash: "f".repeat(64), totalFilas: 3 });
+  const importId = job.import_id || job.id;
+  await assert.rejects(
+    h.ctx.store.executeImportBatch({
+      importId,
+      eventId,
+      parsedRows: parseGuestsCsv(csv),
+      qrSigner: h.ctx.qrSigner,
+      objectStorage: h.ctx.objectStorage,
+    }),
+    (err) => err.code === "AFORO_EXCEDIDO"
+  );
+  const status = await h.request("GET", `/v1/events/${eventId}/guests/imports/${importId}`, { headers: planner.headers });
+  assert.equal(status.status, 200);
+  assert.equal(status.body.estado, "fallido");
+  assert.equal(status.body.aceptadas, 0);
+  const guests = await h.request("GET", `/v1/events/${eventId}/guests`, { headers: planner.headers });
+  assert.equal(guests.body.items.length, 0);
+});
+
+// ============================================================================
+// FR6: conciliación diaria ledger ↔ procesador. Día cuadrado = `conciliado`; un cobro del PSP sin
+// asiento en el ledger = `con_diferencias` + métrica psp_error (alarma). Una sola vez por día.
+// ============================================================================
+async function setupAcceptedReservation(h, prefix, monto) {
+  const planner = await h.registerAndLoginUser({ email: `${prefix}-planner@orquesta.test` });
+  const worker = await h.registerAndLoginUser({ email: `${prefix}-worker@orquesta.test`, role: "worker" });
+  const phone = `+52559${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}`;
+  const wp = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: `Prov ${prefix}`,
+      categorias: ["fotografo"],
+      tarifa: { monto, moneda: "MXN", unidad: "evento" },
+      zonas: ["norte"],
+      telefono_e164: phone,
+    },
+  });
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", { headers: worker.headers, body: { canal: "telefono" } });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === phone).metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-06-15T10:00:00Z", fin: "2026-06-15T22:00:00Z", zona: "norte", rol: "fotografo" },
+  });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: `Venue ${prefix}`, zona: "norte", direccion: "Norte 2" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: `Evento ${prefix}`,
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T12:00:00Z", fin: "2026-06-15T20:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 20,
+    },
+  });
+  const req = await h.request("POST", `/v1/events/${evt.body.id}/worker-requests`, {
+    headers: planner.headers,
+    body: {
+      worker_id: wp.body.worker_id,
+      rol: "fotografo",
+      plazas: 1,
+      ventana: { inicio: "2026-06-15T13:00:00Z", fin: "2026-06-15T18:00:00Z" },
+      hora_llegada: "2026-06-15T13:00:00Z",
+    },
+  });
+  await h.request("POST", `/v1/worker/requests/${req.body.id}/accept`, { headers: worker.headers, body: {} });
+  return { planner, reservationId: req.body.id };
+}
+
+test("Pagos: conciliación diaria ledger vs procesador detecta cobros sin asiento y corre una vez por día (FR6)", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-05T12:00:00Z" });
+  const { planner, reservationId } = await setupAcceptedReservation(h, "concilia", 800);
+  const pay = await h.request("POST", `/v1/reservations/${reservationId}/payments`, { headers: planner.headers, body: {} });
+  assert.equal(pay.status, 201);
+
+  // Antes de las 02:00 UTC del día siguiente no se concilia (margen para resolver `desconocido`).
+  h.setNow("2026-06-06T01:00:00Z");
+  assert.equal((await h.outboxPoller()).daily_reconciliation.estado, "esperando_ventana");
+
+  // Día 05 cuadrado: 1 cobro en el PSP y 1 en el ledger por el mismo monto.
+  h.setNow("2026-06-06T03:00:00Z");
+  const r1 = (await h.outboxPoller()).daily_reconciliation;
+  assert.equal(r1.dia, "2026-06-05");
+  assert.equal(r1.estado, "conciliado");
+  assert.equal(r1.cobros_psp, 1);
+  assert.equal(r1.cobros_ledger, 1);
+  assert.equal(r1.monto_psp, 800);
+  assert.equal(r1.monto_ledger, 800);
+  assert.equal((await h.outboxPoller()).daily_reconciliation.estado, "ya_conciliado");
+
+  // Día 06: el PSP registra un cobro que el ledger no tiene (p. ej. cobro hecho fuera del sistema).
+  h.setNow("2026-06-06T15:00:00Z");
+  await h.ctx.paymentProvider.charge({ idempotencyKey: "pay:fantasma-0000000000000001", amount: 999, currency: "MXN" });
+  h.setNow("2026-06-07T02:30:00Z");
+  const r2 = (await h.outboxPoller()).daily_reconciliation;
+  assert.equal(r2.dia, "2026-06-06");
+  assert.equal(r2.estado, "con_diferencias");
+  assert.equal(r2.diferencias.length, 1);
+  assert.equal(r2.diferencias[0].tipo, "cobro_sin_ledger");
+  assert.equal(r2.diferencias[0].idempotency_key, "pay:fantasma-0000000000000001");
+  const mismatchMetrics = h.ctx.metrics.records.filter(
+    (m) => m.metricName === "psp_error" && m.dimensions.Reason === "reconciliation_mismatch"
+  );
+  assert.equal(mismatchMetrics.length, 1, "emite psp_error una vez para la alarma de CloudWatch");
+  assert.equal((await h.outboxPoller()).daily_reconciliation.estado, "ya_conciliado");
 });

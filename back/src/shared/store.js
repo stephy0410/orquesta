@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import {
   isValidCategoria,
   isValidIanaTimezone,
@@ -28,6 +27,7 @@ import {
   windowsOverlap,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
+import { renderQrPng } from "./qr-png.js";
 import { ulid } from "./ulid.js";
 
 class KeyedMutex {
@@ -105,6 +105,7 @@ export class InMemoryStore {
     this.webhookEvents = new Map();
     this.plannerAlerts = [];
     this.seatingPlanVersions = new Map();
+    this.paymentReconciliations = new Map();
     this.revokedSessionJtis = new Map();
 
     this.syntheticSeqCounter = 100000;
@@ -1508,7 +1509,7 @@ export class InMemoryStore {
           key_id: activeKeyId,
         };
         const qrToken = await qrSigner.signJws(qrPayload, activeKeyId);
-        const qrPngBuffer = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+        const qrPngBuffer = await renderQrPng(qrToken);
         const qrS3Key = `qr/${invitationId}_v1.png`;
 
         await objectStorage.putObject({
@@ -2076,7 +2077,7 @@ export class InMemoryStore {
       keyId
     );
     const qrS3Key = `qr/${inv.id}_v${newVersion}.png`;
-    const pngBuf = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+    const pngBuf = await renderQrPng(qrToken);
     await objectStorage.putObject({
       bucket: assetsBucket,
       key: qrS3Key,
@@ -4976,6 +4977,34 @@ export class InMemoryStore {
       if (this.metrics) this.metrics.pspError("failed");
       throw new AppError("PSP_ERROR", "El PSP rechazó el cobro");
     });
+  }
+
+  /** Cobros asentados en el ledger con `cobrado_en` en [from, to) (conciliación diaria). */
+  async listLedgerCharges({ from, to }) {
+    const f = new Date(from).getTime();
+    const t = new Date(to).getTime();
+    return [...this.payments.values()]
+      .filter((p) => p.cobrado_en && !p.deleted_at)
+      .filter((p) => {
+        const c = new Date(p.cobrado_en).getTime();
+        return c >= f && c < t;
+      })
+      .map((p) => ({ payment_id: p.id, idempotency_key: p.idempotency_key, monto: Number(p.monto), moneda: p.moneda, cobrado_en: toIso(p.cobrado_en) }));
+  }
+
+  async getPaymentByIdempotencyKey(key) {
+    const p = [...this.payments.values()].find((x) => x.idempotency_key === key);
+    return p ? { payment_id: p.id, monto: Number(p.monto), moneda: p.moneda, cobrado_en: p.cobrado_en ? toIso(p.cobrado_en) : null } : null;
+  }
+
+  async getPaymentReconciliation(dia) {
+    return this.paymentReconciliations.get(dia) || null;
+  }
+
+  /** Inserta el resultado del día; si ya existía, conserva el primero (idempotente). */
+  async savePaymentReconciliation(run) {
+    if (!this.paymentReconciliations.has(run.dia)) this.paymentReconciliations.set(run.dia, { ...run });
+    return this.paymentReconciliations.get(run.dia);
   }
 
   /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */

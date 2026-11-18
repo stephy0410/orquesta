@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import {
   isValidCategoria,
   isValidIanaTimezone,
@@ -24,6 +23,7 @@ import {
   windowsOverlap,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
+import { renderQrPng } from "./qr-png.js";
 import { ulid } from "./ulid.js";
 
 function toIso(d) {
@@ -267,7 +267,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         keyId
       );
       const qrS3Key = `qr/${inv.id}_v${newVersion}.png`;
-      const pngBuf = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+      const pngBuf = await renderQrPng(qrToken);
       await objectStorage.putObject({
         bucket: assetsBucket,
         key: qrS3Key,
@@ -2167,6 +2167,39 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       let asistentesDelta = 0;
       let maxSeq = 0;
 
+      // Lecturas del lote en 3 consultas (antes eran 3 por escaneo): replays por
+      // (invitación, dispositivo, secuencia), invitación + invitado y ciclo de admisión vigente.
+      // Dentro del lote las secuencias son únicas y la ingesta no crea anulaciones, así que estos
+      // mapas no cambian mientras se procesa el lote.
+      const invIds = [...new Set(batch.events.map((e) => e.invitation_id))];
+      const [prevRes, invsRes, cyclesRes] = await Promise.all([
+        client.query(
+          // Arrays tipados como char(26) (el tipo de las columnas): con text[] PostgreSQL convierte la
+          // columna a text y ya no puede usar el índice uq_checkin_idempotency → seq scan.
+          `SELECT c.*
+             FROM unnest($2::char(26)[], $3::bigint[]) AS u(invitation_id, sequence)
+             JOIN checkin_event c
+               ON c.invitation_id = u.invitation_id AND c.device_id = $1 AND c.sequence = u.sequence`,
+          [batch.device_id, batch.events.map((e) => e.invitation_id), batch.events.map((e) => Number(e.sequence))]
+        ),
+        client.query(
+          `SELECT i.id, i.event_id, i.checkin_revocado_en, i.deleted_at, g.deleted_at AS guest_deleted_at
+             FROM invitation i JOIN guest g ON g.id = i.guest_id
+            WHERE i.id = ANY($1::char(26)[])`,
+          [invIds]
+        ),
+        client.query(
+          `SELECT invitation_id, count(*)::integer + 1 AS cycle
+             FROM checkin_event WHERE invitation_id = ANY($1::char(26)[]) AND kind = 'anulacion'
+            GROUP BY invitation_id`,
+          [invIds]
+        ),
+      ]);
+      const prevBySeq = new Map(prevRes.rows.map((r) => [`${r.invitation_id}|${r.sequence}`, r]));
+      const invById = new Map(invsRes.rows.map((r) => [r.id.trim(), r]));
+      const cycleByInv = new Map(cyclesRes.rows.map((r) => [r.invitation_id.trim(), r.cycle]));
+      const cycleOf = (invitationId) => cycleByInv.get(invitationId) || 1;
+
       for (const item of batch.events) {
         const seq = Number(item.sequence);
         if (seq > maxSeq) maxSeq = seq;
@@ -2185,13 +2218,10 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           continue;
         }
         const tardio = isClosed;
-        const existingSeq = await client.query(
-          `SELECT * FROM checkin_event WHERE invitation_id = $1 AND device_id = $2 AND sequence = $3`,
-          [item.invitation_id, batch.device_id, seq]
-        );
-        if (existingSeq.rowCount > 0) {
+        const prev = prevBySeq.get(`${item.invitation_id}|${seq}`);
+        if (prev) {
           // Replay del mismo (invitation, device, sequence): conserva el veredicto original (AC-03).
-          const e = existingSeq.rows[0];
+          const e = prev;
           results.push({
             sequence: seq,
             invitation_id: item.invitation_id,
@@ -2205,23 +2235,14 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           });
           continue;
         }
-        const invRes = await client.query(
-          `SELECT i.id, i.event_id, i.checkin_revocado_en, i.deleted_at, g.deleted_at AS guest_deleted_at
-             FROM invitation i JOIN guest g ON g.id = i.guest_id
-            WHERE i.id = $1`,
-          [item.invitation_id]
-        );
-        if (invRes.rowCount === 0 || invRes.rows[0].event_id !== ev.id || invRes.rows[0].deleted_at) {
+        const invRow = invById.get(item.invitation_id);
+        if (!invRow || invRow.event_id.trim() !== String(ev.id).trim() || invRow.deleted_at) {
           rechazados += 1;
           results.push({ sequence: seq, invitation_id: item.invitation_id, verdict: "no_corresponde_al_evento", tardio: false, duplicado: false });
           continue;
         }
-        const invRow = invRes.rows[0];
         if (invRow.checkin_revocado_en || invRow.guest_deleted_at) {
-          const cycRev = await client.query(
-            `SELECT count(*)::integer + 1 AS cycle FROM checkin_event WHERE invitation_id = $1 AND kind = 'anulacion'`,
-            [item.invitation_id]
-          );
+          const revCycle = cycleOf(item.invitation_id);
           const revId = ulid();
           const resolucion =
             item.verdict_local === "no_verificable_offline" || item.verdict_local === "admitido"
@@ -2231,7 +2252,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           await client.query(
             `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo, escaneado_en, recibido_en, tardio, verdict_local, resolucion_al_sincronizar)
              VALUES ($1,$2,$3,$4,$5,'duplicado_tardio','invitacion_revocada',$6,$7,$8,$9,$10,$11)`,
-            [revId, ev.id, item.invitation_id, batch.device_id, seq, cycRev.rows[0].cycle, toIso(item.scanned_at), tIngest, tardio, item.verdict_local || null, resolucion]
+            [revId, ev.id, item.invitation_id, batch.device_id, seq, revCycle, toIso(item.scanned_at), tIngest, tardio, item.verdict_local || null, resolucion]
           );
           results.push({
             sequence: seq,
@@ -2245,11 +2266,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           });
           continue;
         }
-        const cycRes = await client.query(
-          `SELECT count(*)::integer + 1 AS cycle FROM checkin_event WHERE invitation_id = $1 AND kind = 'anulacion'`,
-          [item.invitation_id]
-        );
-        const cycle = cycRes.rows[0].cycle;
+        const cycle = cycleOf(item.invitation_id);
         // El veredicto persistido lo decide el servidor: del cliente solo se aceptan las
         // admisiones condicionales marcadas (RF-13); cualquier otro valor cuenta como `admitido`.
         const finalVerdict =
@@ -2467,6 +2484,50 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       [eventId, invitationId, guestId, verdict]
     );
     return paginateArray(res.rows, limit, cursor);
+  };
+
+  /** Cobros asentados en el ledger con `cobrado_en` en [from, to) (conciliación diaria). */
+  proto.listLedgerCharges = async function ({ from, to }) {
+    const res = await this.pool.query(
+      `SELECT id AS payment_id, idempotency_key, monto, moneda, cobrado_en
+         FROM payment
+        WHERE cobrado_en >= $1 AND cobrado_en < $2 AND deleted_at IS NULL`,
+      [toIso(from), toIso(to)]
+    );
+    return res.rows.map((r) => ({ ...r, monto: Number(r.monto), cobrado_en: toIso(r.cobrado_en) }));
+  };
+
+  proto.getPaymentByIdempotencyKey = async function (key) {
+    const res = await this.pool.query(
+      `SELECT id AS payment_id, monto, moneda, cobrado_en FROM payment WHERE idempotency_key = $1`,
+      [key]
+    );
+    const r = res.rows[0];
+    return r ? { ...r, monto: Number(r.monto), cobrado_en: r.cobrado_en ? toIso(r.cobrado_en) : null } : null;
+  };
+
+  proto.getPaymentReconciliation = async function (dia) {
+    const res = await this.pool.query(`SELECT * FROM payment_reconciliation WHERE dia = $1::date`, [dia]);
+    const r = res.rows[0];
+    if (!r) return null;
+    return {
+      ...r,
+      dia,
+      monto_psp: Number(r.monto_psp),
+      monto_ledger: Number(r.monto_ledger),
+      ejecutado_en: toIso(r.ejecutado_en),
+    };
+  };
+
+  /** Inserta el resultado del día; si ya existía (otro poller ganó), conserva el primero. */
+  proto.savePaymentReconciliation = async function (run) {
+    await this.pool.query(
+      `INSERT INTO payment_reconciliation (dia, estado, cobros_psp, cobros_ledger, monto_psp, monto_ledger, diferencias, ejecutado_en)
+       VALUES ($1::date, $2, $3, $4, $5, $6, $7::jsonb, $8)
+       ON CONFLICT (dia) DO NOTHING`,
+      [run.dia, run.estado, run.cobros_psp, run.cobros_ledger, run.monto_psp, run.monto_ledger, JSON.stringify(run.diferencias), run.ejecutado_en]
+    );
+    return this.getPaymentReconciliation(run.dia);
   };
 
   /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */

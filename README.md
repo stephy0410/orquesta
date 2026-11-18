@@ -35,13 +35,13 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | FR3 | Tablero de todos los eventos casi en tiempo real | ✅ (polling ≤ 5 s p95, ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)) | *Check-in…* (contadores), *Retención…* (agregados) |
 | FR4 | Buscar y asignar proveedores, antes y en emergencia | ✅ | *Contratación: 100 solicitudes concurrentes…*, *Bordes normativos…* |
 | FR5 | Recordatorios: RSVP a invitados y hora de llegada a proveedores | ✅ | *Ciclo completo del invitado* (RSVP), *Recordatorio de llegada al proveedor* |
-| FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…* |
+| FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…*, *Pagos: conciliación diaria…* |
 | FR7 | Acomodo de mesas (con control de versión optimista) | ✅ | *Seating: 50 asignaciones concurrentes…*, *Seating: control de versión optimista* |
 | FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
 
-- **12/12 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
-- **Prueba de carga del check-in (local, PostgreSQL 16):** 31 000 escaneos a **517/s** durante 60 s en 50 eventos → **0 perdidos, 0 dobles admisiones**; ráfaga offline de 1 000 escaneos sincronizada en **1.4 s**; tablero convergió en 1.2 s. Ver [§7.4](#74-prueba-de-carga-del-check-in).
-- **82 endpoints HTTP**, **6 Lambdas**, **5 migraciones versionadas**.
+- **14/14 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
+- **Prueba de carga del check-in (local, PostgreSQL 16):** 31 000 escaneos a **517/s** durante 60 s en 50 eventos → **0 perdidos, 0 dobles admisiones**; ráfaga offline de 1 000 escaneos sincronizada en **1.4 s**; tablero convergió en 1.2 s. Ver [§7.4](#74-pruebas-de-carga).
+- **82 endpoints HTTP**, **6 Lambdas**, **6 migraciones versionadas**.
 - Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
 
 ---
@@ -67,12 +67,12 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 
 | Área | Objetivo | Cómo se cumple hoy |
 | --- | --- | --- |
-| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS en páginas de 500 filas; QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
-| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados ([§7.4](#74-prueba-de-carga-del-check-in)). |
+| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados ([§7.4](#74-pruebas-de-carga)). |
 | **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
 | **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; emergencia con expiración de 15 min. |
 | **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
-| **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **barrido de conciliación** de pagos `pendiente`/`desconocido` por llave de idempotencia. |
+| **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **reintento automático** de pagos `pendiente`/`desconocido` por llave de idempotencia y **conciliación diaria** ledger ↔ procesador (`payment_reconciliation`, alarma ante diferencias). |
 | **Mesas** (FR7) | Nadie en dos mesas; ninguna mesa sobre capacidad; edición concurrente rechazada con aviso (versión optimista); guardar < 1 s con 500 invitados / 50 mesas. | Lock por evento + conteo transaccional (AC-14); **`plan_version` + `If-Match`** → `409 SEATING_VERSION_CONFLICT`. |
 | **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`. |
 
@@ -302,7 +302,7 @@ flowchart TB
 #### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
 - **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
 - **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre.
-- **Evidencia:** prueba de carga local ([§7.4](#74-prueba-de-carga-del-check-in)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. Falta la medición en AWS (`db.t4g.micro`); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
+- **Evidencia:** prueba de carga local ([§7.4](#74-pruebas-de-carga)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. Falta la medición en AWS (`db.t4g.micro`); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
 
 #### ADR-3 · Tablero por polling con read model en lugar de SSE + Valkey
 - **Decisión:** `event_counters` alimentado por outbox; el cliente consulta cada 3 s con `limit ≤ 25`.
@@ -325,7 +325,7 @@ Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delive
 
 | Funcionalidad | Modelo | Mecanismo implementado |
 | --- | --- | --- |
-| **Pagos** | CP, exactamente una vez. *Un cobro doble es peor que un pago que tarda.* | Llave `pay:{reservation_id}` hacia el PSP; `FOR UPDATE` sobre `payment` antes de asentar; ledger con unicidad `(pago, movimiento, cuenta)` y trigger diferido de balance; webhook idempotente por `event_id`; conciliación periódica por llave. |
+| **Pagos** | CP, exactamente una vez. *Un cobro doble es peor que un pago que tarda.* | Llave `pay:{reservation_id}` hacia el PSP; `FOR UPDATE` sobre `payment` antes de asentar; ledger con unicidad `(pago, movimiento, cuenta)` y trigger diferido de balance; webhook idempotente por `event_id`; reintento por llave cada minuto y cuadre diario ledger ↔ procesador. |
 | **Asignación de proveedores** (antes y en emergencia) | CP, sin doble reserva. | `pg_advisory_xact_lock(worker)` + suma de plazas aceptadas solapadas con `tstzrange`; la perdedora recibe `409 RESERVATION_OVERLAP` con la ganadora. |
 | **Check-in** | AP en el borde con reconciliación. *Una puerta que no abre por falta de señal es peor que un duplicado ocasional.* | Veredicto local en < 100 ms; lote idempotente por `(invitation, device, sequence)`; el segundo dispositivo queda `duplicado_tardio` apuntando al check-in vigente; el servidor decide el veredicto persistido. |
 | **Tablero** | Eventual, ≤ 5 s p95. | Outbox en la misma transacción + *flush* inmediato + proyector con *coalescing* de 1 s y dedupe por `outbox_event_id`. |
@@ -342,7 +342,7 @@ Los siete problemas difíciles y qué se rompe si falta cada mecanismo: [`docs/d
 
 | Nivel | Qué cubre | Comando |
 | --- | --- | --- |
-| Aceptación (memoria) | 12 escenarios end-to-end a través del handler HTTP real y los 5 workers; retroalimentación en ~3 s | `cd back && npm test` |
+| Aceptación (memoria) | 14 escenarios end-to-end a través del handler HTTP real y los 5 workers; retroalimentación en ~3 s | `cd back && npm test` |
 | Aceptación (PostgreSQL) | **La misma suite** contra PgStore, migraciones 001–005 y un esquema limpio por escenario: valida SQL, triggers, constraints y concurrencia real | `cd back && npm run db:up && npm run test:pg` |
 | Frontend | Build de producción + tests unitarios (Vitest) | `cd front && npx ng build && npx ng test --watch=false` |
 | Infraestructura | `terraform fmt -check` + `validate` | `cd terraform && terraform validate` |
@@ -357,7 +357,7 @@ Los siete problemas difíciles y qué se rompe si falta cada mecanismo: [`docs/d
 | FR3 | AC-05, AC-16 (tablero = asistentes reales) | Check-in…; Retención… |
 | FR4 | AC-07, AC-22, AC-25, AC-26, AC-27, AC-29 | Contratación…; Auth, OTP…; Bordes normativos… |
 | FR5 | AC-12 (RSVP), RF-10 (llegada) | Ciclo completo del invitado; Recordatorio de llegada al proveedor |
-| FR6 | AC-08, AC-09, AC-26 | Pagos: contract test PSP…; Pagos: conciliación automática… |
+| FR6 | AC-08, AC-09, AC-26 + conciliación diaria | Pagos: contract test PSP…; Pagos: conciliación automática…; Pagos: conciliación diaria… |
 | FR7 | AC-14 + versión optimista | Seating: 50 asignaciones…; Seating: control de versión optimista |
 | FR8 | AC-21, RF-04 (`indeterminado`), RF-20 (bajas) | Ciclo completo del invitado; Bordes normativos… |
 
@@ -376,10 +376,14 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 | Anulación de check-in sin `AuditEntry` ni lock | Incumplía RF-14; dos anulaciones restaban 2 | Auditoría en la misma tx + `FOR UPDATE` |
 | Cierre de evento fallaba si un acceso se emitía en el mismo instante | Evento imposible de cerrar | Migración `004` |
 | Errores 500 sin log | Alarma de 5xx sin causa raíz | Log estructurado (sin PII) en `errorResponse` |
+| Import con KMS + S3 en serie dentro de la transacción | 1 000 invitados en 65 s; 20 000 superaban el timeout de la Lambda | Inserción en lote, firma en paralelo, PNG post-commit (§7.4) |
+| Aforo excedido en el worker hacía ROLLBACK del `fallido` | Job colgado en `en_proceso` | Se confirma `fallido` y se lanza después del commit |
 
 ---
 
-### 7.4 Prueba de carga del check-in
+### 7.4 Pruebas de carga
+
+#### Check-in
 
 Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cómo correrlo en AWS: [`back/load/README.md`](back/load/README.md)). Perfil *open loop*: 50 eventos × 2 dispositivos enviando lotes cada segundo, 2 % de escaneos repetidos en otra puerta y, a la mitad, un dispositivo que vuelve de estar offline con 1 000 escaneos.
 
@@ -416,6 +420,24 @@ Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con ad
 ## 9. Cómo correrlo
 
 **Requisitos:** Node 20+ (backend), Node 24 (frontend, Angular CLI 22), Docker (PostgreSQL local), Terraform ≥ 1.5.
+
+### Ver la app completa en tu máquina (sin AWS)
+
+```bash
+# Terminal 1: backend completo en http://localhost:3000
+cd back && npm ci
+npm run db:up          # PostgreSQL en Docker (o salta este paso y usa: npm run dev -- --memory)
+npm run dev
+
+# Terminal 2: frontend en http://localhost:4200 (requiere Node 24: brew install node@24 o nvm)
+cd front && npm ci && npx ng serve
+```
+
+`npm run dev` corre el mismo handler de la Lambda `api` y los workers en proceso (import, tablero, SMS, email, recordatorios y conciliación). **Email y SMS no se envían: se imprimen en la Terminal 1**, con los tokens de verificación, los códigos OTP y los links de invitación para copiarlos al navegador.
+
+Recorrido sugerido: registrarte como planner (pega el token de la consola) → crear y publicar un evento → importar un CSV → enviar invitaciones → abrir un link de invitación de la consola y confirmar → crear un acceso de staff y abrir `/scan` → ver el tablero.
+
+### Comandos por carpeta
 
 ```bash
 # Backend
@@ -471,7 +493,6 @@ Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El 
 | Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
 | --- | --- | --- |
 | Carga del check-in medida solo en local; p99 por lote 481 ms > 300 ms | NFR de latencia no demostrado en AWS | Correr `checkin-load.js --target=http` en `lab`; si no cumple, ingest con `INSERT … unnest` (§7.4) |
-| Sin prueba de carga del import (1 000 en < 30 s) | NFR no demostrado | Issue #7 |
 | Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
 | Front aún no envía `If-Match` en mesas | El aviso de conflicto no se ve en la UI | Issue para el front; luego activar `SEATING_REQUIRE_IF_MATCH=true` |
 | Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |

@@ -152,7 +152,10 @@ export class SesEmailAdapter {
 // PaymentProvider (TR-14, D1, D5): MockPspTestAdapter + queryByKey
 // ============================================================================
 export class MockPspTestAdapter {
-  constructor() {
+  constructor({ clock = null } = {}) {
+    // Reloj inyectable: createAppContext lo alinea con ctx.now() para que las pruebas que viajan
+    // en el tiempo vean los cobros en el día correcto al conciliar.
+    this.clock = clock || (() => new Date());
     this.charges = new Map(); // idempotencyKey -> record
     this.refunds = new Map();
     this.timeoutNextForKey = new Set(); // simula timeout donde PSP sí cobró pero caller vio unknown
@@ -196,7 +199,7 @@ export class MockPspTestAdapter {
       currency: String(currency).toUpperCase(),
       idempotency_key: idempotencyKey,
       metadata,
-      charged_at: new Date().toISOString(),
+      charged_at: new Date(this.clock()).toISOString(),
     };
     this.charges.set(idempotencyKey, record);
 
@@ -225,6 +228,23 @@ export class MockPspTestAdapter {
       found: true,
       ...existing,
     };
+  }
+
+  /**
+   * Cobros exitosos con `charged_at` en [from, to). Equivale al reporte de transacciones que
+   * expone cualquier PSP (p. ej. Stripe `charges.list` con `created[gte|lt]`). Usado por la
+   * conciliación diaria (RF-11, FR6).
+   */
+  async listCharges({ from, to }) {
+    const fromMs = new Date(from).getTime();
+    const toMs = new Date(to).getTime();
+    return [...this.charges.values()]
+      .filter((c) => c.status === "succeeded")
+      .filter((c) => {
+        const t = new Date(c.charged_at).getTime();
+        return t >= fromMs && t < toMs;
+      })
+      .map((c) => ({ ...c }));
   }
 
   async refund({ idempotencyKey, pspChargeId, amount, currency }) {
@@ -266,6 +286,12 @@ export async function verifyPaymentProviderContract(providerFactory) {
   const q1 = await psp.queryByKey(key);
   if (!q1.found || q1.status !== "succeeded" || q1.psp_charge_id !== c1.psp_charge_id) {
     throw new Error("Contract violation: queryByKey must recover existing charge");
+  }
+
+  const chargedAt = new Date(c1.charged_at || Date.now()).getTime();
+  const listed = await psp.listCharges({ from: new Date(chargedAt - 60_000), to: new Date(chargedAt + 60_000) });
+  if (!Array.isArray(listed) || !listed.some((c) => c.idempotency_key === key && c.status === "succeeded")) {
+    throw new Error("Contract violation: listCharges must include succeeded charges in the window");
   }
 
   const r1 = await psp.refund({
