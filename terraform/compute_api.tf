@@ -7,23 +7,24 @@ data "archive_file" "backend_bundle" {
 
 locals {
   common_lambda_env = {
-    ENVIRONMENT           = var.environment
-    DB_MODE               = var.db_mode
-    DB_HOST               = local.db_endpoint
-    DB_PORT               = tostring(local.db_port)
-    DB_NAME               = var.db_name
-    SECRETS_ARN           = aws_secretsmanager_secret.app_secrets.arn
-    ASSETS_BUCKET         = aws_s3_bucket.assets.id
-    IMPORTS_BUCKET        = aws_s3_bucket.imports.id
-    KMS_SIGNER_KEY_ID     = var.enable_kms_signer ? aws_kms_key.qr_signer[0].key_id : ""
-    CANALES_ACTIVOS       = join(",", var.canales_activos)
-    EMAIL_PROVIDER_MODE   = var.email_provider_mode
-    SMS_PROVIDER_MODE     = var.sms_provider_mode
-    PROJECTION_QUEUE_URL  = aws_sqs_queue.projection.url
-    NOTIFICATIONS_SNS_ARN = aws_sns_topic.notifications.arn
-    IMPORT_QUEUE_URL      = aws_sqs_queue.import_jobs.url
-    PUBLIC_BASE_URL       = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"
-    AUTO_MIGRATE          = "true"
+    ENVIRONMENT              = var.environment
+    DB_MODE                  = var.db_mode
+    DB_HOST                  = local.db_endpoint
+    DB_PORT                  = tostring(local.db_port)
+    DB_NAME                  = var.db_name
+    SECRETS_ARN              = aws_secretsmanager_secret.app_secrets.arn
+    ASSETS_BUCKET            = aws_s3_bucket.assets.id
+    IMPORTS_BUCKET           = aws_s3_bucket.imports.id
+    KMS_SIGNER_KEY_ID        = var.enable_kms_signer ? aws_kms_key.qr_signer[0].key_id : ""
+    CANALES_ACTIVOS          = join(",", var.canales_activos)
+    EMAIL_PROVIDER_MODE      = var.email_provider_mode
+    SMS_PROVIDER_MODE        = var.sms_provider_mode
+    PROJECTION_QUEUE_URL     = aws_sqs_queue.projection.url
+    NOTIFICATIONS_SNS_ARN    = aws_sns_topic.notifications.arn
+    IMPORT_QUEUE_URL         = aws_sqs_queue.import_jobs.url
+    PUBLIC_BASE_URL          = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"
+    AUTO_MIGRATE             = "true"
+    SEATING_REQUIRE_IF_MATCH = "true" # FR7: el plano de mesas exige If-Match (issue #5)
   }
 }
 
