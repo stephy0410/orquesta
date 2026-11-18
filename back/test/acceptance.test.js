@@ -20,13 +20,24 @@ import { verifyPaymentProviderContract } from "../src/shared/ports.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// TEST_DB=pg corre la misma suite contra PostgreSQL real (PgStore + migraciones);
+// por defecto usa InMemoryStore. Ver back/README.md §Pruebas.
+const TEST_DB = process.env.TEST_DB === "pg" ? "pg" : "memory";
+
 async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } = {}) {
   let currentNow = new Date(nowDate);
+  const pgStore = TEST_DB === "pg" ? await createFreshPgStore() : null;
   const ctx = await createAppContext({
-    dbMode: "memory",
+    dbMode: TEST_DB === "pg" ? "aurora" : "memory",
+    store: pgStore || undefined,
     silentMetrics: true,
     now: () => new Date(currentNow),
   });
+  const introspect = pgStore ? pgIntrospection(pgStore) : memoryIntrospection(ctx.store);
+  // PG: alinea el reloj de prueba de la BD con el reloj simulado antes de cada operación.
+  const syncDbClock = pgStore
+    ? () => pgStore.pool.query(`UPDATE test_clock SET now = $1`, [new Date(currentNow).toISOString()])
+    : async () => {};
 
   const api = createApiHandler(ctx);
   const importWorker = createImportWorkerHandler(ctx);
@@ -41,6 +52,7 @@ async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } 
   ctx.queueBus.registerConsumer("notify_email", notifyEmail);
 
   async function request(method, rawPath, { body = null, headers = {}, cookies = [], rawBody = null, query = {} } = {}) {
+    await syncDbClock();
     const qs = new URLSearchParams(query).toString();
     const isStringBody = typeof rawBody === "string";
     const serialized =
@@ -91,15 +103,118 @@ async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } 
 
   return {
     ctx,
+    introspect,
     request,
     registerAndLoginUser,
-    drainAll: () => ctx.queueBus.drainAll(),
-    outboxPoller,
+    drainAll: async () => {
+      await syncDbClock();
+      return ctx.queueBus.drainAll();
+    },
+    outboxPoller: async (...args) => {
+      await syncDbClock();
+      return outboxPoller(...args);
+    },
     setNow: (d) => {
       currentNow = new Date(d);
     },
     advanceMs: (ms) => {
       currentNow = new Date(currentNow.getTime() + ms);
+    },
+  };
+}
+
+// --- Backends de prueba -------------------------------------------------------
+
+/**
+ * Cada harness obtiene un esquema PostgreSQL recién creado (aislamiento entre tests
+ * sin depender del orden de ejecución). Requiere PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE.
+ */
+let pgSchemaSeq = 0;
+const openPools = [];
+const createdSchemas = [];
+async function createFreshPgStore() {
+  const pg = (await import("pg")).default;
+  const { PgStore, runMigrations } = await import("../src/shared/db.js");
+  const schema = `t_${process.pid}_${Date.now().toString(36)}_${pgSchemaSeq++}`;
+  const baseConfig = {
+    host: process.env.PGHOST || "127.0.0.1",
+    port: Number(process.env.PGPORT || 55432),
+    user: process.env.PGUSER || "orquesta_admin",
+    password: process.env.PGPASSWORD || "orquesta",
+    database: process.env.PGDATABASE || "orquesta",
+  };
+  const admin = new pg.Pool({ ...baseConfig, max: 1 });
+  // Extensiones en `public` para que todos los esquemas de prueba las vean.
+  await admin.query(`CREATE EXTENSION IF NOT EXISTS btree_gist SCHEMA public`);
+  await admin.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public`);
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  createdSchemas.push(schema);
+  await admin.end();
+  const pool = new pg.Pool({
+    ...baseConfig,
+    max: Number(process.env.DB_POOL_MAX || 20),
+    options: `-c search_path=${schema},public`,
+  });
+  openPools.push(pool);
+  await runMigrations(pool);
+  // Reloj de prueba: los tests viajan en el tiempo con `now()` simulado de la app; en producción
+  // ambos relojes coinciden. Solo en estos esquemas efímeros, `set_updated_at()` (que alimenta
+  // la "última actividad" de NFR-08) lee el reloj simulado en vez de `now()` de la BD.
+  await pool.query(`CREATE TABLE test_clock (now timestamptz)`);
+  await pool.query(`INSERT INTO test_clock VALUES (NULL)`);
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+    BEGIN
+      NEW.updated_at = COALESCE((SELECT now FROM test_clock LIMIT 1), now());
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql`);
+  return new PgStore({ pool, piiKey: "orquesta-dev-pii-key-32bytes!" });
+}
+
+test.after(async () => {
+  await Promise.all(openPools.map((p) => p.end().catch(() => {})));
+  if (createdSchemas.length === 0 || process.env.KEEP_TEST_SCHEMAS === "1") return;
+  const pg = (await import("pg")).default;
+  const admin = new pg.Pool({
+    host: process.env.PGHOST || "127.0.0.1",
+    port: Number(process.env.PGPORT || 55432),
+    user: process.env.PGUSER || "orquesta_admin",
+    password: process.env.PGPASSWORD || "orquesta",
+    database: process.env.PGDATABASE || "orquesta",
+    max: 1,
+  });
+  for (const schema of createdSchemas) await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+  await admin.end();
+});
+
+function memoryIntrospection(store) {
+  return {
+    async rawUser(userId) {
+      return store.users.get(userId);
+    },
+    async rsvpTokenFor(invitationId) {
+      return store._dec(store.invitations.get(invitationId).rsvp_token_cifrado);
+    },
+    async reminderJobCount() {
+      return store.reminderJobs.size;
+    },
+  };
+}
+
+function pgIntrospection(store) {
+  return {
+    async rawUser(userId) {
+      const r = await store.pool.query(`SELECT * FROM "user" WHERE id = $1`, [userId]);
+      return r.rows[0];
+    },
+    async rsvpTokenFor(invitationId) {
+      const r = await store.pool.query(`SELECT rsvp_token_cifrado FROM invitation WHERE id = $1`, [invitationId]);
+      return store._dec(r.rows[0].rsvp_token_cifrado);
+    },
+    async reminderJobCount() {
+      const r = await store.pool.query(`SELECT count(*)::int AS n FROM reminder_job`);
+      return r.rows[0].n;
     },
   };
 }
@@ -208,9 +323,9 @@ test("Auth, OTP, unicidad de teléfono (AC-25), AES-256-GCM y firma ES256 compat
   assert.equal(cookieOnlyEvents.status, 200);
 
   // Verificar que PII en store está cifrada con AES-256-GCM (NFR-07)
-  const rawUser = h.ctx.store.users.get(reg.body.user_id);
+  const rawUser = await h.introspect.rawUser(reg.body.user_id);
   assert.ok(rawUser.email_cifrado.startsWith("enc:v1:"));
-  assert.equal(rawUser.email, undefined);
+  assert.ok(rawUser.email == null, "el email nunca se persiste en claro (NFR-07)");
 
   // Trabajador 1: alta, perfil completo, invisible sin OTP, visible tras OTP (AC-25)
   const w1 = await h.registerAndLoginUser({ email: "worker1@orquesta.test", role: "worker" });
@@ -963,8 +1078,7 @@ test("Seating: 50 asignaciones concurrentes a mesa de 40, movimiento concurrente
     headers: planner.headers,
     body: { guest_id: winnerGuest.id, table_id: mesa2.body.id },
   });
-  const invObj = h.ctx.store.invitations.get(winnerGuest.invitation_id);
-  const rsvpToken = h.ctx.store._dec(invObj.rsvp_token_cifrado);
+  const rsvpToken = await h.introspect.rsvpTokenFor(winnerGuest.invitation_id);
   const declineRes = await h.request("POST", `/v1/public/invitations/${rsvpToken}/rsvp`, {
     body: { respuesta: "declina" },
   });
@@ -1237,12 +1351,19 @@ test("Contratación: 100 solicitudes concurrentes, plazas=1, empresa parcial pla
   assert.equal(sinCubrir.status, 200);
   assert.equal(sinCubrir.body.estado, "sin_cubrir");
 
-  // AC-29: Cerrar evento ganador pasa su reserva `aceptada` -> `completada` y sube eventos_completados en 1
+  // AC-29: Cerrar evento ganador pasa TODAS sus reservas `aceptada` -> `completada`.
+  // La ganadora del accept paralelo no es determinista en PostgreSQL: si gana el evento 1,
+  // también tiene aceptada la reserva de la empresa (empReq2), así que se cuenta del estado real.
+  const winnerReqs = await h.request("GET", `/v1/events/${winnerEvent.eventId}/worker-requests`, {
+    headers: winnerEvent.headers,
+  });
+  const aceptadasAntesDeCerrar = winnerReqs.body.items.filter((r) => r.estado === "aceptada").length;
+  assert.ok(aceptadasAntesDeCerrar >= 1);
   const closeWinner = await h.request("POST", `/v1/events/${winnerEvent.eventId}/close`, {
     headers: winnerEvent.headers,
   });
   assert.equal(closeWinner.status, 200);
-  assert.equal(closeWinner.body.reservas_completadas, 1);
+  assert.equal(closeWinner.body.reservas_completadas, aceptadasAntesDeCerrar);
   const pubAfterClose = await h.request("GET", `/v1/workers/${pPers.body.worker_id}`, {
     headers: mainPlanner.headers,
   });
@@ -1662,12 +1783,12 @@ test("Bordes normativos: password-reset, logout, indeterminado 15m, expiración 
   assert.ok(pollIndet.indeterminado_deliveries >= 4);
 
   // TR-12: Reprogramar evento reescribe disparar_en del MISMO ReminderJob
-  const reminderCountBefore = h.ctx.store.reminderJobs.size;
+  const reminderCountBefore = await h.introspect.reminderJobCount();
   await h.request("PATCH", `/v1/events/${eventId}`, {
     headers: pHeaders,
     body: { ventana: { inicio: "2026-08-20T18:00:00Z", fin: "2026-08-21T02:00:00Z" } },
   });
-  assert.equal(h.ctx.store.reminderJobs.size, reminderCountBefore);
+  assert.equal(await h.introspect.reminderJobCount(), reminderCountBefore);
 
   // RF-03: Regenerar tokens revoca el anterior
   const regen = await h.request(
@@ -1885,4 +2006,333 @@ test("Bordes normativos: password-reset, logout, indeterminado 15m, expiración 
     query: { categorias: "mesero", zonas: "centro" },
   });
   assert.equal(searchEmpty.body.items.length, 0);
+});
+
+// ============================================================================
+// FR5 / RF-10: Recordatorio de hora de llegada al proveedor (T-24h y T-2h), SMS + email,
+// a la hora programada y nunca dos veces aunque el barrido corra repetidamente.
+// ============================================================================
+test("Recordatorio de llegada al proveedor: T-24h y T-2h por SMS y email, exactamente una vez por ventana (RF-10)", async () => {
+  const h = await createTestHarness({ nowDate: "2026-07-01T12:00:00Z" });
+  const worker = await h.registerAndLoginUser({ email: "dj-llegada@orquesta.test", role: "worker" });
+  const prof = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "DJ Puntual",
+      categorias: ["dj"],
+      tarifa: { monto: 900, moneda: "MXN", unidad: "evento" },
+      zonas: ["centro"],
+      telefono_e164: "+525577778888",
+    },
+  });
+  assert.equal(prof.status, 201);
+  const chal = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: worker.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === "+525577778888").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${chal.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  assert.equal((await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers })).status, 200);
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-07-10T16:00:00Z", fin: "2026-07-11T04:00:00Z", zona: "centro", rol: "dj" },
+  });
+
+  const planner = await h.registerAndLoginUser({ email: "planner-llegada@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Jardín", zona: "centro", direccion: "Calle 1" },
+  });
+  const ev = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Boda con DJ",
+      fecha: "2026-07-10",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-07-10T18:00:00Z", fin: "2026-07-11T02:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 100,
+      requerimientos: [{ rol: "dj", cantidad: 1 }],
+    },
+  });
+  assert.equal(ev.status, 201);
+  const reqRes = await h.request("POST", `/v1/events/${ev.body.id}/worker-requests`, {
+    headers: planner.headers,
+    body: {
+      worker_id: prof.body.worker_id,
+      rol: "dj",
+      plazas: 1,
+      ventana: { inicio: "2026-07-10T18:00:00Z", fin: "2026-07-11T02:00:00Z" },
+      hora_llegada: "2026-07-10T18:00:00Z",
+    },
+  });
+  assert.equal(reqRes.status, 201);
+  const acc = await h.request("POST", `/v1/worker/requests/${reqRes.body.id}/accept`, {
+    headers: worker.headers,
+    body: {},
+  });
+  assert.equal(acc.status, 200);
+
+  const arrivalSms = () =>
+    h.ctx.smsProvider.captured.filter((m) => m.metadata?.plantilla === "recordatorio_llegada");
+  const arrivalEmails = () =>
+    h.ctx.emailProvider.captured.filter((m) => m.metadata?.plantilla === "recordatorio_llegada");
+
+  // Antes de T-24h no sale nada.
+  await h.outboxPoller();
+  await h.drainAll();
+  assert.equal(arrivalSms().length, 0);
+  assert.equal(arrivalEmails().length, 0);
+
+  // T-24h (+5 s): un SMS y un email, ambos con ventana t_24h.
+  h.setNow("2026-07-09T18:00:05Z");
+  await h.outboxPoller();
+  await h.drainAll();
+  assert.equal(arrivalSms().length, 1);
+  assert.equal(arrivalEmails().length, 1);
+  assert.equal(arrivalSms()[0].to, "+525577778888");
+  assert.equal(arrivalSms()[0].metadata.ventana, "t_24h");
+
+  // Barrido repetido en la misma ventana: nunca dos veces (dedupe por destinatario/plantilla/ventana).
+  await h.outboxPoller();
+  await h.outboxPoller();
+  await h.drainAll();
+  assert.equal(arrivalSms().length, 1);
+  assert.equal(arrivalEmails().length, 1);
+
+  // T-2h (+5 s): segunda ventana, otra vez exactamente uno por canal.
+  h.setNow("2026-07-10T16:00:05Z");
+  await h.outboxPoller();
+  await h.drainAll();
+  await h.outboxPoller();
+  await h.drainAll();
+  assert.equal(arrivalSms().length, 2);
+  assert.equal(arrivalEmails().length, 2);
+  assert.deepEqual(arrivalSms().map((m) => m.metadata.ventana).sort(), ["t_24h", "t_2h"]);
+});
+
+// ============================================================================
+// FR7: Control de versión optimista del plano de mesas. Dos editores con la misma
+// versión leída: el primero gana, el segundo recibe 409 con aviso y no sobrescribe.
+// ============================================================================
+test("Seating: control de versión optimista (If-Match) rechaza la segunda edición concurrente sin sobrescribir (FR7)", async () => {
+  const h = await createTestHarness();
+  const owner = await h.registerAndLoginUser({ email: "seat-owner@orquesta.test" });
+  const editor = await h.registerAndLoginUser({ email: "seat-editor@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: owner.headers,
+    body: { nombre: "Salón Versión", zona: "centro", direccion: "Calle 9" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: owner.headers,
+    body: {
+      nombre: "Cena versionada",
+      fecha: "2026-07-01",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-07-01T18:00:00-06:00", fin: "2026-07-02T01:00:00-06:00" },
+      venue_id: venue.body.id,
+      aforo: 10,
+    },
+  });
+  const eventId = evt.body.id;
+  const addEditor = await h.request("POST", `/v1/events/${eventId}/members`, {
+    headers: owner.headers,
+    body: { user_id: editor.userId, rol: "editor" },
+  });
+  assert.equal(addEditor.status, 201);
+
+  const csv = buildMultipartCsv(["nombre,email,telefono", "Ana,ana@x.com,", "Beto,beto@x.com,"].join("\n"));
+  await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...owner.headers, "content-type": csv.contentType },
+    rawBody: csv.rawBody,
+  });
+  await h.drainAll();
+  const guests = (await h.request("GET", `/v1/events/${eventId}/guests`, { headers: owner.headers })).body.items;
+  const ana = guests.find((g) => g.nombre === "Ana");
+
+  // Plano vacío: versión 0, expuesta en el cuerpo y como ETag.
+  const v0 = await h.request("GET", `/v1/events/${eventId}/tables`, { headers: owner.headers });
+  assert.equal(v0.body.plan_version, 0);
+  assert.equal(v0.headers.etag, '"0"');
+
+  const mesaA = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: { ...owner.headers, "if-match": '"0"' },
+    body: { nombre: "A", capacidad: 5 },
+  });
+  assert.equal(mesaA.status, 201);
+  assert.equal(mesaA.body.plan_version, 1);
+  const mesaB = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: { ...owner.headers, "if-match": '"1"' },
+    body: { nombre: "B", capacidad: 5 },
+  });
+  assert.equal(mesaB.body.plan_version, 2);
+
+  // Owner y editor leen la misma versión (2) y editan "a la vez" al mismo invitado.
+  const leida = (await h.request("GET", `/v1/events/${eventId}/tables`, { headers: editor.headers })).body.plan_version;
+  assert.equal(leida, 2);
+  const primero = await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+    headers: { ...owner.headers, "if-match": `"${leida}"` },
+    body: { guest_id: ana.id, table_id: mesaA.body.id },
+  });
+  assert.equal(primero.status, 201);
+  assert.equal(primero.body.plan_version, 3);
+  const segundo = await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+    headers: { ...editor.headers, "if-match": `W/"${leida}"` },
+    body: { guest_id: ana.id, table_id: mesaB.body.id },
+  });
+  assert.equal(segundo.status, 409);
+  assert.equal(segundo.body.error.code, "SEATING_VERSION_CONFLICT");
+  assert.equal(segundo.body.error.details.version_actual, 3);
+
+  // El primer cambio NO se sobrescribió: Ana sigue en la mesa A y la versión no avanzó.
+  const tablas = await h.request("GET", `/v1/events/${eventId}/tables`, { headers: owner.headers });
+  assert.equal(tablas.body.plan_version, 3);
+  assert.equal(tablas.body.items.find((t) => t.id === mesaA.body.id).ocupacion, 1);
+  assert.equal(tablas.body.items.find((t) => t.id === mesaB.body.id).ocupacion, 0);
+
+  // Tras recargar (versión 3) el editor sí puede mover; liberar también versiona.
+  const reintento = await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+    headers: { ...editor.headers, "if-match": '"3"' },
+    body: { guest_id: ana.id, table_id: mesaB.body.id },
+  });
+  assert.equal(reintento.status, 200);
+  assert.equal(reintento.body.plan_version, 4);
+  const liberarViejo = await h.request("DELETE", `/v1/events/${eventId}/seat-assignments/${ana.id}`, {
+    headers: { ...owner.headers, "if-match": '"3"' },
+  });
+  assert.equal(liberarViejo.status, 409);
+  const liberar = await h.request("DELETE", `/v1/events/${eventId}/seat-assignments/${ana.id}`, {
+    headers: { ...owner.headers, "if-match": '"4"' },
+  });
+  assert.equal(liberar.status, 204);
+  assert.equal(liberar.headers.etag, '"5"');
+
+  // Compatibilidad: sin If-Match la edición se acepta (el front actual no lo envía aún).
+  const sinVersion = await h.request("POST", `/v1/events/${eventId}/seat-assignments`, {
+    headers: owner.headers,
+    body: { guest_id: ana.id, table_id: mesaA.body.id },
+  });
+  assert.equal(sinVersion.status, 201);
+  assert.equal(sinVersion.body.plan_version, 6);
+  const malFormado = await h.request("POST", `/v1/events/${eventId}/tables`, {
+    headers: { ...owner.headers, "if-match": '"abc"' },
+    body: { nombre: "C", capacidad: 2 },
+  });
+  assert.equal(malFormado.status, 422);
+});
+
+// ============================================================================
+// FR6: un pago que queda `desconocido` por timeout del PSP se concilia solo (sin que el planner
+// reintente), con UN solo cobro y UN solo asiento en el ledger; una caída del PSP durante el
+// barrido no rompe el outbox-poller (aislamiento de fallas).
+// ============================================================================
+test("Pagos: conciliación automática de pagos desconocidos, sin doble cobro y aislada de caídas del PSP (FR6)", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-05T12:00:00Z" });
+  const planner = await h.registerAndLoginUser({ email: "rec-planner@orquesta.test" });
+  const worker = await h.registerAndLoginUser({ email: "rec-worker@orquesta.test", role: "worker" });
+  const wp = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Florista",
+      categorias: ["fotografo"],
+      tarifa: { monto: 700, moneda: "MXN", unidad: "evento" },
+      zonas: ["norte"],
+      telefono_e164: "+525512121212",
+    },
+  });
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", {
+    headers: worker.headers,
+    body: { canal: "telefono" },
+  });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === "+525512121212").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-06-15T10:00:00Z", fin: "2026-06-15T22:00:00Z", zona: "norte", rol: "fotografo" },
+  });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Hacienda", zona: "norte", direccion: "Norte 9" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Boda Conciliada",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T12:00:00Z", fin: "2026-06-15T20:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 20,
+    },
+  });
+  const req = await h.request("POST", `/v1/events/${evt.body.id}/worker-requests`, {
+    headers: planner.headers,
+    body: {
+      worker_id: wp.body.worker_id,
+      rol: "fotografo",
+      plazas: 1,
+      ventana: { inicio: "2026-06-15T13:00:00Z", fin: "2026-06-15T18:00:00Z" },
+      hora_llegada: "2026-06-15T13:00:00Z",
+    },
+  });
+  await h.request("POST", `/v1/worker/requests/${req.body.id}/accept`, { headers: worker.headers, body: {} });
+
+  // El PSP cobra pero la respuesta se pierde: el pago queda `desconocido`.
+  h.ctx.paymentProvider.simulateTimeoutAfterCharge(`pay:${req.body.id}`);
+  const chargesBefore = h.ctx.paymentProvider.chargeExecutions;
+  const pay = await h.request("POST", `/v1/reservations/${req.body.id}/payments`, {
+    headers: planner.headers,
+    body: {},
+  });
+  assert.equal(pay.status, 202);
+  assert.equal(pay.body.estado, "desconocido");
+
+  // Aislamiento: con el PSP caído el barrido NO lanza y el resto del poller sigue funcionando.
+  h.advanceMs(2 * 60 * 1000);
+  const psp = h.ctx.paymentProvider;
+  const realQuery = psp.queryByKey.bind(psp);
+  const realCharge = psp.charge.bind(psp);
+  psp.queryByKey = async () => {
+    throw new Error("PSP caído");
+  };
+  psp.charge = async () => {
+    throw new Error("PSP caído");
+  };
+  const caido = await h.outboxPoller();
+  assert.equal(caido.payments.revisados, 1);
+  assert.equal(caido.payments.confirmados, 0);
+  assert.ok(caido.retention, "los otros barridos siguen corriendo");
+  const sigue = await h.request("GET", `/v1/reservations/${req.body.id}/payments`, { headers: planner.headers });
+  assert.notEqual(sigue.body.items[0].estado, "confirmado");
+
+  // El PSP vuelve: el siguiente barrido concilia por llave de idempotencia sin cobrar de nuevo.
+  psp.queryByKey = realQuery;
+  psp.charge = realCharge;
+  h.advanceMs(60 * 1000);
+  const ok = await h.outboxPoller();
+  assert.equal(ok.payments.confirmados, 1);
+  assert.equal(psp.chargeExecutions - chargesBefore, 1, "un solo cobro en el PSP");
+
+  const info = await h.request("GET", `/v1/reservations/${req.body.id}/payments`, { headers: planner.headers });
+  assert.equal(info.body.items[0].estado, "confirmado");
+  const entries = info.body.items[0].ledger_entries;
+  assert.equal(entries.length, 2);
+  assert.equal(entries.reduce((acc, e) => acc + e.importe, 0), 0);
+
+  // Barridos posteriores no tocan pagos ya confirmados.
+  h.advanceMs(60 * 1000);
+  const again = await h.outboxPoller();
+  assert.equal(again.payments.revisados, 0);
+  assert.equal(psp.chargeExecutions - chargesBefore, 1);
 });

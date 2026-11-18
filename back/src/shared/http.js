@@ -190,9 +190,24 @@ export function jsonResponse(statusCode, body = null, { headers = {}, cookies = 
   return res;
 }
 
-export function errorResponse(err) {
+export function errorResponse(err, req = null) {
   if (isAppError(err)) {
     return jsonResponse(err.httpStatus, err.toJSON());
+  }
+  // Error no controlado: se registra (estructurado, sin cuerpo ni PII) para que la
+  // alarma de 5xx (NFR-09) tenga causa raíz; al cliente solo se le da el envelope genérico.
+  if (process.env.ORQUESTA_SILENT_ERRORS !== "1") {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "unhandled_error",
+        method: req?.method,
+        path: req?.path,
+        error: err?.message,
+        pg_code: err?.code,
+        stack: err?.stack,
+      })
+    );
   }
   return jsonResponse(500, {
     error: {

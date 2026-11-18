@@ -104,6 +104,7 @@ export class InMemoryStore {
     this.checkinBatchAcks = new Map();
     this.webhookEvents = new Map();
     this.plannerAlerts = [];
+    this.seatingPlanVersions = new Map();
     this.revokedSessionJtis = new Map();
 
     this.syntheticSeqCounter = 100000;
@@ -1074,14 +1075,17 @@ export class InMemoryStore {
     };
   }
 
-  async createEventAccessToken({ eventId, rol, emittedByUserId }) {
+  async createEventAccessToken({ eventId, rol, emittedByUserId, now: nowParam = new Date() }) {
     if (!isValidRol(rol)) throw validationError(`rol inválido: ${rol}`, "rol");
     const ev = this.events.get(eventId);
     if (!ev || ev.deleted_at) throw new AppError("NOT_FOUND", "Evento no encontrado");
     if (ev.estado === "cerrado" || ev.estado === "cancelado") {
       throw new AppError("EVENT_STATE_INVALID", "Evento cerrado o cancelado");
     }
-    const now = new Date().toISOString();
+    if (new Date(ev.ventana_fin).getTime() <= new Date(nowParam).getTime()) {
+      throw validationError("La ventana del evento ya finalizó", "expira_en");
+    }
+    const now = toIso(nowParam);
     const rawToken = generateOpaqueToken("evtqr_");
     const rec = {
       id: ulid(),
@@ -2556,7 +2560,9 @@ export class InMemoryStore {
   // ==========================================================================
   // Mesas y Seating (RF-12, TR-10, AC-14)
   // ==========================================================================
-  async createTable({ eventId, numero = null, nombre = null, capacidad }) {
+  async createTable({ eventId, numero = null, nombre = null, capacidad, expectedVersion = null }) {
+    return this.mutexes.seating.run(eventId, async () => {
+    this._checkSeatingVersion(eventId, expectedVersion);
     const ev = this.events.get(eventId);
     if (!ev || ev.deleted_at) throw new AppError("NOT_FOUND", "Evento no encontrado");
     const cap = Number(capacidad);
@@ -2593,7 +2599,31 @@ export class InMemoryStore {
       deleted_at: null,
     };
     this.eventTables.set(table.id, table);
-    return { id: table.id, event_id: eventId, numero: table.numero, nombre: table.nombre, capacidad: table.capacidad, ocupacion: 0 };
+    const planVersion = this._bumpSeatingVersion(eventId);
+    return { id: table.id, event_id: eventId, numero: table.numero, nombre: table.nombre, capacidad: table.capacidad, ocupacion: 0, plan_version: planVersion };
+    });
+  }
+
+  /** Versión del plano de mesas (control optimista FR7): sube 1 por cada edición del planner. */
+  async getSeatingVersion(eventId) {
+    return this.seatingPlanVersions.get(eventId) || 0;
+  }
+
+  _checkSeatingVersion(eventId, expectedVersion) {
+    const current = this.seatingPlanVersions.get(eventId) || 0;
+    if (expectedVersion !== null && expectedVersion !== undefined && Number(expectedVersion) !== current) {
+      throw new AppError("SEATING_VERSION_CONFLICT", "El plano cambió desde tu última lectura; recarga y reintenta", {
+        version_esperada: Number(expectedVersion),
+        version_actual: current,
+      });
+    }
+    return current;
+  }
+
+  _bumpSeatingVersion(eventId) {
+    const next = (this.seatingPlanVersions.get(eventId) || 0) + 1;
+    this.seatingPlanVersions.set(eventId, next);
+    return next;
   }
 
   async listTables({ eventId, limit = 20, cursor = null }) {
@@ -2607,7 +2637,7 @@ export class InMemoryStore {
         capacidad: t.capacidad,
         ocupacion: this._countTableOccupancy(eventId, t.id),
       }));
-    return paginateArray(tables, limit, cursor);
+    return { ...paginateArray(tables, limit, cursor), plan_version: await this.getSeatingVersion(eventId) };
   }
 
   _countTableOccupancy(eventId, tableId) {
@@ -2620,7 +2650,7 @@ export class InMemoryStore {
     return count;
   }
 
-  async assignSeat({ eventId, guestId, tableId, actorId }) {
+  async assignSeat({ eventId, guestId, tableId, actorId, expectedVersion = null }) {
     return this.mutexes.seating.run(eventId, async () => {
       const guest = this.guests.get(guestId);
       if (!guest || guest.event_id !== eventId || guest.deleted_at) {
@@ -2652,9 +2682,12 @@ export class InMemoryStore {
             table_id: tableId,
             estado: "asignado",
             estado_asiento: current.estado,
+            plan_version: this.seatingPlanVersions.get(eventId) || 0,
           },
         };
       }
+      // Control de versión optimista (FR7): se valida antes de cualquier escritura.
+      this._checkSeatingVersion(eventId, expectedVersion);
 
       // Verificar si el invitado declinó RSVP
       const inv = [...this.invitations.values()].find((i) => i.guest_id === guestId);
@@ -2714,6 +2747,7 @@ export class InMemoryStore {
         });
       }
 
+      const planVersion = this._bumpSeatingVersion(eventId);
       return {
         created: !current,
         body: {
@@ -2722,18 +2756,25 @@ export class InMemoryStore {
           table_id: tableId,
           estado: "asignado",
           estado_asiento: seat.estado,
+          plan_version: planVersion,
         },
       };
     });
   }
 
-  async releaseSeat({ eventId, guestId }) {
+  async releaseSeat({ eventId, guestId, expectedVersion = null }) {
     return this.mutexes.seating.run(eventId, async () => {
       const guest = this.guests.get(guestId);
       if (!guest || guest.event_id !== eventId) {
         throw new AppError("NOT_FOUND", "Invitado no encontrado");
       }
+      const active = [...this.seatAssignments.values()].some(
+        (sa) => sa.event_id === eventId && sa.guest_id === guestId && (sa.estado === "confirmado" || sa.estado === "pendiente")
+      );
+      // Un no-op (nada que liberar) no consume versión ni genera conflicto, igual que en PG.
+      if (active) this._checkSeatingVersion(eventId, expectedVersion);
       const now = new Date().toISOString();
+      let released = 0;
       for (const sa of this.seatAssignments.values()) {
         if (
           sa.event_id === eventId &&
@@ -2745,8 +2786,11 @@ export class InMemoryStore {
           sa.liberado_en = now;
           sa.motivo_liberacion = "reasignado";
           sa.updated_at = now;
+          released += 1;
         }
       }
+      const planVersion = released > 0 ? this._bumpSeatingVersion(eventId) : this.seatingPlanVersions.get(eventId) || 0;
+      return { liberados: released, plan_version: planVersion };
     });
   }
 
@@ -4932,6 +4976,22 @@ export class InMemoryStore {
       if (this.metrics) this.metrics.pspError("failed");
       throw new AppError("PSP_ERROR", "El PSP rechazó el cobro");
     });
+  }
+
+  /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */
+  async listUnresolvedPayments({ olderThan, limit = 25 }) {
+    const cutoff = new Date(olderThan).getTime();
+    return [...this.payments.values()]
+      .filter(
+        (p) =>
+          !p.cobrado_en &&
+          !p.deleted_at &&
+          (p.estado_psp === "pendiente" || p.estado_psp === "desconocido") &&
+          new Date(p.created_at).getTime() <= cutoff
+      )
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+      .slice(0, limit)
+      .map((p) => ({ payment_id: p.id, reservation_id: p.reservation_id, estado_psp: p.estado_psp }));
   }
 
   async listReservationPayments({ reservationId }) {

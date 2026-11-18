@@ -286,6 +286,7 @@ export const eventRoutes = [
             eventId: req.params.eventId,
             rol,
             emittedByUserId: auth.userId,
+            now: ctx.now(),
           });
           return jsonResponse(201, res);
         }

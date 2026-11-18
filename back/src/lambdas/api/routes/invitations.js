@@ -120,6 +120,7 @@ export const invitationRoutes = [
         qrSigner: ctx.qrSigner,
         objectStorage: ctx.objectStorage,
         assetsBucket: ctx.assetsBucket,
+        now: ctx.now(),
       });
       return jsonResponse(200, res);
     },

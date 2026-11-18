@@ -1,5 +1,26 @@
-import { validationError } from "../../../shared/errors.js";
+import { AppError, validationError } from "../../../shared/errors.js";
 import { authenticateUser, jsonResponse, withIdempotency } from "../../../shared/http.js";
+
+/**
+ * Control de versión optimista del plano (FR7). El cliente envía la versión que leyó en
+ * `If-Match` (formato ETag `"12"`, `W/"12"` o `12`) o en el cuerpo como `plan_version`.
+ * Sin versión la edición se acepta (compatibilidad), salvo que SEATING_REQUIRE_IF_MATCH=true.
+ */
+function readExpectedSeatingVersion(req) {
+  const header = req.headers["if-match"];
+  const raw = header !== undefined ? String(header).trim().replace(/^W\//, "").replace(/^"|"$/g, "") : req.body?.plan_version;
+  if (raw === undefined || raw === null || raw === "" || raw === "*") {
+    if (process.env.SEATING_REQUIRE_IF_MATCH === "true") {
+      throw new AppError("PRECONDITION_REQUIRED", "Envía If-Match con la versión del plano (GET .../tables)");
+    }
+    return null;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) throw validationError("If-Match / plan_version inválido", "plan_version");
+  return n;
+}
+
+const etagFor = (version) => ({ etag: `"${version}"` });
 
 export const seatingRoutes = [
   {
@@ -23,8 +44,9 @@ export const seatingRoutes = [
             numero,
             nombre,
             capacidad,
+            expectedVersion: readExpectedSeatingVersion(req),
           });
-          return jsonResponse(201, created);
+          return jsonResponse(201, created, { headers: etagFor(created.plan_version) });
         }
       );
     },
@@ -43,7 +65,7 @@ export const seatingRoutes = [
         limit: req.query.limit,
         cursor: req.query.cursor,
       });
-      return jsonResponse(200, res);
+      return jsonResponse(200, res, { headers: etagFor(res.plan_version) });
     },
   },
   {
@@ -70,8 +92,10 @@ export const seatingRoutes = [
             guestId,
             tableId,
             actorId: auth.userId,
+            expectedVersion: readExpectedSeatingVersion(req),
+            now: ctx.now(),
           });
-          return jsonResponse(res.created ? 201 : 200, res.body);
+          return jsonResponse(res.created ? 201 : 200, res.body, { headers: etagFor(res.body.plan_version) });
         }
       );
     },
@@ -86,11 +110,13 @@ export const seatingRoutes = [
         eventId: req.params.eventId,
         requiredMembershipRoles: ["owner", "editor"],
       });
-      await ctx.store.releaseSeat({
+      const res = await ctx.store.releaseSeat({
         eventId: req.params.eventId,
         guestId: req.params.guestId,
+        expectedVersion: readExpectedSeatingVersion(req),
+        now: ctx.now(),
       });
-      return jsonResponse(204, null);
+      return jsonResponse(204, null, { headers: etagFor(res.plan_version) });
     },
   },
   {

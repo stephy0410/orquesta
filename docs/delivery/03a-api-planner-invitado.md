@@ -118,11 +118,13 @@ Lectura del read model alimentado por `t_ingest` (TR-05). Cada ítem expone: `co
 
 | Método | Ruta | Auth | Request | Response 2xx | Errores | Idempotente | RF |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| POST | `/v1/events/{event_id}/tables` | `owner`/`editor` | `{nombre, capacidad}` | `201 {id, capacidad, ocupacion:0}` | 404, 409, 422 | `Idempotency-Key` | RF-12 |
-| GET | `/v1/events/{event_id}/tables?limit&cursor` | miembro | — | `200 {items[{id,nombre,capacidad,ocupacion}], next_cursor}` | 401, 404 | — | RF-12 |
-| POST | `/v1/events/{event_id}/seat-assignments` | `owner`/`editor` | `{guest_id, table_id}` | `200 {guest_id, table_id, estado:"asignado"}` (`201` si es nuevo) | 404, 409 (`MESA_SIN_CAPACIDAD`) | sí por `(evento, invitado, mesa)` | RF-12, TR-10 |
-| DELETE | `/v1/events/{event_id}/seat-assignments/{guest_id}` | `owner`/`editor` | — | `204` (asiento `liberado`, capacidad devuelta) | 404 | sí | RF-12 |
+| POST | `/v1/events/{event_id}/tables` | `owner`/`editor` | `{nombre, capacidad}` + `If-Match: "<plan_version>"` | `201 {id, capacidad, ocupacion:0, plan_version}` + `ETag` | 404, 409 (`SEATING_VERSION_CONFLICT`), 422 | `Idempotency-Key` | RF-12, FR7 |
+| GET | `/v1/events/{event_id}/tables?limit&cursor` | miembro | — | `200 {items[{id,nombre,capacidad,ocupacion}], next_cursor, plan_version}` + `ETag: "<plan_version>"` | 401, 404 | — | RF-12, FR7 |
+| POST | `/v1/events/{event_id}/seat-assignments` | `owner`/`editor` | `{guest_id, table_id}` + `If-Match` | `200 {guest_id, table_id, estado:"asignado", plan_version}` (`201` si es nuevo) + `ETag` | 404, 409 (`MESA_SIN_CAPACIDAD`, `SEATING_VERSION_CONFLICT`), 422 | sí por `(evento, invitado, mesa)` | RF-12, TR-10, FR7 |
+| DELETE | `/v1/events/{event_id}/seat-assignments/{guest_id}` | `owner`/`editor` | `If-Match` | `204` + `ETag` (asiento `liberado`, capacidad devuelta) | 404, 409 (`SEATING_VERSION_CONFLICT`) | sí | RF-12, FR7 |
 | GET | `/v1/events/{event_id}/seat-assignments/unseated?limit&cursor` | miembro | — | `200 {items[{guest_id, estado_rsvp}], next_cursor}` | 401, 404 | — | RF-12 (lista accionable) |
+
+**Control de versión optimista del plano (FR7, migración `005`).** Cada edición del planner incrementa `plan_version` en la misma transacción. El cliente envía la versión que leyó en `If-Match` (`"12"`, `W/"12"` o `12`; alternativamente `plan_version` en el cuerpo). Si otro editor cambió el plano entretanto: `409 SEATING_VERSION_CONFLICT` con `details.version_actual`, y nada se sobrescribe. Un no-op (mover a la mesa donde ya está, liberar a quien no tiene asiento) no consume versión. Sin `If-Match` la edición se acepta por compatibilidad; con `SEATING_REQUIRE_IF_MATCH=true` responde `428 PRECONDITION_REQUIRED`.
 
 ### 2.8 Trabajadores: búsqueda y solicitud (RF-07, RF-08, RF-09, RF-22, TR-08, TR-20)
 
