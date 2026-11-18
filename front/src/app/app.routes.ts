@@ -1,4 +1,5 @@
 import { Routes } from '@angular/router';
+import { InvitationPage } from './features/invitation/invitation.page';
 
 export const routes: Routes = [
   {
@@ -17,9 +18,10 @@ export const routes: Routes = [
       import('./features/worker/worker.routes').then((m) => m.WORKER_ROUTES),
   },
   {
+    // Ruta pública con NFR de LCP (FR1, issue #8): va en el bundle inicial para ahorrar un viaje
+    // de red en 4G. Pesa ~4 KB comprimido; planner, proveedor y escáner siguen en carga diferida.
     path: 'invitacion',
-    loadComponent: () =>
-      import('./features/invitation/invitation.page').then((m) => m.InvitationPage),
+    component: InvitationPage,
   },
   {
     path: 'scan',
