@@ -3,7 +3,12 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { ORQUESTA_API_BASE_URL } from '../../core/api/api-config';
 import { apiInterceptor } from '../../core/api/api.interceptor';
-import { InvitationPage, extractRsvpTokenFromHash } from './invitation.page';
+import {
+  InvitationPage,
+  extractRsvpTokenFromHash,
+  formatEventDate,
+  formatEventTime,
+} from './invitation.page';
 
 describe('InvitationPage (RF-18, NFR-02)', () => {
   let httpMock: HttpTestingController;
@@ -30,6 +35,13 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     expect(extractRsvpTokenFromHash('#t=rsvp_123')).toBe('rsvp_123');
     expect(extractRsvpTokenFromHash('#foo=1&t=rsvp_456')).toBe('rsvp_456');
     expect(extractRsvpTokenFromHash('')).toBeNull();
+  });
+
+  it('muestra fecha y hora legibles en la zona horaria del evento', () => {
+    expect(formatEventDate('2026-11-21')).toBe('sábado, 21 de noviembre de 2026');
+    expect(formatEventTime('2026-11-22T01:00:00.000Z', 'America/Mexico_City')).toBe('19:00');
+    expect(formatEventTime('2026-11-22T01:00:00.000Z', 'America/Cancun')).toBe('20:00');
+    expect(formatEventTime('19:00')).toBe('19:00');
   });
 
   it('loads invitation without cookies, keeps QR visible, and updates state on confirma/declina', async () => {

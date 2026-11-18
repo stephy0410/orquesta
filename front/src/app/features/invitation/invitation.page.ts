@@ -26,6 +26,39 @@ export function extractRsvpTokenFromHash(hash: string): string | null {
   return null;
 }
 
+/** "sábado, 21 de noviembre de 2026" a partir de YYYY-MM-DD (sin desfase de zona). */
+export function formatEventDate(fecha: string | null | undefined): string {
+  if (!fecha) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(fecha);
+  if (!m) return fecha;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12));
+  return d.toLocaleDateString('es-MX', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+/** Hora local del evento ("19:00") a partir de un ISO; deja pasar "19:00" tal cual. */
+export function formatEventTime(value: string | null | undefined, timeZone?: string | null): string {
+  if (!value) return '';
+  if (/^\d{1,2}:\d{2}$/.test(value)) return value;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  try {
+    return d.toLocaleTimeString('es-MX', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: timeZone || undefined,
+    });
+  } catch {
+    return d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+}
+
 @Component({
   selector: 'app-invitation-page',
   standalone: true,
@@ -45,6 +78,23 @@ export class InvitationPage implements OnInit {
   readonly state = signal<PublicRsvpStateResponse | null>(null);
   readonly qrDataUrl = signal<string | null>(null);
   readonly lastActionBanner = signal<string | null>(null);
+
+  readonly fechaLabel = computed(() => formatEventDate(this.state()?.evento.fecha));
+  readonly horarioLabel = computed(() => {
+    const ev = this.state()?.evento;
+    if (!ev) return '';
+    const inicio = formatEventTime(ev.inicio, ev.timezone);
+    const fin = formatEventTime(ev.fin, ev.timezone);
+    return fin ? `${inicio} a ${fin} h` : `${inicio} h`;
+  });
+  readonly respondidoLabel = computed(() => {
+    const iso = this.state()?.respondido_en;
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleString('es-MX', { dateStyle: 'long', timeStyle: 'short' });
+  });
 
   readonly venueLabel = computed(() => {
     const ev = this.state()?.evento;

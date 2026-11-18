@@ -112,7 +112,17 @@
               @let nombre = u.nombre || guestNamesById()[u.guest_id] || 'Invitado';
               <tr>
                 <td><strong>{{ nombre }}</strong></td>
-                <td><span class="oq-badge oq-badge-info">{{ u.estado_rsvp }}</span></td>
+                @let declino = u.estado_rsvp === 'declina';
+                <td>
+                  <span
+                    class="oq-badge"
+                    [class.oq-badge-success]="u.estado_rsvp === 'confirma'"
+                    [class.oq-badge-danger]="declino"
+                    [class.oq-badge-neutral]="u.estado_rsvp !== 'confirma' && !declino"
+                  >
+                    {{ rsvpLabel(u.estado_rsvp) }}
+                  </span>
+                </td>
                 <td>
                   <div class="oq-row">
                     <label class="oq-sr-only" [for]="'mesa-' + u.guest_id">Mesa para {{ nombre }}</label>
@@ -131,8 +141,9 @@
                     <button
                       type="button"
                       class="oq-btn oq-btn-accent oq-btn-sm"
-                      [disabled]="tables().length === 0 || busy()"
+                      [disabled]="tables().length === 0 || busy() || declino"
                       [attr.aria-label]="'Asignar mesa a ' + nombre"
+                      [attr.title]="declino ? 'Declinó la invitación' : null"
                       (click)="assignSeat(u.guest_id)"
                     >
                       Asignar
@@ -171,7 +182,7 @@
                   <td>{{ sg.nombre }}</td>
                   <td>{{ tableNameById()[actual] ?? sg.mesa ?? actual }}</td>
                   <td>
-                    <div class="oq-row">
+                    <div class="oq-row seat-actions">
                       <label class="oq-sr-only" [for]="'mover-' + gid">Mover a {{ sg.nombre }} a otra mesa</label>
                       <select
                         class="oq-select seat-select"

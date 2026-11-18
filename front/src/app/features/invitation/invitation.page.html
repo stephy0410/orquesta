@@ -70,19 +70,11 @@
         <dl class="inv-meta">
           <div>
             <dt>Fecha</dt>
-            <dd>{{ inv.evento.fecha }}</dd>
+            <dd>{{ fechaLabel() }}</dd>
           </div>
           <div>
             <dt>Horario</dt>
-            <dd>
-              {{ inv.evento.inicio }}
-              @if (inv.evento.fin) {
-                – {{ inv.evento.fin }}
-              }
-              @if (inv.evento.timezone) {
-                <span class="oq-hint">({{ inv.evento.timezone }})</span>
-              }
-            </dd>
+            <dd>{{ horarioLabel() }}</dd>
           </div>
           @if (venueLabel()) {
             <div>
@@ -93,7 +85,7 @@
         </dl>
 
         @if (lastActionBanner()) {
-          <div class="oq-alert oq-alert-success">{{ lastActionBanner() }}</div>
+          <div class="oq-alert oq-alert-success" role="status">{{ lastActionBanner() }}</div>
         }
 
         <div class="inv-actions">
@@ -105,7 +97,7 @@
             [disabled]="submitting()"
             (click)="respond('confirma')"
           >
-            {{ inv.respuesta === 'confirma' ? 'Confirmado (mantener)' : 'Confirmar asistencia' }}
+            {{ inv.respuesta === 'confirma' ? 'Mantener confirmación' : 'Confirmar asistencia' }}
           </button>
 
           <button
@@ -114,13 +106,13 @@
             [disabled]="submitting()"
             (click)="respond('declina')"
           >
-            {{ inv.respuesta === 'declina' ? 'Declinado (mantener)' : 'No podré asistir' }}
+            {{ inv.respuesta === 'declina' ? 'Mantener que no asistiré' : 'No podré asistir' }}
           </button>
         </div>
 
         @if (inv.respondido_en) {
           <p class="oq-hint inv-timestamp">
-            Última respuesta: <span class="mono">{{ inv.respondido_en }}</span>
+            Respondiste el {{ respondidoLabel() }}
             @if (inv.recordatorios_cancelados) {
               · Recordatorios cancelados: {{ inv.recordatorios_cancelados }}
             }
@@ -130,20 +122,20 @@
         <hr class="inv-divider" />
 
         <div class="inv-qr-box">
-          <h2>Tu QR de check-in</h2>
+          <h2>Tu pase de entrada</h2>
           <p class="oq-hint">
-            Preséntalo en la entrada del venue. Permanece disponible antes y después de responder.
+            Muéstralo en la entrada. Lo puedes volver a abrir con el mismo enlace cuando quieras.
           </p>
 
           @if (qrDataUrl()) {
-            <img class="inv-qr-img" [src]="qrDataUrl()!" alt="Código QR de check-in" />
+            <img class="inv-qr-img" [src]="qrDataUrl()!" alt="Código QR de tu pase de entrada" />
           } @else if (inv.qr.png_url) {
-            <img class="inv-qr-img" [src]="inv.qr.png_url" alt="Código QR de check-in" />
+            <img class="inv-qr-img" [src]="inv.qr.png_url" alt="Código QR de tu pase de entrada" />
           }
 
           @if (inv.qr.codigo_corto) {
             <div class="inv-short-code">
-              <span>Código corto (fallback sin cámara)</span>
+              <span>Si la cámara no lee tu QR, dicta este código</span>
               <strong class="mono">{{ inv.qr.codigo_corto }}</strong>
             </div>
           }
