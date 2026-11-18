@@ -16,7 +16,7 @@ import { AuthService } from '../../../core/auth/auth.service';
         <a class="oq-brand" routerLink="/">
           Orquesta <small>para planners</small>
         </a>
-        <nav class="oq-nav-links" aria-label="Accesos">
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
           <a class="oq-nav-link" routerLink="/planner/login">Iniciar sesión</a>
         </nav>
       </div>

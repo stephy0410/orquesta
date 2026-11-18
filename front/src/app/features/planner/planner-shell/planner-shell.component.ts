@@ -16,7 +16,7 @@ import { ConnectivityService } from '../../../core/connectivity/connectivity.ser
           Orquesta <small>para planners</small>
         </a>
 
-        <nav class="oq-nav-links" aria-label="Navegación del planner">
+        <nav class="oq-nav-links oq-topbar-start" aria-label="Navegación del planner">
           <a class="oq-nav-link" routerLink="/planner/dashboard" routerLinkActive="active" ariaCurrentWhenActive="page">
             Tablero en vivo
           </a>
@@ -28,7 +28,7 @@ import { ConnectivityService } from '../../../core/connectivity/connectivity.ser
           </a>
         </nav>
 
-        <div class="oq-row">
+        <div class="oq-row oq-topbar-end">
           <span
             class="oq-badge"
             role="status"

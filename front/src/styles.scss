@@ -1,7 +1,7 @@
 /*
  * Orquesta · identidad visual
  * Paleta olivo / papel crema inspirada en papelería de bodas; tipografía editorial
- * (Cormorant Garamond para títulos, Figtree para interfaz). Todos los pares de texto
+ * (Bodoni Moda para títulos, Figtree para interfaz, Pinyon Script solo como acento de marca). Todos los pares de texto
  * cumplen WCAG 2.2 AA (≥ 4.5:1); el salvia solo se usa como decoración.
  */
 :root {
@@ -39,15 +39,16 @@
   --oq-neutral: #4c4e3d;
   --oq-neutral-bg: #e9e6d9;
 
-  --oq-radius-sm: 4px;
-  --oq-radius-md: 6px;
-  --oq-radius-lg: 10px;
+  --oq-radius-sm: 2px;
+  --oq-radius-md: 3px;
+  --oq-radius-lg: 4px;
   --oq-radius-pill: 999px;
   --oq-radius-arch: 999px 999px 6px 6px;
   --oq-shadow-sm: 0 1px 0 rgba(43, 46, 27, 0.04);
   --oq-shadow-md: 0 18px 40px -24px rgba(43, 46, 27, 0.35);
 
-  --oq-font-display: 'Cormorant Garamond', 'Cormorant', Garamond, 'Times New Roman', serif;
+  --oq-font-display: 'Bodoni Moda Variable', 'Bodoni Moda', Didot, 'Times New Roman', serif;
+  --oq-font-script: 'Pinyon Script', 'Snell Roundhand', cursive;
   --oq-font-sans: 'Figtree Variable', 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --oq-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -81,27 +82,58 @@ h3,
 h4 {
   margin: 0 0 0.5rem;
   font-family: var(--oq-font-display);
-  font-weight: 500;
-  font-style: italic;
-  letter-spacing: -0.01em;
-  line-height: 1.1;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: -0.005em;
+  line-height: 1.12;
   color: var(--oq-ink);
 }
 
 h1 {
-  font-size: clamp(2.1rem, 1.6rem + 1.8vw, 3rem);
+  font-size: clamp(2rem, 1.5rem + 1.9vw, 3rem);
+  line-height: 1.02;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
 }
 
 h2 {
-  font-size: 1.65rem;
+  font-size: 1.55rem;
 }
 
 h3 {
-  font-size: 1.3rem;
+  font-size: 1.22rem;
 }
 
 h4 {
-  font-size: 1.1rem;
+  font-size: 1.05rem;
+}
+
+/* Acento caligráfico de marca: solo para firmas cortas, nunca para texto que haya que leer */
+.oq-script {
+  font-family: var(--oq-font-script);
+  font-weight: 400;
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+/* Enlace editorial subrayado ("Ver más") */
+.oq-link-cta {
+  display: inline-block;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid currentColor;
+  color: var(--oq-ink);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.oq-link-cta:hover {
+  color: var(--oq-olive);
 }
 
 p {
@@ -280,8 +312,8 @@ code,
 .oq-stat-value {
   display: block;
   font-family: var(--oq-font-display);
-  font-size: 2.1rem;
-  font-weight: 500;
+  font-size: 2rem;
+  font-weight: 400;
   line-height: 1.1;
   font-variant-numeric: lining-nums tabular-nums;
   color: var(--oq-ink);
@@ -294,14 +326,15 @@ code,
   align-items: center;
   justify-content: center;
   gap: 0.45rem;
-  min-height: 40px;
-  padding: 0.5rem 1.15rem;
-  border-radius: var(--oq-radius-pill);
+  min-height: 42px;
+  padding: 0.55rem 1.3rem;
+  border-radius: var(--oq-radius-sm);
   border: 1px solid transparent;
   font-family: inherit;
-  font-size: 0.9rem;
-  font-weight: 550;
-  letter-spacing: 0.005em;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
   cursor: pointer;
   text-decoration: none;
   transition:
@@ -355,15 +388,15 @@ code,
 }
 
 .oq-btn-sm {
-  min-height: 32px;
-  padding: 0.3rem 0.85rem;
-  font-size: 0.84rem;
+  min-height: 34px;
+  padding: 0.3rem 0.9rem;
+  font-size: 0.68rem;
 }
 
 .oq-btn-lg {
-  min-height: 50px;
-  padding: 0.75rem 1.6rem;
-  font-size: 1rem;
+  min-height: 52px;
+  padding: 0.8rem 1.9rem;
+  font-size: 0.78rem;
 }
 
 /* Badges */
@@ -575,7 +608,7 @@ code,
 
 .oq-chip-btn {
   padding: 0.35rem 0.85rem;
-  border-radius: var(--oq-radius-pill);
+  border-radius: var(--oq-radius-sm);
   border: 1px solid var(--oq-border-strong);
   background: transparent;
   color: var(--oq-ink-muted);
@@ -591,51 +624,65 @@ code,
   color: var(--oq-bg);
 }
 
-/* Top bar: papel, wordmark en serif cursiva */
+/* Top bar: logotipo centrado, navegación a los lados (como un membrete) */
 .oq-topbar {
   position: sticky;
   top: 0;
   z-index: 30;
-  background: color-mix(in srgb, var(--oq-bg) 92%, transparent);
+  background: color-mix(in srgb, var(--oq-bg) 94%, transparent);
   backdrop-filter: blur(6px);
   color: var(--oq-ink);
   border-bottom: 1px solid var(--oq-border);
 }
 
 .oq-topbar-inner {
-  max-width: 1200px;
+  max-width: 1280px;
   margin: 0 auto;
-  padding: 0.8rem 1.5rem;
-  display: flex;
-  flex-wrap: wrap;
+  padding: 0.85rem 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem 1.5rem;
+}
+
+.oq-topbar-inner > .oq-brand {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.oq-topbar-start {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+}
+
+.oq-topbar-end {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
 }
 
 .oq-brand {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  color: var(--oq-olive-deep);
+  flex-direction: column;
+  align-items: center;
+  color: var(--oq-ink);
   font-family: var(--oq-font-display);
-  font-style: italic;
-  font-weight: 600;
-  font-size: 1.65rem;
+  font-weight: 400;
+  font-size: 1.45rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   line-height: 1;
   text-decoration: none;
 }
 
-.oq-brand img {
-  align-self: center;
-}
-
 .oq-brand small {
-  font-family: var(--oq-font-sans);
-  font-style: normal;
-  font-weight: 500;
-  font-size: 0.8rem;
-  color: var(--oq-ink-muted);
+  font-family: var(--oq-font-script);
+  font-size: 1.05rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--oq-olive);
+  margin-top: -0.1rem;
 }
 
 .oq-brand:hover {
@@ -646,13 +693,15 @@ code,
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.25rem 1.1rem;
+  gap: 0.25rem 1.4rem;
 }
 
 .oq-nav-link {
   color: var(--oq-ink-muted);
-  font-size: 0.9rem;
-  font-weight: 500;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   padding: 0.35rem 0;
   text-decoration: none;
   border-bottom: 1px solid transparent;
@@ -672,6 +721,20 @@ code,
   color: var(--oq-ink-muted);
 }
 
+@media (max-width: 900px) {
+  .oq-topbar-inner {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  .oq-topbar-inner > .oq-brand,
+  .oq-topbar-start,
+  .oq-topbar-end {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: center;
+  }
+}
+
 /* Tabs del evento */
 .oq-tabs {
   display: flex;
@@ -689,8 +752,10 @@ code,
   background: transparent;
   color: var(--oq-ink-muted);
   font-family: inherit;
-  font-weight: 550;
-  font-size: 0.92rem;
+  font-weight: 600;
+  font-size: 0.72rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
   text-decoration: none;
   cursor: pointer;
 }
@@ -740,7 +805,7 @@ code,
 .oq-auth-art {
   position: relative;
   margin: 1.5rem;
-  border-radius: 999px 999px var(--oq-radius-md) var(--oq-radius-md);
+  border-radius: 999px 999px 0 0;
   background: var(--oq-olive);
   color: var(--oq-bg);
   display: flex;
@@ -759,11 +824,11 @@ code,
 
 .oq-auth-art blockquote {
   margin: 0;
-  font-family: var(--oq-font-display);
-  font-style: italic;
-  font-size: 1.6rem;
-  line-height: 1.2;
-  max-width: 22ch;
+  font-family: var(--oq-font-script);
+  font-size: 2rem;
+  line-height: 1.15;
+  max-width: 18ch;
+  transform: rotate(-4deg);
 }
 
 @media (max-width: 860px) {
