@@ -27,3 +27,6 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# Resultados crudos de pruebas de carga (se resumen en back/load/README.md)
+back/load/results/
