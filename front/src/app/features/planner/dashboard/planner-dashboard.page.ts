@@ -10,10 +10,19 @@ import {
   EventDto,
   PaginatedResponse,
 } from '../../../core/api/models';
+import { LiveAnnouncer } from './live-announcement';
 
 export const DASHBOARD_POLL_MS = 3000;
 export const DASHBOARD_MAX_LIMIT = 25;
 const STALE_HEARTBEAT_MS = 5 * 60 * 1000;
+
+const ESTADO_LABEL: Record<string, string> = {
+  borrador: 'Borrador',
+  publicado: 'Publicado',
+  en_curso: 'En curso',
+  cerrado: 'Cerrado',
+  cancelado: 'Cancelado',
+};
 
 @Component({
   selector: 'app-planner-dashboard-page',
@@ -40,6 +49,10 @@ export class PlannerDashboardPage implements OnInit {
   readonly pollingActive = signal<boolean>(true);
   readonly loading = signal<boolean>(false);
   readonly error = signal<string | null>(null);
+  /** Texto para la región aria-live; agrupado para no saturar al lector de pantalla. */
+  readonly liveMessage = signal('');
+
+  private readonly announcer = new LiveAnnouncer();
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -91,6 +104,7 @@ export class PlannerDashboardPage implements OnInit {
     this.limit.set(clamped);
     this.currentCursor.set(null);
     this.cursorStack.set([]);
+    this.announcer.reset();
     void this.fetchDashboard();
   }
 
@@ -99,6 +113,7 @@ export class PlannerDashboardPage implements OnInit {
     if (!next) return;
     this.cursorStack.update((s) => [...s, this.currentCursor()]);
     this.currentCursor.set(next);
+    this.announcer.reset();
     await this.fetchDashboard();
   }
 
@@ -108,6 +123,7 @@ export class PlannerDashboardPage implements OnInit {
     const prev = stack[stack.length - 1] ?? null;
     this.cursorStack.set(stack.slice(0, -1));
     this.currentCursor.set(prev);
+    this.announcer.reset();
     await this.fetchDashboard();
   }
 
@@ -122,15 +138,18 @@ export class PlannerDashboardPage implements OnInit {
           cursor: this.currentCursor() ?? undefined,
         },
       });
-      this.items.set(res.items ?? []);
+      const nextItems = res.items ?? [];
+      const message = this.announcer.push(nextItems);
+      if (message) this.liveMessage.set(message);
+      this.items.set(nextItems);
       this.generadoEn.set(res.generado_en ?? null);
       this.nextCursor.set(res.next_cursor ?? null);
       this.error.set(null);
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
-          : 'No se pudo consultar el tablero.',
+          ? err.message
+          : 'No pudimos actualizar el tablero. Revisa tu conexión; reintentamos cada 3 segundos.',
       );
     } finally {
       this.loading.set(false);
@@ -160,6 +179,25 @@ export class PlannerDashboardPage implements OnInit {
     const ms = Date.parse(heartbeatEn);
     if (Number.isNaN(ms)) return true;
     return Date.now() - ms > STALE_HEARTBEAT_MS;
+  }
+
+  estadoLabel(estado: string): string {
+    return ESTADO_LABEL[estado] ?? estado;
+  }
+
+  /** Porcentaje de confirmados que ya llegaron (0–100). */
+  arrivalPct(ev: DashboardEventItem): number {
+    const { asistentes, confirmados } = ev.contadores;
+    if (!confirmados) return 0;
+    return Math.min(100, Math.round((asistentes / confirmados) * 100));
+  }
+
+  formatCorte(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
   lagBadgeClass(lagMs: number | null): string {
