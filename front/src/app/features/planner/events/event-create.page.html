@@ -150,6 +150,7 @@
             <select
               class="oq-select"
               style="flex: 1 1 160px"
+              [attr.aria-label]="'Rol del requerimiento ' + ($index + 1)"
               [ngModel]="req.rol"
               [ngModelOptions]="{ standalone: true }"
               (ngModelChange)="updateRequirement($index, 'rol', $event)"
@@ -163,6 +164,7 @@
               style="width: 90px"
               type="number"
               min="1"
+              [attr.aria-label]="'Cantidad de personas para ' + req.rol"
               [ngModel]="req.cantidad"
               [ngModelOptions]="{ standalone: true }"
               (ngModelChange)="updateRequirement($index, 'cantidad', $event)"

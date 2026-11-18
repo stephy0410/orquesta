@@ -12,30 +12,34 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
         class="oq-tab"
         [routerLink]="['/planner/events', eventId()]"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
         [routerLinkActiveOptions]="{ exact: true }"
       >
-        Resumen y Accesos
+        Resumen y accesos
       </a>
       <a
         class="oq-tab"
         [routerLink]="['/planner/events', eventId(), 'guests']"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
       >
-        Invitados y Envíos
+        Invitados y envíos
       </a>
       <a
         class="oq-tab"
         [routerLink]="['/planner/events', eventId(), 'seating']"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
       >
-        Mesas y Seating
+        Mesas
       </a>
       <a
         class="oq-tab"
         [routerLink]="['/planner/events', eventId(), 'workers']"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
       >
-        Personal y Pagos
+        Personal y pagos
       </a>
     </nav>
   `,
