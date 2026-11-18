@@ -11,6 +11,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import jsQR from 'jsqr';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import {
@@ -29,6 +30,31 @@ import { BatchSyncService } from '../../../core/sync/batch-sync.service';
 
 interface BarcodeDetectorLike {
   detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>;
+}
+
+export async function decodeVideoFrame(
+  videoEl: HTMLVideoElement,
+  detector: BarcodeDetectorLike | null,
+  canvasCtx: CanvasRenderingContext2D | null,
+  canvasEl: HTMLCanvasElement | null,
+): Promise<string | null> {
+  if (detector) {
+    const codes = await detector.detect(videoEl);
+    return codes[0]?.rawValue?.trim() || null;
+  }
+  if (!canvasCtx || !canvasEl) {
+    return null;
+  }
+  const width = videoEl.videoWidth || 640;
+  const height = videoEl.videoHeight || 480;
+  if (canvasEl.width !== width) canvasEl.width = width;
+  if (canvasEl.height !== height) canvasEl.height = height;
+  canvasCtx.drawImage(videoEl, 0, 0, width, height);
+  const imageData = canvasCtx.getImageData(0, 0, width, height);
+  const result = jsQR(imageData.data, imageData.width, imageData.height, {
+    inversionAttempts: 'dontInvert',
+  });
+  return result?.data?.trim() || null;
 }
 
 declare global {
@@ -84,7 +110,10 @@ export class ScannerTerminalPage implements OnInit {
   readonly bannerInfo = signal<string | null>(null);
 
   readonly cameraSupported = signal<boolean>(
-    typeof window !== 'undefined' && typeof window.BarcodeDetector === 'function',
+    typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia),
+  );
+  readonly usingCanvasFallback = signal<boolean>(
+    typeof window !== 'undefined' && typeof window.BarcodeDetector !== 'function',
   );
   readonly cameraActive = signal<boolean>(false);
   readonly cameraError = signal<string | null>(null);
@@ -150,12 +179,6 @@ export class ScannerTerminalPage implements OnInit {
       this.cameraError.set('El navegador no permite acceso a la cámara. Usa el fallback manual o pega el token.');
       return;
     }
-    if (typeof window === 'undefined' || !window.BarcodeDetector) {
-      this.cameraError.set(
-        'BarcodeDetector nativo no disponible en este navegador. Usa el campo de token directo o la búsqueda manual por 6 dígitos.',
-      );
-      return;
-    }
 
     try {
       this.cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -193,15 +216,16 @@ export class ScannerTerminalPage implements OnInit {
   }
 
   private startBarcodeLoop(videoEl: HTMLVideoElement): void {
-    const DetectorCtor = window.BarcodeDetector;
-    if (!DetectorCtor) return;
-    const detector = new DetectorCtor({ formats: ['qr_code'] });
+    const DetectorCtor = typeof window !== 'undefined' ? window.BarcodeDetector : undefined;
+    const detector = DetectorCtor ? new DetectorCtor({ formats: ['qr_code'] }) : null;
+    const canvasEl = detector || typeof document === 'undefined' ? null : document.createElement('canvas');
+    const canvasCtx = canvasEl ? canvasEl.getContext('2d', { willReadFrequently: true }) : null;
+    this.usingCanvasFallback.set(!detector);
 
     this.scanLoopTimer = setInterval(async () => {
       if (videoEl.readyState < 2) return;
       try {
-        const codes = await detector.detect(videoEl);
-        const raw = codes[0]?.rawValue?.trim();
+        const raw = await decodeVideoFrame(videoEl, detector, canvasCtx, canvasEl);
         if (!raw) return;
 
         const now = Date.now();
