@@ -28,6 +28,9 @@ export function createOutboxPollerHandler(ctx) {
 
     // 5. Barrido de retención y anonimización PII a 12 / 24 meses (NFR-08)
     const retention = await ctx.store.sweepRetention({ now });
+    // 5b. Teléfonos de invitados a los 90 días del evento (README, LFPDPPP).
+    const phones = await ctx.store.sweepGuestPhones({ now });
+    retention.telefonos_invitados_borrados = phones.telefonos_borrados;
 
     // 6. Conciliación de pagos `pendiente`/`desconocido` contra el PSP (RF-11, FR6). Nunca lanza:
     //    una caída del procesador de pagos no detiene recordatorios ni proyecciones.

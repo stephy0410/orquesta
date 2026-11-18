@@ -1,4 +1,5 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
+import { decryptPii } from "../../shared/crypto.js";
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -25,6 +26,7 @@ export function createNotifySmsHandler(ctx) {
           !dCtx.delivery.direccion_plana ||
           dCtx.delivery.pii_anonimizada_en ||
           (dCtx.guest && dCtx.guest.deleted_at) ||
+          (dCtx.guest && dCtx.guest.baja_sms_en) ||
           (dCtx.invitation && dCtx.invitation.rsvp_revocado_en) ||
           (dCtx.reminderJob && (dCtx.reminderJob.estado === "cancelado" || dCtx.reminderJob.pii_anonimizada_en));
 
@@ -82,12 +84,23 @@ export function createNotifySmsHandler(ctx) {
       }
 
       // Otros avisos SMS (OTP, solicitud de trabajo)
+      // Direcciones que vienen del outbox llegan cifradas (NFR-07); las de avisos directos, en claro.
+      if (msg.to_cifrado && !msg.to) {
+        try {
+          msg.to = decryptPii(msg.to_cifrado, ctx.piiKey);
+        } catch {
+          msg.to = null;
+        }
+        delete msg.to_cifrado;
+      }
       if (msg.to) {
         try {
           const text =
             msg.event_type === "otp_verification"
               ? `[Orquesta] Tu codigo de verificacion es: ${msg.codigo_otp}`
-              : `[Orquesta] Nueva solicitud de trabajo (${msg.rol || "staff"})`;
+              : msg.modo_emergencia
+                ? `[Orquesta] URGENTE: solicitud de emergencia (${msg.rol || "staff"}). Responde en 15 min en tu consola de Orquesta.`
+                : `[Orquesta] Nueva solicitud de trabajo (${msg.rol || "staff"}). Revisa tu consola de Orquesta.`;
           await ctx.smsProvider.send({ to: msg.to, message: text, metadata: msg });
         } catch {
           ctx.metrics.notifRetry("sms");

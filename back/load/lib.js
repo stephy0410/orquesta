@@ -32,7 +32,7 @@ export async function createLocalClient({ poolMax = 20 } = {}) {
   const pool = new pg.Pool({ ...base, max: poolMax, options: `-c search_path=${schema},public` });
   await runMigrations(pool);
 
-  const store = new PgStore({ pool, piiKey: "orquesta-load-pii-key-32bytes!!" });
+  const store = new PgStore({ pool, piiKey: "orquesta-dev-pii-key-32bytes!" });
   const ctx = await createAppContext({ dbMode: "aurora", store, silentMetrics: true });
   ctx.queueBus.registerConsumer("import_jobs", createImportWorkerHandler(ctx));
   ctx.queueBus.registerConsumer("projection", createProjectorHandler(ctx));

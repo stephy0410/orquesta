@@ -1,4 +1,5 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
+import { decryptPii } from "../../shared/crypto.js";
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -25,6 +26,7 @@ export function createNotifyEmailHandler(ctx) {
           !dCtx.delivery.direccion_plana ||
           dCtx.delivery.pii_anonimizada_en ||
           (dCtx.guest && dCtx.guest.deleted_at) ||
+          (dCtx.guest && dCtx.guest.baja_email_en) ||
           (dCtx.invitation && dCtx.invitation.rsvp_revocado_en) ||
           (dCtx.reminderJob && (dCtx.reminderJob.estado === "cancelado" || dCtx.reminderJob.pii_anonimizada_en));
 
@@ -96,6 +98,15 @@ export function createNotifyEmailHandler(ctx) {
         continue;
       }
 
+      // Direcciones que vienen del outbox llegan cifradas (NFR-07); las de avisos directos, en claro.
+      if (msg.to_cifrado && !msg.to) {
+        try {
+          msg.to = decryptPii(msg.to_cifrado, ctx.piiKey);
+        } catch {
+          msg.to = null;
+        }
+        delete msg.to_cifrado;
+      }
       if (msg.to) {
         try {
           let subject = "Notificación Orquesta";
@@ -110,8 +121,14 @@ export function createNotifyEmailHandler(ctx) {
             subject = "Código OTP de Orquesta";
             html = `<p>Tu código OTP es: <strong>${msg.codigo_otp}</strong></p>`;
           } else if (msg.event_type === "worker_request_created") {
-            subject = `Nueva solicitud de trabajo (${msg.rol || "staff"})`;
-            html = `<p>Tienes una nueva solicitud de contratación.</p>`;
+            const base = (process.env.PUBLIC_BASE_URL || "https://orquesta.app").replace(/\/+$/, "");
+            subject = msg.modo_emergencia
+              ? `URGENTE: solicitud de emergencia (${msg.rol || "staff"})`
+              : `Nueva solicitud de trabajo (${msg.rol || "staff"})`;
+            html =
+              `<p>Tienes una nueva solicitud de contratación como <strong>${msg.rol || "staff"}</strong>.</p>` +
+              (msg.modo_emergencia ? "<p><strong>Es una emergencia: tienes 15 minutos para responder.</strong></p>" : "") +
+              `<p><a href="${base}/worker/requests">Ver y responder la solicitud</a></p>`;
           }
           await ctx.emailProvider.send({
             to: msg.to,

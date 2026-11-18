@@ -360,6 +360,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       for (const g of gRes.rows) {
         await client.query(`UPDATE guest SET estado_envio = 'enviado' WHERE id = $1`, [g.id]);
         for (const canal of canalesActivos) {
+          if (g[`baja_${canal}_en`]) continue; // baja del invitado en este canal (FR8)
           const addr =
             canal === "sms"
               ? g.telefono_cifrado
@@ -449,6 +450,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       let entregasEncoladas = 0;
       for (const g of gRes.rows) {
         for (const ch of selectedChannels) {
+          if (g[`baja_${ch}_en`]) continue; // baja del invitado en este canal (FR8)
           const addr =
             ch === "sms"
               ? g.telefono_cifrado
@@ -517,6 +519,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     const res = await this.pool.query(
       `SELECT d.*, i.guest_id, i.rsvp_revocado_en, i.rsvp_token_cifrado, i.qr_token_cifrado, i.qr_s3_key, i.codigo_corto,
               g.nombre AS guest_nombre, g.deleted_at AS guest_deleted_at,
+              g.baja_sms_en AS guest_baja_sms_en, g.baja_email_en AS guest_baja_email_en,
               e.nombre AS event_nombre,
               rj.estado AS reminder_estado, rj.pii_anonimizada_en AS reminder_anon
          FROM invitation_delivery d
@@ -544,7 +547,15 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
             qr_token_plano: r.qr_token_cifrado ? this._dec(r.qr_token_cifrado) : null,
           }
         : null,
-      guest: r.guest_id ? { id: r.guest_id, nombre: r.guest_nombre, deleted_at: r.guest_deleted_at } : null,
+      guest: r.guest_id
+        ? {
+            id: r.guest_id,
+            nombre: r.guest_nombre,
+            deleted_at: r.guest_deleted_at,
+            baja_sms_en: r.guest_baja_sms_en,
+            baja_email_en: r.guest_baja_email_en,
+          }
+        : null,
       event: { id: r.event_id, nombre: r.event_nombre },
       reminderJob: r.reminder_job_id ? { id: r.reminder_job_id, estado: r.reminder_estado, pii_anonimizada_en: r.reminder_anon } : null,
     };
@@ -626,7 +637,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse para RSVP");
     }
     const res = await this.pool.query(
-      `SELECT i.*, g.deleted_at AS guest_deleted_at,
+      `SELECT i.*, g.deleted_at AS guest_deleted_at, g.baja_sms_en, g.baja_email_en,
               e.nombre AS event_nombre, e.fecha, e.ventana_inicio, e.ventana_fin, e.timezone,
               v.nombre AS venue_nombre, v.direccion AS venue_direccion,
               r.respuesta, r.respondido_en
@@ -663,7 +674,44 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         lugar: row.venue_nombre,
         direccion: row.venue_direccion,
       },
+      bajas: { sms: Boolean(row.baja_sms_en), email: Boolean(row.baja_email_en) },
     };
+  };
+
+  /**
+   * Baja del invitado por canal (README FR8), con el token de su invitación y sin cuenta.
+   * Idempotente: repetirla conserva la fecha original. Cancela los recordatorios pendientes del canal.
+   */
+  proto.unsubscribeGuest = async function ({ rawToken, canal, now = new Date() }) {
+    if (!["sms", "email", "ambos"].includes(canal)) throw validationError("canal debe ser sms, email o ambos", "canal");
+    if (typeof rawToken !== "string" || rawToken.split(".").length === 3) {
+      throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse aquí");
+    }
+    const canales = canal === "ambos" ? ["sms", "email"] : [canal];
+    const nowIso = toIso(now);
+    return withTx(this.pool, async (client) => {
+      const res = await client.query(
+        `SELECT g.id, g.event_id FROM invitation i JOIN guest g ON g.id = i.guest_id
+          WHERE i.rsvp_token_hash = $1 AND i.pii_anonimizada_en IS NULL FOR UPDATE OF g`,
+        [sha256Hex(rawToken)]
+      );
+      if (res.rowCount === 0) throw new AppError("TOKEN_INVALIDO", "Invitación no encontrada");
+      const g = res.rows[0];
+      const upd = await client.query(
+        `UPDATE guest
+            SET baja_sms_en = CASE WHEN $2 THEN COALESCE(baja_sms_en, $4) ELSE baja_sms_en END,
+                baja_email_en = CASE WHEN $3 THEN COALESCE(baja_email_en, $4) ELSE baja_email_en END
+          WHERE id = $1
+          RETURNING baja_sms_en, baja_email_en`,
+        [g.id, canales.includes("sms"), canales.includes("email"), nowIso]
+      );
+      await client.query(
+        `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'invitado_de_baja'
+          WHERE guest_id = $1 AND estado = 'programado' AND canal = ANY($2::text[])`,
+        [g.id, canales]
+      );
+      return { bajas: { sms: Boolean(upd.rows[0].baja_sms_en), email: Boolean(upd.rows[0].baja_email_en) } };
+    });
   };
 
   proto.submitPublicRsvp = async function ({ rawToken, respuesta, objectStorage, now = new Date() }) {
@@ -1170,7 +1218,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       for (const job of jobsRes.rows) {
         if (job.plantilla === "recordatorio_rsvp") {
           const gRes = await client.query(
-            `SELECT g.id, g.deleted_at, g.email_cifrado, g.telefono_cifrado,
+            `SELECT g.id, g.deleted_at, g.email_cifrado, g.telefono_cifrado, g.baja_sms_en, g.baja_email_en,
                     i.id AS invitation_id, i.deleted_at AS inv_deleted_at, i.rsvp_revocado_en
                FROM guest g
                LEFT JOIN invitation i ON i.guest_id = g.id
@@ -1200,6 +1248,14 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           if (rsvpRes.rowCount > 0) {
             await client.query(
               `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'rsvp_registrado' WHERE id = $1`,
+              [job.id]
+            );
+            cancelled += 1;
+            continue;
+          }
+          if (g[`baja_${job.canal}_en`]) {
+            await client.query(
+              `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'invitado_de_baja' WHERE id = $1`,
               [job.id]
             );
             cancelled += 1;
@@ -1370,6 +1426,45 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       return { transitioned };
     });
   };
+  /**
+   * README (LFPDPPP): los teléfonos de los invitados se borran 90 días después del evento
+   * (`ventana_fin`). También las direcciones SMS de entregas y recordatorios. Si el teléfono era la
+   * única clave de contacto, el invitado queda anonimizado (lo exige el CHECK de `guest`).
+   */
+  proto.sweepGuestPhones = async function ({ now = new Date() }) {
+    const cutoff = new Date(new Date(now).getTime() - 90 * 86400_000).toISOString();
+    const nowIso = toIso(now);
+    return withTx(this.pool, async (client) => {
+      const g = await client.query(
+        `UPDATE guest g
+            SET telefono_cifrado = NULL, telefono_hmac = NULL, telefono_e164 = NULL,
+                pii_anonimizada_en = CASE
+                  WHEN g.email_cifrado IS NULL AND g.email_normalizado IS NULL THEN COALESCE(g.pii_anonimizada_en, $2)
+                  ELSE g.pii_anonimizada_en END
+           FROM event e
+          WHERE e.id = g.event_id AND e.ventana_fin <= $1
+            AND (g.telefono_cifrado IS NOT NULL OR g.telefono_e164 IS NOT NULL)`,
+        [cutoff, nowIso]
+      );
+      await client.query(
+        `UPDATE invitation_delivery d
+            SET direccion_cifrada = NULL, pii_anonimizada_en = COALESCE(d.pii_anonimizada_en, $2)
+           FROM event e
+          WHERE e.id = d.event_id AND e.ventana_fin <= $1 AND d.canal = 'sms' AND d.direccion_cifrada IS NOT NULL`,
+        [cutoff, nowIso]
+      );
+      await client.query(
+        `UPDATE reminder_job j
+            SET direccion_cifrada = NULL
+           FROM event e
+          WHERE e.id = j.event_id AND e.ventana_fin <= $1 AND j.guest_id IS NOT NULL
+            AND j.canal = 'sms' AND j.direccion_cifrada IS NOT NULL`,
+        [cutoff]
+      );
+      return { telefonos_borrados: g.rowCount };
+    });
+  };
+
   proto.sweepRetention = async function ({ now = new Date() }) {
     const nowDate = new Date(now);
     const c12 = new Date(nowDate);
@@ -1626,6 +1721,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     ventana,
     horaLlegada,
     modoEmergencia = false,
+    canalesActivos = ["sms", "email"],
     now = new Date(),
   }) {
     return withTx(this.pool, async (client) => {
@@ -1673,6 +1769,34 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           new Date(now).toISOString(),
         ]
       );
+      // Aviso al proveedor por SMS y email en paralelo (RF-17, D11). Va por el outbox en la misma
+      // transacción para no perderse si SNS falla; el flush inmediato lo entrega en segundos, que
+      // es lo que cumple "en emergencias la solicitud llega en < 60 s". La dirección viaja cifrada
+      // (NFR-07): el outbox es persistente y no debe guardar PII en claro.
+      const uRes = await client.query(`SELECT email_cifrado FROM "user" WHERE id = $1`, [wp.user_id]);
+      for (const canal of canalesActivos) {
+        const toCifrado = canal === "sms" ? wp.telefono_cifrado : uRes.rows[0]?.email_cifrado;
+        if (!toCifrado) continue;
+        await this._insertOutbox(client, {
+          eventId,
+          topic: "notifications",
+          eventType: "worker_request_created",
+          canal,
+          payload: {
+            reservation_id: id,
+            worker_id: workerId,
+            event_id: eventId,
+            canal,
+            to_cifrado: toCifrado,
+            rol,
+            inicio: ventana.inicio,
+            fin: ventana.fin,
+            modo_emergencia: modoEmergencia,
+            expira_en: expiraEn,
+          },
+          tIngest: new Date(now).toISOString(),
+        });
+      }
       return {
         id,
         reservation_id: id,
@@ -1828,7 +1952,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     });
   };
 
-  proto.replaceEventReservation = async function ({ eventId, reservationId, workerId = null, now = new Date() }) {
+  proto.replaceEventReservation = async function ({ eventId, reservationId, workerId = null, canalesActivos = ["sms", "email"], now = new Date() }) {
     const fRes = await this.pool.query(
       `SELECT * FROM worker_reservation WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL`,
       [reservationId, eventId]
@@ -1883,6 +2007,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       ventana: { inicio: toIso(fallen.inicio), fin: toIso(fallen.fin) },
       horaLlegada: toIso(fallen.hora_llegada),
       modoEmergencia: true,
+      canalesActivos,
       now,
     });
     return { isSinCubrir: false, body: { ...created, sla_respuesta: "PT15M" } };

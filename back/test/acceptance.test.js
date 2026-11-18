@@ -200,6 +200,15 @@ function memoryIntrospection(store) {
     async reminderJobCount() {
       return store.reminderJobs.size;
     },
+    async outboxPayloads(eventType) {
+      return store.outboxEvents.filter((o) => o.event_type === eventType).map((o) => o.payload);
+    },
+    async guestRow(guestId) {
+      return store.guests.get(guestId);
+    },
+    async reminderJobsForGuest(guestId) {
+      return [...store.reminderJobs.values()].filter((j) => j.guest_id === guestId);
+    },
   };
 }
 
@@ -216,6 +225,18 @@ function pgIntrospection(store) {
     async reminderJobCount() {
       const r = await store.pool.query(`SELECT count(*)::int AS n FROM reminder_job`);
       return r.rows[0].n;
+    },
+    async outboxPayloads(eventType) {
+      const r = await store.pool.query(`SELECT payload FROM outbox_event WHERE event_type = $1`, [eventType]);
+      return r.rows.map((x) => x.payload);
+    },
+    async guestRow(guestId) {
+      const r = await store.pool.query(`SELECT * FROM guest WHERE id = $1`, [guestId]);
+      return r.rows[0];
+    },
+    async reminderJobsForGuest(guestId) {
+      const r = await store.pool.query(`SELECT * FROM reminder_job WHERE guest_id = $1`, [guestId]);
+      return r.rows;
     },
   };
 }
@@ -2478,4 +2499,198 @@ test("Pagos: conciliación diaria ledger vs procesador detecta cobros sin asient
   );
   assert.equal(mismatchMetrics.length, 1, "emite psp_error una vez para la alarma de CloudWatch");
   assert.equal((await h.outboxPoller()).daily_reconciliation.estado, "ya_conciliado");
+});
+
+// ============================================================================
+// FR4 en producción: (a) el proveedor recibe la solicitud por SMS y email (en emergencia, como
+// URGENTE) y la dirección viaja CIFRADA en el outbox (NFR-07); (b) nunca más proveedores que
+// lugares: con 1 lugar y 2 DJs aceptando a la vez gana 1 y el otro recibe REQUERIMIENTO_CUBIERTO;
+// con 3 lugares y una empresa que ofrece 6, se aceptan solo 3.
+// ============================================================================
+async function createVerifiedWorker(h, prefix, { categoria, tipo = "persona", plazas = 1, monto = 900 }) {
+  const w = await h.registerAndLoginUser({ email: `${prefix}@orquesta.test`, role: "worker", tipo });
+  const phone = `+52558${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}`;
+  const prof = await h.request("POST", "/v1/worker/profile", {
+    headers: w.headers,
+    body: {
+      tipo,
+      ...(tipo === "empresa" ? { plazas_ofrecidas: plazas } : {}),
+      nombre_publico: `Prov ${prefix}`,
+      categorias: [categoria],
+      tarifa: { monto, moneda: "MXN", unidad: "evento" },
+      zonas: ["centro"],
+      telefono_e164: phone,
+    },
+  });
+  assert.equal(prof.status, 201);
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", { headers: w.headers, body: { canal: "telefono" } });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((m) => m.to === phone).metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, { headers: w.headers, body: { codigo_otp: otp } });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: w.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: w.headers,
+    body: { inicio: "2026-07-10T16:00:00Z", fin: "2026-07-11T04:00:00Z", zona: "centro", rol: categoria },
+  });
+  return { ...w, workerId: prof.body.worker_id, phone };
+}
+
+test("Proveedores: aviso de solicitud cifrado en outbox y nunca más proveedores que lugares (FR4)", async () => {
+  const h = await createTestHarness({ nowDate: "2026-07-01T12:00:00Z" });
+  const dj1 = await createVerifiedWorker(h, "dj-a", { categoria: "dj" });
+  const dj2 = await createVerifiedWorker(h, "dj-b", { categoria: "dj" });
+  const staffCo = await createVerifiedWorker(h, "meseros-co", { categoria: "mesero", tipo: "empresa", plazas: 6, monto: 400 });
+  const planner = await h.registerAndLoginUser({ email: "lugares-planner@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", { headers: planner.headers, body: { nombre: "Salón L", zona: "centro", direccion: "L 1" } });
+  const ev = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Boda con lugares",
+      fecha: "2026-07-10",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-07-10T18:00:00Z", fin: "2026-07-11T02:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 100,
+      requerimientos: [{ rol: "dj", cantidad: 1 }, { rol: "mesero", cantidad: 3 }],
+    },
+  });
+  const eventId = ev.body.id;
+  const ventana = { inicio: "2026-07-10T18:00:00Z", fin: "2026-07-11T02:00:00Z" };
+  const request = (workerId, rol, plazas = 1) =>
+    h.request("POST", `/v1/events/${eventId}/worker-requests`, {
+      headers: planner.headers,
+      body: { worker_id: workerId, rol, plazas, ventana, hora_llegada: ventana.inicio },
+    });
+
+  const r1 = await request(dj1.workerId, "dj");
+  const r2 = await request(dj2.workerId, "dj");
+  assert.equal(r1.status, 201);
+  assert.equal(r2.status, 201);
+
+  // (a) Aviso al proveedor por ambos canales; en el outbox la dirección va cifrada.
+  await h.drainAll();
+  const smsDj1 = h.ctx.smsProvider.captured.filter((m) => m.to === dj1.phone && m.metadata?.event_type === "worker_request_created");
+  const emailDj1 = h.ctx.emailProvider.captured.filter((m) => m.to === "dj-a@orquesta.test" && m.metadata?.event_type === "worker_request_created");
+  assert.equal(smsDj1.length, 1);
+  assert.equal(emailDj1.length, 1);
+  const payloads = await h.introspect.outboxPayloads("worker_request_created");
+  assert.ok(payloads.length >= 4);
+  for (const p of payloads) {
+    assert.equal(p.to, undefined, "sin dirección en claro en el outbox");
+    assert.ok(String(p.to_cifrado).startsWith("enc:v1:"));
+  }
+
+  // (b) 1 lugar de DJ, 2 DJs aceptan a la vez: exactamente 1 gana.
+  const [a1, a2] = await Promise.all([
+    h.request("POST", `/v1/worker/requests/${r1.body.id}/accept`, { headers: dj1.headers, body: {} }),
+    h.request("POST", `/v1/worker/requests/${r2.body.id}/accept`, { headers: dj2.headers, body: {} }),
+  ]);
+  const statuses = [a1.status, a2.status].sort();
+  assert.deepEqual(statuses, [200, 409]);
+  const loser = a1.status === 409 ? a1 : a2;
+  assert.equal(loser.body.error.code, "REQUERIMIENTO_CUBIERTO");
+
+  // 3 lugares de mesero; la empresa ofrece 6 y se le piden 6: solo se aceptan 3.
+  const rm = await request(staffCo.workerId, "mesero", 6);
+  assert.equal(rm.status, 201);
+  const am = await h.request("POST", `/v1/worker/requests/${rm.body.id}/accept`, { headers: staffCo.headers, body: {} });
+  assert.equal(am.status, 200);
+  assert.equal(am.body.plazas_aceptadas, 3);
+  const reqs = await h.request("GET", `/v1/events/${eventId}/requirements`, { headers: planner.headers });
+  assert.equal(reqs.status, 200);
+
+  // Emergencia: el aviso dice URGENTE.
+  await h.request("POST", `/v1/events/${eventId}/publish`, { headers: planner.headers });
+  await h.request("POST", `/v1/events/${eventId}/start`, { headers: planner.headers });
+  const winner = a1.status === 200 ? { r: r1, w: dj1 } : { r: r2, w: dj2 };
+  const other = a1.status === 200 ? dj2 : dj1;
+  await h.request("POST", `/v1/worker/reservations/${winner.r.body.id}/cancel`, { headers: winner.w.headers, body: { motivo: "Imprevisto" } });
+  const repl = await h.request("POST", `/v1/events/${eventId}/worker-requests/${winner.r.body.id}/replacements`, {
+    headers: planner.headers,
+    body: { worker_id: other.workerId },
+  });
+  assert.ok([200, 201].includes(repl.status), JSON.stringify(repl.body));
+  await h.drainAll();
+  const urgent = h.ctx.smsProvider.captured.filter((m) => m.to === other.phone && /URGENTE/.test(m.message || ""));
+  assert.equal(urgent.length, 1);
+});
+
+// ============================================================================
+// FR8 + privacidad: el invitado se da de baja por canal con su token (sin cuenta) y deja de recibir
+// por ese canal (reenvíos y recordatorios); los teléfonos de invitados se borran a los 90 días.
+// ============================================================================
+test("Invitados: baja por canal respetada en reenvíos y recordatorios; teléfonos borrados a los 90 días", async () => {
+  const h = await createTestHarness({ nowDate: "2026-06-01T12:00:00Z" });
+  const planner = await h.registerAndLoginUser({ email: "baja-planner@orquesta.test" });
+  const venue = await h.request("POST", "/v1/venues", { headers: planner.headers, body: { nombre: "Salón B", zona: "centro", direccion: "B 1" } });
+  const ev = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Cena baja",
+      fecha: "2026-06-20",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-20T18:00:00Z", fin: "2026-06-21T02:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 10,
+    },
+  });
+  const eventId = ev.body.id;
+  await h.request("POST", `/v1/events/${eventId}/publish`, { headers: planner.headers });
+  const csv = buildMultipartCsv("nombre,email,telefono\nAna,ana-baja@x.com,+525510101010\nTel Solo,,+525520202020\n");
+  await h.request("POST", `/v1/events/${eventId}/guests/import`, {
+    headers: { ...planner.headers, "content-type": csv.contentType },
+    rawBody: csv.rawBody,
+  });
+  await h.drainAll();
+  const guests = (await h.request("GET", `/v1/events/${eventId}/guests`, { headers: planner.headers })).body.items;
+  const ana = guests.find((g) => g.nombre === "Ana");
+  const telSolo = guests.find((g) => g.nombre === "Tel Solo");
+  const send = await h.request("POST", `/v1/events/${eventId}/invitations/send`, {
+    headers: planner.headers,
+    body: { alcance: "pendiente_envio", destinatarios_confirmados: 2 },
+  });
+  assert.equal(send.status, 202);
+  await h.drainAll();
+  const token = await h.introspect.rsvpTokenFor(ana.invitation_id);
+
+  // Baja de SMS con el token de la invitación (sin cuenta); idempotente.
+  const b1 = await h.request("POST", `/v1/public/invitations/${token}/unsubscribe`, { body: { canal: "sms" } });
+  assert.equal(b1.status, 200);
+  assert.deepEqual(b1.body.bajas, { sms: true, email: false });
+  const b2 = await h.request("POST", `/v1/public/invitations/${token}/unsubscribe`, { body: { canal: "sms" } });
+  assert.deepEqual(b2.body.bajas, { sms: true, email: false });
+  const state = await h.request("GET", `/v1/public/invitations/${token}/rsvp`);
+  assert.deepEqual(state.body.bajas, { sms: true, email: false });
+  const bad = await h.request("POST", `/v1/public/invitations/${token}/unsubscribe`, { body: { canal: "fax" } });
+  assert.equal(bad.status, 422);
+
+  // Los recordatorios SMS pendientes de Ana quedan cancelados por la baja; los de email siguen.
+  const jobs = await h.introspect.reminderJobsForGuest(ana.id);
+  assert.ok(jobs.some((j) => j.canal === "sms"));
+  for (const j of jobs.filter((x) => x.canal === "sms")) assert.equal(j.estado, "cancelado");
+  assert.ok(jobs.filter((x) => x.canal === "email").every((j) => j.estado === "programado"));
+
+  // Reenvío por ambos canales: solo sale el email.
+  const smsBefore = h.ctx.smsProvider.captured.filter((m) => m.to === "+525510101010").length;
+  const rs = await h.request("POST", `/v1/events/${eventId}/invitations/resend`, {
+    headers: planner.headers,
+    body: { guest_ids: [ana.id], canal: "ambos", ventana: "resend_1" },
+  });
+  assert.equal(rs.status, 202);
+  assert.equal(rs.body.entregas_encoladas, 1);
+  await h.drainAll();
+  assert.equal(h.ctx.smsProvider.captured.filter((m) => m.to === "+525510101010").length, smsBefore);
+
+  // 90 días después del fin del evento: se borran los teléfonos (quien solo tenía teléfono queda anonimizado).
+  h.setNow("2026-09-20T03:00:00Z");
+  const r = await h.outboxPoller();
+  assert.equal(r.retention.telefonos_invitados_borrados, 2);
+  const anaRow = await h.introspect.guestRow(ana.id);
+  const telRow = await h.introspect.guestRow(telSolo.id);
+  assert.equal(anaRow.telefono_cifrado ?? null, null);
+  assert.ok(anaRow.email_cifrado, "el email de Ana se conserva hasta los 12 meses (NFR-08)");
+  assert.equal(telRow.telefono_cifrado ?? null, null);
+  assert.ok(telRow.pii_anonimizada_en, "sin teléfono ni email, el invitado queda anonimizado");
+  const again = await h.outboxPoller();
+  assert.equal(again.retention.telefonos_invitados_borrados, 0);
 });

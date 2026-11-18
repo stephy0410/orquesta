@@ -1415,9 +1415,44 @@ export class PgStore {
       const wpRow = wpRes.rows[0];
       const workerId = wpRow.id;
       try {
+        // Nunca más proveedores que lugares (README FR4). Lock por (evento, rol) ANTES del lock por
+        // trabajador de la función SQL (orden fijo de locks: sin deadlocks). Solo aplica a una
+        // solicitud vigente; los replays y estados terminales los resuelve la función.
+        let plazasEfectivas = plazas;
+        const preRes = await client.query(
+          `SELECT event_id, rol, plazas, estado, expira_en FROM worker_reservation
+            WHERE id = $1 AND worker_id = $2 AND deleted_at IS NULL`,
+          [reservationId, workerId]
+        );
+        const pre = preRes.rows[0];
+        if (pre && pre.estado === "solicitada" && new Date(pre.expira_en) > new Date(now)) {
+          await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 3))`, [
+            pre.event_id,
+            pre.rol,
+          ]);
+          const reqRes = await client.query(
+            `SELECT er.cantidad,
+                    COALESCE((SELECT sum(wr.plazas) FROM worker_reservation wr
+                               WHERE wr.event_id = er.event_id AND wr.rol = er.rol AND wr.deleted_at IS NULL
+                                 AND wr.estado IN ('aceptada','completada')), 0)::integer AS cubiertos
+               FROM event_requirement er
+              WHERE er.event_id = $1 AND er.rol = $2 AND er.deleted_at IS NULL`,
+            [pre.event_id, pre.rol]
+          );
+          if (reqRes.rowCount > 0) {
+            const restantes = reqRes.rows[0].cantidad - reqRes.rows[0].cubiertos;
+            if (restantes <= 0) {
+              throw new AppError("REQUERIMIENTO_CUBIERTO", "El requerimiento de este rol ya está cubierto", {
+                rol: pre.rol,
+                event_id: pre.event_id,
+              });
+            }
+            plazasEfectivas = Math.min(plazas ?? pre.plazas, restantes);
+          }
+        }
         const res = await client.query(
           `SELECT * FROM aceptar_worker_reservation($1, $2, $3, $4)`,
-          [reservationId, workerId, plazas, toIso(now)]
+          [reservationId, workerId, plazasEfectivas, toIso(now)]
         );
         const row = res.rows[0];
 
