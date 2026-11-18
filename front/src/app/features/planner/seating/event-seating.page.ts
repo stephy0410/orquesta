@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
@@ -9,15 +9,26 @@ import {
   PaginatedResponse,
   SeatAssignmentResponse,
   TableDto,
+  TableListResponse,
   UnseatedGuestDto,
 } from '../../../core/api/models';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
 
+export const SEATING_CONFLICT_MESSAGE =
+  'Otra persona modificó el plano de mesas. Cargamos sus cambios; revisa y vuelve a intentarlo.';
+
+/**
+ * Acomodo de mesas (FR7) con control de versión optimista.
+ * Cada edición manda `If-Match: "<plan_version>"`; si alguien más cambió el plano, el backend
+ * responde 409 SEATING_VERSION_CONFLICT sin sobrescribir nada y aquí se avisa y se recarga,
+ * conservando las mesas que la persona ya había elegido en los selectores.
+ */
 @Component({
   selector: 'app-event-seating-page',
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, EventSubnavComponent],
   templateUrl: './event-seating.page.html',
+  styleUrl: './event-seating.page.scss',
 })
 export class EventSeatingPage implements OnInit {
   private readonly api = inject(ApiService);
@@ -29,12 +40,23 @@ export class EventSeatingPage implements OnInit {
   readonly seatedGuests = signal<GuestDto[]>([]);
   readonly guestNamesById = signal<Record<string, string>>({});
 
+  /** Versión del plano que leyó esta pestaña; null mientras no se haya cargado. */
+  readonly planVersion = signal<number | null>(null);
+
   readonly newTableNombre = signal('');
   readonly newTableCapacidad = signal(10);
   readonly selectedTableByGuest = signal<Record<string, string>>({});
+  readonly busy = signal(false);
 
   readonly error = signal<string | null>(null);
   readonly success = signal<string | null>(null);
+  readonly conflict = signal<string | null>(null);
+
+  readonly tableNameById = computed(() => {
+    const map: Record<string, string> = {};
+    for (const t of this.tables()) map[t.id] = this.tableLabel(t);
+    return map;
+  });
 
   async ngOnInit(): Promise<void> {
     const id = this.route.snapshot.paramMap.get('id') ?? '';
@@ -44,20 +66,25 @@ export class EventSeatingPage implements OnInit {
     }
   }
 
+  tableLabel(t: TableDto): string {
+    return t.nombre || `Mesa ${t.numero ?? ''}`.trim();
+  }
+
   async refreshAll(): Promise<void> {
     await Promise.all([this.loadTables(), this.loadUnseated(), this.loadGuestsIndex()]);
   }
 
   async loadTables(): Promise<void> {
     try {
-      const res = await this.api.get<PaginatedResponse<TableDto>>(
+      const res = await this.api.get<TableListResponse>(
         `/v1/events/${encodeURIComponent(this.eventId())}/tables`,
         { params: { limit: 100 } },
       );
       this.tables.set(res.items ?? []);
+      this.rememberVersion(res.plan_version);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando mesas.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos cargar las mesas. Recarga la página.',
       );
     }
   }
@@ -71,7 +98,9 @@ export class EventSeatingPage implements OnInit {
       this.unseated.set(res.items ?? []);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando sin_mesa.',
+        err instanceof OrquestaApiError
+          ? err.message
+          : 'No pudimos cargar a los invitados sin mesa. Recarga la página.',
       );
     }
   }
@@ -92,30 +121,27 @@ export class EventSeatingPage implements OnInit {
       this.guestNamesById.set(map);
       this.seatedGuests.set(seated);
     } catch {
-      // Optional enrichment
+      // Enriquecimiento opcional
     }
   }
 
   async createTable(): Promise<void> {
-    if (!this.newTableNombre().trim()) return;
-    this.error.set(null);
-    this.success.set(null);
-    try {
-      await this.api.post<TableDto>(
-        `/v1/events/${encodeURIComponent(this.eventId())}/tables`,
-        {
-          nombre: this.newTableNombre().trim(),
-          capacidad: Math.max(1, Number(this.newTableCapacidad()) || 1),
-        },
-      );
-      this.newTableNombre.set('');
-      this.success.set('Mesa creada.');
-      await this.loadTables();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo crear mesa.',
-      );
+    const nombre = this.newTableNombre().trim();
+    if (!nombre) {
+      this.error.set('Escribe el nombre o número de la mesa.');
+      return;
     }
+    await this.mutate(async () => {
+      const created = await this.api.post<TableDto>(
+        `/v1/events/${encodeURIComponent(this.eventId())}/tables`,
+        { nombre, capacidad: Math.max(1, Number(this.newTableCapacidad()) || 1) },
+        { headers: this.ifMatchHeaders() },
+      );
+      this.rememberVersion(created.plan_version);
+      this.newTableNombre.set('');
+      this.success.set(`Mesa “${nombre}” creada.`);
+      await this.loadTables();
+    }, 'No se pudo crear la mesa.');
   }
 
   setTargetTable(guestId: string, tableId: string): void {
@@ -125,41 +151,80 @@ export class EventSeatingPage implements OnInit {
   async assignSeat(guestId: string, explicitTableId?: string): Promise<void> {
     const tableId = explicitTableId ?? this.selectedTableByGuest()[guestId] ?? this.tables()[0]?.id;
     if (!tableId) {
-      this.error.set('Crea o selecciona una mesa primero.');
+      this.error.set('Crea una mesa antes de asignar invitados.');
       return;
     }
-
-    this.error.set(null);
-    this.success.set(null);
-    try {
+    const nombre = this.guestNamesById()[guestId] ?? 'el invitado';
+    await this.mutate(async () => {
       const res = await this.api.post<SeatAssignmentResponse>(
         `/v1/events/${encodeURIComponent(this.eventId())}/seat-assignments`,
         { guest_id: guestId, table_id: tableId },
+        { headers: this.ifMatchHeaders() },
       );
-      this.success.set(`Asiento ${res.estado} para ${this.guestNamesById()[guestId] ?? guestId}.`);
+      this.rememberVersion(res.plan_version);
+      this.success.set(`${nombre} quedó en ${this.tableNameById()[tableId] ?? 'la mesa elegida'}.`);
+      this.clearSelection(guestId);
       await this.refreshAll();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
-          : 'No se pudo asignar el asiento.',
-      );
-    }
+    }, 'No se pudo asignar el lugar.');
   }
 
   async releaseSeat(guestId: string): Promise<void> {
-    this.error.set(null);
-    this.success.set(null);
-    try {
+    const nombre = this.guestNamesById()[guestId] ?? 'El invitado';
+    await this.mutate(async () => {
+      // 204 sin cuerpo: la versión nueva llega al recargar las mesas.
       await this.api.delete(
         `/v1/events/${encodeURIComponent(this.eventId())}/seat-assignments/${encodeURIComponent(guestId)}`,
+        { headers: this.ifMatchHeaders() },
       );
-      this.success.set('Asiento liberado y capacidad devuelta a la mesa.');
+      this.success.set(`${nombre} ya no tiene mesa; su lugar quedó libre.`);
       await this.refreshAll();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error liberando asiento.',
-      );
+    }, 'No se pudo liberar el lugar.');
+  }
+
+  /** Cabecera If-Match con la versión que vio esta pestaña (formato ETag fuerte). */
+  ifMatchHeaders(): Record<string, string> {
+    const v = this.planVersion();
+    return v === null ? {} : { 'If-Match': `"${v}"` };
+  }
+
+  private rememberVersion(v: number | undefined | null): void {
+    if (typeof v === 'number' && Number.isInteger(v)) {
+      this.planVersion.set(v);
     }
+  }
+
+  private clearSelection(guestId: string): void {
+    this.selectedTableByGuest.update((curr) => {
+      const next = { ...curr };
+      delete next[guestId];
+      return next;
+    });
+  }
+
+  private async mutate(action: () => Promise<void>, fallback: string): Promise<void> {
+    if (this.busy()) return;
+    this.busy.set(true);
+    this.error.set(null);
+    this.success.set(null);
+    this.conflict.set(null);
+    try {
+      await action();
+    } catch (err) {
+      if (err instanceof OrquestaApiError && err.code === 'SEATING_VERSION_CONFLICT') {
+        await this.handleConflict(err);
+      } else {
+        this.error.set(err instanceof OrquestaApiError ? err.message : fallback);
+      }
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  private async handleConflict(err: OrquestaApiError): Promise<void> {
+    this.conflict.set(SEATING_CONFLICT_MESSAGE);
+    const actual = err.details?.['version_actual'];
+    this.rememberVersion(typeof actual === 'number' ? actual : null);
+    // selectedTableByGuest se conserva: la elección de la persona sobrevive a la recarga.
+    await this.refreshAll();
   }
 }
