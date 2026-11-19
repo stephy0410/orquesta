@@ -112,4 +112,43 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     expect(comp.state()?.respuesta).toBe('declina');
     expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
   });
+
+  it('permite darse de baja por canal sin cuenta y conserva el pase (FR8)', async () => {
+    const fixture = TestBed.createComponent(InvitationPage);
+    fixture.detectChanges();
+    httpMock
+      .expectOne('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp')
+      .flush({
+        respuesta: 'confirma',
+        respondido_en: '2026-06-01T12:00:00Z',
+        qr: { token: 'chk_qr_token_1', codigo_corto: '483920' },
+        evento: { nombre: 'Gala Orquesta', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Sur' },
+        bajas: { sms: false, email: false },
+      });
+    await new Promise((r) => setTimeout(r, 25));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Dejar de recibir SMS');
+    expect(el.querySelector('a[href="/privacidad"]')).toBeTruthy();
+
+    const comp = fixture.componentInstance;
+    const p = comp.unsubscribe('sms');
+    const req = httpMock.expectOne(
+      'https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/unsubscribe',
+    );
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ canal: 'sms' });
+    expect(req.request.withCredentials).toBe(false);
+    req.flush({ bajas: { sms: true, email: false } });
+    await p;
+    fixture.detectChanges();
+
+    expect(comp.state()?.bajas).toEqual({ sms: true, email: false });
+    expect(el.textContent).not.toContain('Dejar de recibir SMS');
+    expect(el.textContent).toContain('Dejar de recibir correos');
+    expect(el.textContent).toContain('ya no te enviaremos mensajes SMS');
+    expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
+  });
 });

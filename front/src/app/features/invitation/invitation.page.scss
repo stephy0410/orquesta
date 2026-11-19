@@ -152,3 +152,18 @@
   margin-top: 1.5rem;
   text-align: left;
 }
+
+.inv-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+
+  h2 {
+    font-size: 1.05rem;
+    margin: 0;
+  }
+
+  .inv-actions {
+    margin-top: 0.25rem;
+  }
+}

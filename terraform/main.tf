@@ -18,7 +18,8 @@ locals {
   # bajo el mismo origen (same-origin), evitando un ciclo entre API Gateway y CloudFront.
   cors_origins = distinct(compact(concat(
     var.cors_allow_origins,
-    ["http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"]
+    ["http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"],
+    var.custom_domain != "" ? ["https://${var.custom_domain}"] : []
   )))
 }
 

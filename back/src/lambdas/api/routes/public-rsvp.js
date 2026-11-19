@@ -45,4 +45,14 @@ export const publicRsvpRoutes = [
       );
     },
   },
+  {
+    // Baja del invitado por canal (README FR8): con el token de su invitación, sin cuenta.
+    method: "POST",
+    pattern: "/v1/public/invitations/:rsvpToken/unsubscribe",
+    async handler(req, ctx) {
+      const { canal = "ambos" } = req.body || {};
+      const res = await ctx.store.unsubscribeGuest({ rawToken: req.params.rsvpToken, canal, now: ctx.now() });
+      return jsonResponse(200, res);
+    },
+  },
 ];

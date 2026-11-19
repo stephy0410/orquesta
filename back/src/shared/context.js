@@ -47,6 +47,10 @@ export async function createAppContext(options = {}) {
     store.metrics = store.metrics || metrics;
   }
 
+  const now = options.now || (() => new Date());
+  // El PSP simulado usa el mismo reloj que la app (ver ADR-5, reloj único).
+  if (ports.paymentProvider && "clock" in ports.paymentProvider) ports.paymentProvider.clock = now;
+
   return {
     store,
     metrics,
@@ -58,7 +62,7 @@ export async function createAppContext(options = {}) {
     assetsBucket: options.assetsBucket || process.env.ASSETS_BUCKET || "orquesta-assets",
     importsBucket: options.importsBucket || process.env.IMPORTS_BUCKET || "orquesta-imports",
     autoFlushOutbox: options.autoFlushOutbox ?? true,
-    now: options.now || (() => new Date()),
+    now,
   };
 }
 

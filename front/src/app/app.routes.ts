@@ -29,6 +29,12 @@ export const routes: Routes = [
       import('./features/scanner/scanner.routes').then((m) => m.SCANNER_ROUTES),
   },
   {
+    path: 'privacidad',
+    title: 'Aviso de privacidad · Orquesta',
+    loadComponent: () =>
+      import('./features/privacy/privacy.page').then((m) => m.PrivacyPage),
+  },
+  {
     path: '**',
     redirectTo: '',
   },

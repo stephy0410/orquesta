@@ -1,5 +1,5 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
-import { reconcileUnresolvedPayments } from "../../shared/payment-reconciliation.js";
+import { reconcileUnresolvedPayments, runDailyPaymentReconciliation } from "../../shared/payment-reconciliation.js";
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -28,10 +28,16 @@ export function createOutboxPollerHandler(ctx) {
 
     // 5. Barrido de retención y anonimización PII a 12 / 24 meses (NFR-08)
     const retention = await ctx.store.sweepRetention({ now });
+    // 5b. Teléfonos de invitados a los 90 días del evento (README, LFPDPPP).
+    const phones = await ctx.store.sweepGuestPhones({ now });
+    retention.telefonos_invitados_borrados = phones.telefonos_borrados;
 
     // 6. Conciliación de pagos `pendiente`/`desconocido` contra el PSP (RF-11, FR6). Nunca lanza:
     //    una caída del procesador de pagos no detiene recordatorios ni proyecciones.
     const payments = await reconcileUnresolvedPayments(ctx, { now });
+
+    // 7. Conciliación diaria ledger ↔ procesador del día UTC anterior (una vez por día, idempotente).
+    const dailyReconciliation = await runDailyPaymentReconciliation(ctx, { now });
 
     // Flush de cualquier evento nuevo en outbox generado por los barridos 2 o 4
     const outboxAfter = await flushOutboxNow(ctx, 200);
@@ -43,6 +49,7 @@ export function createOutboxPollerHandler(ctx) {
       indeterminado_deliveries: indeterminado.transitioned,
       retention,
       payments,
+      daily_reconciliation: dailyReconciliation,
     };
   };
 }

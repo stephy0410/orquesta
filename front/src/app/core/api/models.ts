@@ -448,6 +448,14 @@ export interface PublicRsvpStateResponse {
   qr: PublicQrInfo;
   evento: PublicEventSummary;
   recordatorios_cancelados?: number;
+  /** Canales por los que el invitado pidió no recibir más mensajes (FR8). */
+  bajas?: { sms: boolean; email: boolean };
+}
+
+export type CanalBaja = 'sms' | 'email' | 'ambos';
+
+export interface PublicUnsubscribeResponse {
+  bajas: { sms: boolean; email: boolean };
 }
 
 export interface RosterGuest {

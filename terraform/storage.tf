@@ -213,8 +213,14 @@ resource "aws_cloudfront_distribution" "edge" {
     }
   }
 
+  aliases    = local.use_domain ? [var.custom_domain] : []
+  web_acl_id = local.waf_enabled ? aws_wafv2_web_acl.edge[0].arn : null
+
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = local.use_domain ? null : true
+    acm_certificate_arn            = local.use_domain ? aws_acm_certificate_validation.site[0].certificate_arn : null
+    ssl_support_method             = local.use_domain ? "sni-only" : null
+    minimum_protocol_version       = local.use_domain ? "TLSv1.2_2021" : "TLSv1"
   }
 }
 
