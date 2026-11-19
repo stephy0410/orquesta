@@ -15,6 +15,13 @@
   <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 
+@if (noProfile()) {
+  <section class="oq-card">
+    <h2>Primero crea tu perfil</h2>
+    <p class="oq-hint">Tus horarios se marcan por puesto y zona, y esos salen de tu perfil.</p>
+    <a class="oq-btn oq-btn-primary" routerLink="/worker/profile">Crear mi perfil</a>
+  </section>
+} @else {
 <div class="oq-grid-2">
   <section class="oq-card">
     <h2>{{ editingId() ? 'Editar horario' : 'Agrega un horario' }}</h2>
@@ -28,7 +35,10 @@
           [ngModel]="rol()"
           (ngModelChange)="rol.set($event)"
         >
-          @for (r of allRoles; track r) {
+          @if (!editingId() && allRoles().length > 1) {
+            <option value="*">Todos mis puestos</option>
+          }
+          @for (r of allRoles(); track r) {
             <option [value]="r">{{ label(r) }}</option>
           }
         </select>
@@ -43,7 +53,10 @@
           [ngModel]="zona()"
           (ngModelChange)="zona.set($event)"
         >
-          @for (z of allZones; track z) {
+          @if (!editingId() && allZones().length > 1) {
+            <option value="*">Todas mis zonas</option>
+          }
+          @for (z of allZones(); track z) {
             <option [value]="z">{{ label(z) }}</option>
           }
         </select>
@@ -141,3 +154,4 @@
     </div>
   </section>
 </div>
+}

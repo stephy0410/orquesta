@@ -9,3 +9,78 @@
 .otp-actions {
   margin-top: 0.65rem;
 }
+
+.wp-layout {
+  align-items: start;
+}
+
+.wp-steps {
+  position: sticky;
+  top: 1rem;
+}
+
+.wp-list {
+  list-style: none;
+  counter-reset: paso;
+  margin: 1rem 0;
+  padding: 0;
+
+  li {
+    counter-increment: paso;
+    position: relative;
+    display: grid;
+    gap: 0.4rem;
+    justify-items: start;
+    padding: 0.85rem 0 0.85rem 2.6rem;
+    border-top: 1px solid var(--oq-border);
+
+    &::before {
+      content: counter(paso);
+      position: absolute;
+      left: 0;
+      top: 0.8rem;
+      width: 1.7rem;
+      height: 1.7rem;
+      border-radius: 50%;
+      border: 1px solid var(--oq-olive);
+      display: grid;
+      place-items: center;
+      font-size: 0.85rem;
+      color: var(--oq-olive);
+    }
+
+    &.done::before {
+      content: '✓';
+      background: var(--oq-olive);
+      color: var(--oq-bg);
+    }
+
+    &.locked {
+      opacity: 0.55;
+    }
+  }
+}
+
+.wp-otp {
+  display: flex;
+  gap: 0.5rem;
+
+  .oq-input {
+    width: 140px;
+  }
+}
+
+.wp-link {
+  border: none;
+  background: none;
+  padding: 0;
+  margin-left: 0.4rem;
+  color: var(--oq-ink-muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.wp-next {
+  margin: 0;
+}

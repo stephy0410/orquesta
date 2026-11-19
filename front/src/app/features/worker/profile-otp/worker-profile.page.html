@@ -28,7 +28,7 @@
   <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 
-<div class="oq-grid-2">
+<div class="oq-grid-2 wp-layout">
   <section class="oq-card">
     <h2>Lo que ofreces</h2>
     <form class="oq-form-grid" (ngSubmit)="saveProfile()">
@@ -252,130 +252,103 @@
     </form>
   </section>
 
-  <section class="oq-grid">
-    <div class="oq-card">
-      <h2>Verifica tu cuenta</h2>
-      <p class="oq-hint">
-        Para aparecer en las búsquedas confirma tu correo y tu teléfono. Cada teléfono solo puede
-        usarse en un perfil.
-      </p>
+  <section class="oq-card wp-steps" aria-labelledby="wpStepsTitle">
+    <h2 id="wpStepsTitle">Para que te contraten</h2>
+    <p class="oq-hint">Completa estos pasos y aparecerás en la búsqueda de las planners.</p>
 
-      <div class="otp-box">
-        <div class="oq-between">
-          <strong>1. Correo electrónico</strong>
-          <span
-            class="oq-badge"
-            [class.oq-badge-success]="emailVerified()"
-            [class.oq-badge-warning]="!emailVerified()"
-          >
-            {{ emailVerified() ? 'Verificado' : 'Pendiente' }}
-          </span>
-        </div>
-        @if (!emailVerified()) {
-          <div class="oq-row otp-actions">
-            <button
-              type="button"
-              class="oq-btn oq-btn-secondary oq-btn-sm"
-              (click)="requestVerification('email')"
-            >
+    <ol class="wp-list">
+      <li [class.done]="hasExistingProfile()">
+        <strong>Crea tu perfil</strong>
+        @if (!hasExistingProfile()) {
+          <span class="oq-hint">Llena el formulario y toca “Crear perfil”.</span>
+        }
+      </li>
+
+      <li [class.done]="emailVerified()" [class.locked]="!hasExistingProfile()">
+        <strong>Verifica tu correo</strong>
+        @if (hasExistingProfile() && !emailVerified()) {
+          @if (!emailDesafioId()) {
+            <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="requestVerification('email')">
               Enviarme un código
             </button>
-          </div>
-          @if (emailDesafioId()) {
-            <div class="oq-row otp-actions">
+          } @else {
+            <div class="wp-otp">
               <input
                 class="oq-input mono"
-                style="max-width: 180px"
                 aria-label="Código del correo"
                 placeholder="Código"
+                autocomplete="one-time-code"
                 [ngModel]="emailOtp()"
                 (ngModelChange)="emailOtp.set($event)"
               />
-              <button
-                type="button"
-                class="oq-btn oq-btn-accent oq-btn-sm"
-                (click)="confirmVerification('email')"
-              >
+              <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="confirmVerification('email')">
                 Verificar
               </button>
             </div>
           }
         }
-      </div>
+      </li>
 
-      <div class="otp-box">
-        <div class="oq-between">
-          <strong>2. Teléfono</strong>
-          <span
-            class="oq-badge"
-            [class.oq-badge-success]="phoneVerified()"
-            [class.oq-badge-warning]="!phoneVerified()"
-          >
-            {{ phoneVerified() ? 'Verificado' : 'Pendiente' }}
-          </span>
-        </div>
-        @if (!phoneVerified()) {
-          <div class="oq-row otp-actions">
-            <button
-              type="button"
-              class="oq-btn oq-btn-secondary oq-btn-sm"
-              (click)="requestVerification('telefono')"
-            >
+      <li [class.done]="phoneVerified()" [class.locked]="!hasExistingProfile()">
+        <strong>Verifica tu teléfono</strong>
+        @if (hasExistingProfile() && !phoneVerified()) {
+          <span class="oq-hint">Te mandamos un SMS al número de tu perfil. Cada teléfono solo puede usarse en un perfil.</span>
+          @if (!phoneDesafioId()) {
+            <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="requestVerification('telefono')">
               Enviarme un SMS
             </button>
-          </div>
-          @if (phoneDesafioId()) {
-            <div class="oq-row otp-actions">
+          } @else {
+            <div class="wp-otp">
               <input
                 class="oq-input mono"
-                style="max-width: 180px"
                 aria-label="Código del SMS"
                 placeholder="Código"
+                autocomplete="one-time-code"
                 [ngModel]="phoneOtp()"
                 (ngModelChange)="phoneOtp.set($event)"
               />
-              <button
-                type="button"
-                class="oq-btn oq-btn-accent oq-btn-sm"
-                (click)="confirmVerification('telefono')"
-              >
+              <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="confirmVerification('telefono')">
                 Verificar
               </button>
             </div>
           }
         }
-      </div>
-    </div>
+      </li>
 
-    <div class="oq-card">
-      <h2>¿Quieres que te encuentren?</h2>
-      <p class="oq-hint">
-        Publica tu perfil para aparecer en las búsquedas de las planners, o páusalo cuando no estés
-        disponible.
-      </p>
-      <div class="oq-row">
-        <button
-          type="button"
-          class="oq-btn oq-btn-accent"
-          [disabled]="!canPublish() || !hasExistingProfile()"
-          (click)="publishProfile()"
-        >
-          Publicar perfil
-        </button>
-        <button
-          type="button"
-          class="oq-btn oq-btn-secondary"
-          [disabled]="estado() !== 'publicado'"
-          (click)="suspendProfile()"
-        >
-          Pausar perfil
-        </button>
-      </div>
-      @if (!canPublish()) {
-        <p class="oq-hint" style="margin-top: 0.75rem; color: var(--oq-warning)">
-          Verifica tu correo y tu teléfono para poder publicar.
-        </p>
-      }
-    </div>
+      <li [class.done]="estado() === 'publicado'" [class.locked]="!canPublish() || !hasExistingProfile()">
+        <strong>Publica tu perfil</strong>
+        @if (estado() !== 'publicado' && canPublish() && hasExistingProfile()) {
+          <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="publishProfile()">
+            Publicar perfil
+          </button>
+        }
+        @if (estado() === 'publicado') {
+          <span class="oq-hint">
+            Ya apareces en la búsqueda.
+            <button type="button" class="wp-link" (click)="suspendProfile()">Pausar mi perfil</button>
+          </span>
+        }
+      </li>
+
+      <li [class.done]="horarios() > 0" [class.locked]="estado() !== 'publicado'">
+        <strong>Marca cuándo puedes trabajar</strong>
+        <span class="oq-hint">
+          @if (horarios() > 0) {
+            Tienes {{ horarios() }} {{ horarios() === 1 ? 'horario' : 'horarios' }}. Las planners solo pueden
+            contratarte dentro de ellos.
+          } @else {
+            Sin horarios no te pueden contratar.
+          }
+        </span>
+        <a class="oq-btn oq-btn-secondary oq-btn-sm" routerLink="/worker/availability">
+          {{ horarios() > 0 ? 'Ver mis horarios' : 'Agregar horarios' }}
+        </a>
+      </li>
+    </ol>
+
+    <p class="oq-hint wp-next">
+      Cuando una planner te contrate, la solicitud te llega a <a routerLink="/worker/requests">Solicitudes</a>.
+      Ahí la aceptas y ves cuándo te pagan.
+    </p>
   </section>
 </div>

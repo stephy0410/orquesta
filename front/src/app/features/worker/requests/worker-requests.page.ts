@@ -65,6 +65,7 @@ export class WorkerRequestsPage implements OnInit {
   }
 
   readonly noProfile = signal(false);
+  readonly motivoOpen = signal<string | null>(null);
 
   async loadProfileTipo(): Promise<void> {
     try {
@@ -98,6 +99,12 @@ export class WorkerRequestsPage implements OnInit {
         }
       }
       this.partialPlazas.set(plazasInit);
+      // Estado del pago de lo aceptado, sin que el proveedor tenga que pedirlo.
+      void Promise.all(
+        items
+          .filter((it) => it.estado === 'aceptada' || it.estado === 'completada')
+          .map((it) => this.checkPaymentStatus(it, true)),
+      );
     } catch (err) {
       if (err instanceof OrquestaApiError && err.status === 404) {
         this.noProfile.set(true);
@@ -190,6 +197,7 @@ export class WorkerRequestsPage implements OnInit {
         { motivo: (this.actionMotivo()[id] ?? '').trim() || undefined },
         { idempotencyKey: `reject:${id}` },
       );
+      this.motivoOpen.set(null);
       this.success.set('Solicitud rechazada.');
       await this.loadRequests();
     } catch (err) {
@@ -214,6 +222,7 @@ export class WorkerRequestsPage implements OnInit {
         `/v1/worker/reservations/${encodeURIComponent(id)}/cancel`,
         { motivo },
       );
+      this.motivoOpen.set(null);
       this.success.set(
         'Reserva cancelada. Avisamos a la planner para que busque un reemplazo.',
       );
@@ -247,16 +256,17 @@ export class WorkerRequestsPage implements OnInit {
     }
   }
 
-  async checkPaymentStatus(item: WorkerRequestItemDto): Promise<void> {
+  async checkPaymentStatus(item: WorkerRequestItemDto, silent = false): Promise<void> {
     const id = this.getReqId(item);
     if (!id) return;
-    this.error.set(null);
+    if (!silent) this.error.set(null);
     try {
       const pay = await this.api.get<PaymentDto>(
         `/v1/worker/reservations/${encodeURIComponent(id)}/payment`,
       );
       this.paymentByRes.update((curr) => ({ ...curr, [id]: pay }));
     } catch (err) {
+      if (silent) return;
       this.error.set(
         err instanceof OrquestaApiError
           ? err.message

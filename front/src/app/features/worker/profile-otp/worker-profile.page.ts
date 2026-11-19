@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { humanize } from '../../../shared/labels';
@@ -19,7 +20,7 @@ import {
 @Component({
   selector: 'app-worker-profile-page',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './worker-profile.page.html',
   styleUrl: './worker-profile.page.scss',
 })
@@ -76,8 +77,19 @@ export class WorkerProfilePage implements OnInit {
 
   readonly canPublish = computed(() => this.emailVerified() && this.phoneVerified());
 
+  readonly horarios = signal(0);
+
   async ngOnInit(): Promise<void> {
-    await this.loadProfile();
+    await Promise.all([this.loadProfile(), this.loadHorarios()]);
+  }
+
+  async loadHorarios(): Promise<void> {
+    try {
+      const res = await this.api.get<{ items: unknown[] }>('/v1/worker/availability');
+      this.horarios.set(res.items?.length ?? 0);
+    } catch {
+      this.horarios.set(0);
+    }
   }
 
   async loadProfile(): Promise<void> {

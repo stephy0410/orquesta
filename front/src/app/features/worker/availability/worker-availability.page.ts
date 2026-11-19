@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { formatFecha, humanize } from '../../../shared/labels';
@@ -13,7 +14,7 @@ import {
 @Component({
   selector: 'app-worker-availability-page',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './worker-availability.page.html',
 })
 export class WorkerAvailabilityPage implements OnInit {
@@ -21,8 +22,10 @@ export class WorkerAvailabilityPage implements OnInit {
 
   readonly label = humanize;
   readonly formatFecha = formatFecha;
-  readonly allRoles = ROLES_CATALOGO;
-  readonly allZones = WORKER_ZONES;
+  /** Solo los puestos y zonas del perfil: no tiene sentido ofrecer lo que el proveedor no hace. */
+  readonly allRoles = signal<readonly string[]>(ROLES_CATALOGO);
+  readonly allZones = signal<readonly string[]>(WORKER_ZONES);
+  readonly noProfile = signal(false);
 
   readonly windows = signal<AvailabilityWindowDto[]>([]);
   readonly loading = signal(false);
@@ -36,7 +39,31 @@ export class WorkerAvailabilityPage implements OnInit {
   readonly rol = signal<string>('mesero');
 
   async ngOnInit(): Promise<void> {
-    await this.loadWindows();
+    await this.loadProfileOptions();
+    if (!this.noProfile()) await this.loadWindows();
+  }
+
+  async loadProfileOptions(): Promise<void> {
+    try {
+      const res = await this.api.get<{ perfil: { categorias: string[]; zonas: string[] } | null }>(
+        '/v1/worker/profile',
+      );
+      const p = res.perfil;
+      if (!p) {
+        this.noProfile.set(true);
+        return;
+      }
+      if (p.categorias?.length) {
+        this.allRoles.set(p.categorias);
+        this.rol.set(p.categorias.length > 1 ? '*' : p.categorias[0]);
+      }
+      if (p.zonas?.length) {
+        this.allZones.set(p.zonas);
+        this.zona.set(p.zonas.length > 1 ? '*' : p.zonas[0]);
+      }
+    } catch (err) {
+      if (err instanceof OrquestaApiError && err.status === 404) this.noProfile.set(true);
+    }
   }
 
   async loadWindows(): Promise<void> {
@@ -93,7 +120,14 @@ export class WorkerAvailabilityPage implements OnInit {
         this.success.set('Horario actualizado.');
         this.cancelEdit();
       } else {
-        await this.api.post('/v1/worker/availability', body);
+        // "Todos mis puestos / zonas" crea un horario por combinación: así cualquier planner puede contratarte.
+        const roles = body.rol === '*' ? [...this.allRoles()] : [body.rol];
+        const zonas = body.zona === '*' ? [...this.allZones()] : [body.zona];
+        for (const rol of roles) {
+          for (const zona of zonas) {
+            await this.api.post('/v1/worker/availability', { ...body, rol, zona });
+          }
+        }
         this.success.set('Horario agregado.');
         this.inicio.set('');
         this.fin.set('');
