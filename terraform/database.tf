@@ -78,3 +78,76 @@ resource "aws_rds_cluster_instance" "aurora_reader" {
   publicly_accessible = !var.lambda_in_vpc
   promotion_tier      = 1
 }
+
+# ----------------------------------------------------------------------------
+# RDS Proxy opcional (issue #32, ADR-7): multiplexa conexiones de Lambdas a escala.
+# Apagado por defecto en lab/demo (~USD 20/mes); encender con enable_rds_proxy = true y lambda_in_vpc = true.
+# ----------------------------------------------------------------------------
+resource "aws_secretsmanager_secret" "rds_proxy_credentials" {
+  count                   = var.enable_rds_proxy ? 1 : 0
+  name                    = "${local.name_prefix}/rds-proxy-creds-${random_id.suffix.hex}"
+  description             = "Credenciales PostgreSQL en formato {username, password} requeridas por RDS Proxy"
+  recovery_window_in_days = local.is_lab ? 0 : 30
+}
+
+resource "aws_secretsmanager_secret_version" "rds_proxy_credentials" {
+  count     = var.enable_rds_proxy ? 1 : 0
+  secret_id = aws_secretsmanager_secret.rds_proxy_credentials[0].id
+  secret_string = jsonencode({
+    username = var.db_master_username
+    password = random_password.db_password.result
+  })
+}
+
+resource "aws_db_proxy" "main" {
+  count = var.enable_rds_proxy ? 1 : 0
+
+  name                   = "${local.name_prefix}-db-proxy-${random_id.suffix.hex}"
+  debug_logging          = false
+  engine_family          = "POSTGRESQL"
+  idle_client_timeout    = 1800
+  require_tls            = true
+  role_arn               = local.rds_proxy_role_arn
+  vpc_security_group_ids = [aws_security_group.rds_proxy_sg[0].id]
+  vpc_subnet_ids         = data.aws_subnets.default.ids
+
+  auth {
+    auth_scheme = "SECRETS"
+    iam_auth    = "DISABLED"
+    secret_arn  = aws_secretsmanager_secret.rds_proxy_credentials[0].arn
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.lambda_in_vpc
+      error_message = "enable_rds_proxy = true requiere lambda_in_vpc = true (RDS Proxy solo es accesible dentro de la VPC)."
+    }
+  }
+
+  depends_on = [aws_secretsmanager_secret_version.rds_proxy_credentials]
+}
+
+resource "aws_db_proxy_default_target_group" "main" {
+  count         = var.enable_rds_proxy ? 1 : 0
+  db_proxy_name = aws_db_proxy.main[0].name
+
+  connection_pool_config {
+    connection_borrow_timeout    = 120
+    max_connections_percent      = 90
+    max_idle_connections_percent = 50
+  }
+}
+
+resource "aws_db_proxy_target" "main" {
+  count = var.enable_rds_proxy ? 1 : 0
+
+  db_proxy_name          = aws_db_proxy.main[0].name
+  target_group_name      = aws_db_proxy_default_target_group.main[0].name
+  db_instance_identifier = local.db_mode == "rds_lab" ? aws_db_instance.postgres_lab[0].identifier : null
+  db_cluster_identifier  = local.db_mode == "aurora" ? aws_rds_cluster.aurora[0].cluster_identifier : null
+
+  depends_on = [
+    aws_db_instance.postgres_lab,
+    aws_rds_cluster_instance.aurora_writer,
+  ]
+}

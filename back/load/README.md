@@ -61,10 +61,10 @@ Crea un esquema `load_*` aislado y lo borra al terminar (`KEEP_LOAD_SCHEMA=1` pa
 
 El p99 local está inflado porque los 100 dispositivos comparten **un proceso Node**; en AWS cada lote corre en su propia Lambda. La cifra que cuenta para el NFR (p99 < 300 ms) es la de la fase 2.
 
-### Fase 2: AWS (necesita el Learner Lab abierto)
+### Fase 2: AWS (AWS Academy Learner Lab o cuenta propia)
 
-1. Desplegar con el workflow **Deploy** (README raíz §8) y tomar `api_endpoint` de `terraform output`.
-2. Crear un planner y verificar su email. En `lab` el email está en modo *capture*: el token aparece en los logs de CloudWatch de `notify-email`.
+1. Desplegar localmente con Terraform (`cd terraform && terraform init && terraform apply`, ver `terraform/README.md`) y tomar `api_endpoint` de `terraform output`.
+2. Crear un planner y verificar su email. En `lab` el email y el SMS están en modo *capture*: los adaptadores emiten un JSON en CloudWatch Logs de `/aws/lambda/orquesta-lab-notify-email` (`component: "capture_email"`) con el `token` de verificación.
 3. Correr:
 
 ```bash
@@ -77,6 +77,14 @@ Notas:
 - API Gateway está limitado a 250 req/s (ráfaga 500). Con lotes de 5 escaneos, 500 check-ins/s son ~100 req/s, dentro del límite.
 - RDS de `lab` es `db.t4g.micro`: el resultado será más pesimista que con Aurora en producción. Reportarlo así.
 - La verificación en BD no aplica en `http`; se verifica por API (veredictos + tablero).
+
+#### Resultados medidos en AWS Academy Learner Lab (2026-11-19, `db.t4g.micro` + KMS + S3)
+
+- **Check-in (`--events=10 --devices-per-event=2 --rate=50 --duration=20 --offline-backlog=500`):**
+  - **Tasa lograda:** `72.7 check-ins/s` (1 465 escaneos: 1 440 `admitido` + 25 `ya_registrado`, 392 lotes, 0 errores, 0 perdidos, 0 dobles admisiones).
+  - **Ráfaga offline (500 escaneos):** `1.4 s` (1 lote de 1 385.6 ms, meta < 30 s ✅).
+  - **Latencia por lote:** p50 `192.2 ms` · p95 `1 483.7 ms` · p99 `1 541.6 ms` · máx `1 629.2 ms`.
+  - **Tablero:** converge al 100 % en `20.9 s`; métrica CloudWatch `Orquesta/lag_frescura` (254 muestras): mín `80 ms` · p50 `506 ms` · promedio `1 787 ms` · p95 `11 719 ms` · p99 `21 967 ms` · máx `28 767 ms`.
 
 ## Import de invitados (`import-load.js`)
 
@@ -91,13 +99,14 @@ node load/import-load.js --kms-ms=15 --s3-ms=30            # simula AWS: firma e
 node load/import-load.js --target=http --base-url=... --planner-email=... --planner-password=...
 ```
 
-### Resultado (2026-11-18, local, latencia de AWS simulada: KMS 15 ms y S3 30 ms por invitado)
+### Resultado
 
-| Filas | Antes (import en serie) | Después | Meta |
+| Entorno / Filas | Antes (import en serie) | Después | Meta |
 | --- | --- | --- | --- |
-| 1 000 | **64.9 s** ❌ | **6.3 s** ✅ | < 30 s |
-| 5 000 | — | 31 s | — |
-| 20 000 | ~21 min (estimado; supera el timeout de 300 s de la Lambda) | 125 s ✅ | < 300 s (timeout de `import-worker`) |
+| Local simulado (KMS 15 ms, S3 30 ms) · **1 000** | **64.9 s** ❌ | **6.3 s** ✅ | < 30 s |
+| Local simulado · **5 000** | — | 31 s | — |
+| Local simulado · **20 000** | ~21 min (estimado; supera el timeout de 300 s de la Lambda) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
+| **AWS Academy real (`db.t4g.micro` + KMS + S3) · 1 000** (2 corridas) | — | **10.7 s p50 / 12.1 s p95** ✅ | < 30 s |
 
 Qué cambió en `PgStore.executeImportBatch`:
 1. **Inserción en lote** de invitados e invitaciones con `INSERT … SELECT FROM unnest(...)`: 2 consultas por cada 1 000 filas en lugar de 2 por fila.

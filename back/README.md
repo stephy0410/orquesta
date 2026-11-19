@@ -42,7 +42,7 @@ Cómo funciona ([`StripePspAdapter`](src/shared/ports.js)):
 - Si la reserva pagada se cancela (por la planner **o por el proveedor**) se reembolsa en Stripe con la llave `refund:<pay:reserva>` y se asienta el reverso en el ledger; `GET /payments` devuelve `reembolsado: true`.
 - La conciliación diaria compara el ledger con los PaymentIntent cobrados del día que traen `metadata.idempotency_key`.
 
-En AWS, la llave y el secreto del webhook llegan por Secrets Manager desde los secrets `STRIPE_SECRET_KEY` y `STRIPE_WEBHOOK_SECRET` del environment de GitHub (`deploy.yml` → `TF_VAR_stripe_*`). El webhook en el dashboard de Stripe apunta a `<API>/v1/webhooks/psp` con los eventos `checkout.session.completed` y `checkout.session.async_payment_succeeded`.
+En AWS, la llave y el secreto del webhook llegan por Secrets Manager desde las variables locales de Terraform (`TF_VAR_stripe_secret_key` y `TF_VAR_stripe_webhook_secret`). El webhook en el dashboard de Stripe apunta a `<API>/v1/webhooks/psp` con los eventos `checkout.session.completed` y `checkout.session.async_payment_succeeded`.
 
 ## Pruebas
 

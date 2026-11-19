@@ -10,7 +10,7 @@
 locals {
   use_domain      = var.custom_domain != "" && var.enable_cloudfront
   use_ses_domain  = local.use_domain && var.email_provider_mode == "ses"
-  public_base_url = local.use_domain ? "https://${var.custom_domain}" : (var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}")
+  public_base_url = local.use_domain ? "https://${var.custom_domain}" : (var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${local.assets_website_endpoint}")
   email_from = (local.use_domain ? "Orquesta <${var.email_from_local_part}@${var.custom_domain}>"
   : var.ses_sender_email != "" ? "Orquesta <${var.ses_sender_email}>" : "Orquesta <no-reply@orquesta.local>")
   use_ses_sender = !local.use_domain && var.email_provider_mode == "ses" && var.ses_sender_email != ""

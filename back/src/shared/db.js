@@ -1348,6 +1348,10 @@ export class PgStore {
              updated_at = $7`,
           [eventId, d.invitados, d.confirmados, d.asistentes, d.entregasParcialesSet, d.maxT, nowIso]
         );
+        if (d.maxT && this.metrics) {
+          const lagMs = Math.max(0, new Date(nowIso).getTime() - new Date(d.maxT).getTime());
+          this.metrics.lagFrescura(eventId, lagMs);
+        }
       }
       return { eventsUpdated: grouped.size };
     });

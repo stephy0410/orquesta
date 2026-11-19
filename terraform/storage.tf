@@ -1,11 +1,63 @@
+locals {
+  use_cli_s3_buckets            = coalesce(var.manage_s3_with_cli, local.is_lab && var.use_lab_role)
+  assets_bucket_desired_name    = "${local.name_prefix}-assets-${random_id.suffix.hex}"
+  imports_bucket_desired_name   = "${local.name_prefix}-imports-${random_id.suffix.hex}"
+  assets_bucket_name            = local.use_cli_s3_buckets ? terraform_data.lab_s3_buckets[0].output.assets_bucket : aws_s3_bucket.assets[0].id
+  imports_bucket_name           = local.use_cli_s3_buckets ? terraform_data.lab_s3_buckets[0].output.imports_bucket : aws_s3_bucket.imports[0].id
+  assets_bucket_arn             = local.use_cli_s3_buckets ? "arn:aws:s3:::${local.assets_bucket_name}" : aws_s3_bucket.assets[0].arn
+  imports_bucket_arn            = local.use_cli_s3_buckets ? "arn:aws:s3:::${local.imports_bucket_name}" : aws_s3_bucket.imports[0].arn
+  assets_bucket_regional_domain = local.use_cli_s3_buckets ? "${local.assets_bucket_name}.s3.${var.aws_region}.amazonaws.com" : aws_s3_bucket.assets[0].bucket_regional_domain_name
+  assets_website_endpoint       = aws_s3_bucket_website_configuration.assets.website_endpoint
+}
+
+moved {
+  from = aws_s3_bucket.assets
+  to   = aws_s3_bucket.assets[0]
+}
+
+moved {
+  from = aws_s3_bucket.imports
+  to   = aws_s3_bucket.imports[0]
+}
+
+# En AWS Academy Learner Lab, la SCP niega s3:GetBucketObjectLockConfiguration (que el provider
+# aws consulta al leer/crear cualquier aws_s3_bucket). En ese entorno se crean/destruyen vía AWS CLI.
+resource "terraform_data" "lab_s3_buckets" {
+  count = local.use_cli_s3_buckets ? 1 : 0
+
+  triggers_replace = [
+    local.assets_bucket_desired_name,
+    local.imports_bucket_desired_name,
+    var.aws_region,
+  ]
+
+  input = {
+    assets_bucket  = local.assets_bucket_desired_name
+    imports_bucket = local.imports_bucket_desired_name
+    region         = var.aws_region
+    script         = "${path.module}/scripts/lab-s3-buckets.mjs"
+  }
+
+  provisioner "local-exec" {
+    command = "node ${self.input.script} create ${self.input.assets_bucket} ${self.input.imports_bucket} ${self.input.region}"
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "node ${self.input.script} destroy ${self.input.assets_bucket} ${self.input.imports_bucket} ${self.input.region}"
+  }
+}
+
 # Bucket para consolas web, shell estático de invitación (/invitacion/#t=...) y QR PNGs (NFR-02)
 resource "aws_s3_bucket" "assets" {
-  bucket        = "${local.name_prefix}-assets-${random_id.suffix.hex}"
+  count = local.use_cli_s3_buckets ? 0 : 1
+
+  bucket        = local.assets_bucket_desired_name
   force_destroy = local.is_lab
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "assets" {
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   rule {
     apply_server_side_encryption_by_default {
@@ -15,7 +67,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "assets" {
 }
 
 resource "aws_s3_bucket_website_configuration" "assets" {
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   index_document {
     suffix = "index.html"
@@ -27,7 +79,7 @@ resource "aws_s3_bucket_website_configuration" "assets" {
 }
 
 resource "aws_s3_bucket_public_access_block" "assets" {
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   block_public_acls       = true
   ignore_public_acls      = true
@@ -36,7 +88,7 @@ resource "aws_s3_bucket_public_access_block" "assets" {
 }
 
 resource "aws_s3_bucket_cors_configuration" "assets" {
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   cors_rule {
     allowed_headers = ["*"]
@@ -49,7 +101,7 @@ resource "aws_s3_bucket_cors_configuration" "assets" {
 
 resource "aws_s3_bucket_policy" "assets_cloudfront" {
   count  = var.enable_cloudfront ? 1 : 0
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -59,7 +111,7 @@ resource "aws_s3_bucket_policy" "assets_cloudfront" {
         Effect    = "Allow"
         Principal = { Service = "cloudfront.amazonaws.com" }
         Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.assets.arn}/*"
+        Resource  = "${local.assets_bucket_arn}/*"
         Condition = {
           StringEquals = {
             "AWS:SourceArn" = aws_cloudfront_distribution.edge[0].arn
@@ -72,7 +124,7 @@ resource "aws_s3_bucket_policy" "assets_cloudfront" {
 
 resource "aws_s3_bucket_policy" "assets_lab_website" {
   count  = var.enable_cloudfront ? 0 : 1
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
 
   depends_on = [aws_s3_bucket_public_access_block.assets]
 
@@ -84,7 +136,7 @@ resource "aws_s3_bucket_policy" "assets_lab_website" {
         Effect    = "Allow"
         Principal = "*"
         Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.assets.arn}/*"
+        Resource  = "${local.assets_bucket_arn}/*"
       }
     ]
   })
@@ -92,12 +144,14 @@ resource "aws_s3_bucket_policy" "assets_lab_website" {
 
 # Bucket privado para archivos CSV de importación masiva (RF-02, <= 20 000 filas)
 resource "aws_s3_bucket" "imports" {
-  bucket        = "${local.name_prefix}-imports-${random_id.suffix.hex}"
+  count = local.use_cli_s3_buckets ? 0 : 1
+
+  bucket        = local.imports_bucket_desired_name
   force_destroy = local.is_lab
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "imports" {
-  bucket = aws_s3_bucket.imports.id
+  bucket = local.imports_bucket_name
 
   rule {
     apply_server_side_encryption_by_default {
@@ -107,7 +161,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "imports" {
 }
 
 resource "aws_s3_bucket_public_access_block" "imports" {
-  bucket = aws_s3_bucket.imports.id
+  bucket = local.imports_bucket_name
 
   block_public_acls       = true
   block_public_policy     = true
@@ -116,7 +170,7 @@ resource "aws_s3_bucket_public_access_block" "imports" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "imports" {
-  bucket = aws_s3_bucket.imports.id
+  bucket = local.imports_bucket_name
 
   rule {
     id     = "expire-import-csvs"
@@ -175,7 +229,7 @@ resource "aws_cloudfront_distribution" "edge" {
   comment             = "Orquesta Edge CDN (NFR-02)"
 
   origin {
-    domain_name              = aws_s3_bucket.assets.bucket_regional_domain_name
+    domain_name              = local.assets_bucket_regional_domain
     origin_id                = "s3-assets"
     origin_access_control_id = aws_cloudfront_origin_access_control.assets[0].id
   }
@@ -290,7 +344,7 @@ locals {
 resource "aws_s3_object" "frontend_assets" {
   for_each = local.frontend_files
 
-  bucket = aws_s3_bucket.assets.id
+  bucket = local.assets_bucket_name
   key    = each.value
   source = "${local.frontend_dist_dir}/${each.value}"
   etag   = filemd5("${local.frontend_dist_dir}/${each.value}")
@@ -306,7 +360,7 @@ resource "aws_s3_object" "frontend_assets" {
 }
 
 resource "aws_s3_object" "runtime_config" {
-  bucket        = aws_s3_bucket.assets.id
+  bucket        = local.assets_bucket_name
   key           = "runtime-config.js"
   content       = "window.__ORQUESTA_API__ = { baseUrl: ${jsonencode(var.enable_cloudfront ? "" : aws_apigatewayv2_api.http_api.api_endpoint)} };\n"
   content_type  = "application/javascript; charset=utf-8"

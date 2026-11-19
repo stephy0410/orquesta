@@ -10,17 +10,17 @@ output "api_endpoint" {
 
 output "assets_bucket_name" {
   description = "Bucket S3 para shell estático, consolas web y QR PNG."
-  value       = aws_s3_bucket.assets.id
+  value       = local.assets_bucket_name
 }
 
 output "assets_website_url" {
   description = "URL del S3 Website endpoint (usada en Learner Lab cuando enable_cloudfront = false)."
-  value       = "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"
+  value       = "http://${local.assets_website_endpoint}"
 }
 
 output "frontend_url" {
   description = "URL pública principal de la aplicación web Angular."
-  value       = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"
+  value       = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${local.assets_website_endpoint}"
 }
 
 output "cloudfront_domain_name" {
@@ -30,7 +30,7 @@ output "cloudfront_domain_name" {
 
 output "imports_bucket_name" {
   description = "Bucket S3 privado para CSVs de importación masiva."
-  value       = aws_s3_bucket.imports.id
+  value       = local.imports_bucket_name
 }
 
 output "db_mode" {
@@ -41,6 +41,11 @@ output "db_mode" {
 output "db_endpoint" {
   description = "Endpoint de conexión a PostgreSQL."
   value       = local.db_endpoint
+}
+
+output "rds_proxy_endpoint" {
+  description = "Endpoint de RDS Proxy cuando enable_rds_proxy = true."
+  value       = var.enable_rds_proxy ? aws_db_proxy.main[0].endpoint : null
 }
 
 output "db_port" {

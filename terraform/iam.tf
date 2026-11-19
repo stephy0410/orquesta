@@ -67,15 +67,15 @@ data "aws_iam_policy_document" "lambda_app" {
     sid     = "Archivos"
     actions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = [
-      "${aws_s3_bucket.assets.arn}/*",
-      "${aws_s3_bucket.imports.arn}/*",
+      "${local.assets_bucket_arn}/*",
+      "${local.imports_bucket_arn}/*",
     ]
   }
 
   statement {
     sid       = "ListarArchivos"
     actions   = ["s3:ListBucket"]
-    resources = [aws_s3_bucket.assets.arn, aws_s3_bucket.imports.arn]
+    resources = [local.assets_bucket_arn, local.imports_bucket_arn]
   }
 
   statement {
@@ -105,4 +105,38 @@ resource "aws_iam_role_policy" "lambda_app" {
   name   = "orquesta-app"
   role   = aws_iam_role.lambda[0].id
   policy = data.aws_iam_policy_document.lambda_app[0].json
+}
+
+# Rol mínimo de RDS Proxy para leer las credenciales en Secrets Manager (cuando use_lab_role = false).
+data "aws_iam_policy_document" "rds_proxy_assume" {
+  count = !var.use_lab_role && var.enable_rds_proxy ? 1 : 0
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["rds.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "rds_proxy" {
+  count              = !var.use_lab_role && var.enable_rds_proxy ? 1 : 0
+  name               = "${local.name_prefix}-rds-proxy-${random_id.suffix.hex}"
+  assume_role_policy = data.aws_iam_policy_document.rds_proxy_assume[0].json
+}
+
+data "aws_iam_policy_document" "rds_proxy_secrets" {
+  count = !var.use_lab_role && var.enable_rds_proxy ? 1 : 0
+  statement {
+    sid       = "LeerCredencialesBd"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_secretsmanager_secret.rds_proxy_credentials[0].arn]
+  }
+}
+
+resource "aws_iam_role_policy" "rds_proxy_secrets" {
+  count  = !var.use_lab_role && var.enable_rds_proxy ? 1 : 0
+  name   = "orquesta-rds-proxy-secrets"
+  role   = aws_iam_role.rds_proxy[0].id
+  policy = data.aws_iam_policy_document.rds_proxy_secrets[0].json
 }
