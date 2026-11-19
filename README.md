@@ -286,7 +286,7 @@ flowchart TB
 | **CloudFront + S3 (assets)** | Sirve la app Angular, el shell de la invitación y los QR PNG desde caché | FR1 (LCP < 2.5 s), ~40 M lecturas/mes |
 | **API Gateway HTTP API v2** | Entrada única al API, CORS, throttling (ráfaga 500, 250 req/s) | Todos |
 | **Lambda (6 funciones)** | `api` síncrona + 5 workers asíncronos; escalan por invocación | Todos; aislamiento de fallas |
-| **RDS PostgreSQL / Aurora Serverless v2** | Base transaccional única con constraints, triggers y locks | Pagos y reservas CP; check-in sin duplicados |
+| **RDS PostgreSQL / Aurora Serverless v2** | Base transaccional única con constraints, triggers y locks. Demo: RDS `db.t4g.micro`; producción: Aurora Serverless v2 con réplica ([ADR-7](#adr-7--base-de-datos-de-la-demo-rds-micro-y-no-aurora-ni-rds-proxy)) | Pagos y reservas CP; check-in sin duplicados |
 | **S3 (imports)** | CSV de invitados, privado, expira a 7 días | FR1 |
 | **SQS + DLQ** (4 colas) | Desacople y reintentos: import, proyección del tablero, SMS, email | FR1, FR3, FR8 |
 | **SNS** | *Fan-out* de cada aviso a las colas de SMS y email en paralelo | FR8 (si falla un canal, el otro sale) |
@@ -294,7 +294,7 @@ flowchart TB
 | **KMS** | Llave asimétrica P-256 que firma los QR; cifrado en reposo | FR1/FR2 (QR no falsificable, verificable offline) |
 | **Secrets Manager** | Credenciales de BD, secreto de sesión, secreto del webhook, llave de PII | Seguridad |
 | **CloudWatch** | Logs, métricas EMF y alarmas (frescura p95, cola offline > 500, error del PSP, DLQ > 0) | Observabilidad (< 5 min) |
-| **SES / SNS SMS** | Entrega de email y SMS (en Learner Lab en modo *capture*) | FR8 |
+| **SES / SNS SMS** | Entrega de email y SMS. Demo: email real por SES (sandbox); SMS en modo *capture* porque el plan gratuito de AWS no incluye SMS ([ADR-6](#adr-6--la-demo-se-despliega-en-una-cuenta-propia-no-en-learner-lab)) | FR8 |
 
 ### 6.2 Decisiones de arquitectura (ADR)
 
@@ -320,6 +320,16 @@ flowchart TB
 #### ADR-5 · Un solo reloj: el de la aplicación
 - **Decisión:** toda marca temporal que participa en una regla de negocio (expiraciones, `estado_en`, recordatorios, pagos) la fija la aplicación (`ctx.now()`), no `DEFAULT now()` de la base.
 - **Por qué:** evita reglas evaluadas con dos relojes distintos y hace testeable el tiempo (las pruebas viajan meses hacia adelante). Los guardias de inmutabilidad de la BD siguen usando su propio reloj como defensa en profundidad.
+
+#### ADR-6 · La demo se despliega en una cuenta propia, no en Learner Lab
+- **Contexto:** Learner Lab bloquea SES (correo), SMS, CloudFront, la creación de roles IAM, las instancias de Aurora y la lectura de *object lock* de S3, que el provider de Terraform (v5 y v6) necesita para administrar buckets. Además, la sesión se apaga a las 4 h y las credenciales cambian.
+- **Decisión:** desplegar la demo en una cuenta propia en el plan gratuito de AWS (crédito de USD 157), con el perfil económico de `lab` más CloudFront, WAF y SES. Terraform crea el rol de las Lambdas con permisos mínimos (`use_lab_role=false`, [`iam.tf`](terraform/iam.tf)); Learner Lab sigue soportado con `LabRole`.
+- **Consecuencias:** correo real y HTTPS (la cámara del escáner lo exige). El plan gratuito trae sus propios límites: 10 Lambdas simultáneas (aumento a 1 000 solicitado), respaldos de RDS de 1 día y sin SMS; los tres se quitan pasando la cuenta al plan de pago. Costo de la demo: unos USD 0.85 al día. SES arranca en *sandbox*: solo envía a correos verificados hasta que AWS aprueba el acceso de producción.
+
+#### ADR-7 · Base de datos de la demo: RDS micro y no Aurora ni RDS Proxy
+- **Contexto:** Aurora Serverless v2 cobra un mínimo de 0.5 ACU (≈ USD 43 al mes) aunque no haya tráfico, y RDS Proxy otros ≈ USD 20 al mes; juntos agotarían el crédito de la demo en pocos meses.
+- **Decisión:** la demo usa RDS PostgreSQL 16 `db.t4g.micro` (cifrado, en la capa gratuita). La configuración de producción no cambia: Aurora Serverless v2 con réplica y PITR de 7 días (`environment=prod`).
+- **Consecuencias:** una sola instancia, sin failover, con unas 80 conexiones. Con el límite actual de 10 Lambdas (5 conexiones cada una, ≤ 50) alcanza de sobra. **Brecha conocida:** a 1 000 Lambdas simultáneas serían hasta 5 000 conexiones, más de las que acepta PostgreSQL. Antes de escalar hay que poner **RDS Proxy** entre las Lambdas y la base, bajar `DB_POOL_MAX` a 1–2 y reservar concurrencia para la Lambda `api` ([issue](https://github.com/stephy0410/orquesta/issues/32)).
 
 Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delivery/05-high-level-design.md) · [`07-system-design-back-front.md`](docs/delivery/07-system-design-back-front.md).
 
@@ -480,6 +490,12 @@ npx ng serve           # http://localhost:4200
 cd terraform
 terraform init && terraform plan -out=tfplan && terraform apply tfplan
 terraform destroy      # al terminar la sesión, para no consumir crédito
+
+# Infraestructura en cuenta propia (la demo, ADR-6): rol IAM propio, CloudFront, WAF y SES
+AWS_PROFILE=<perfil> terraform workspace new personal
+AWS_PROFILE=<perfil> terraform apply -var use_lab_role=false -var enable_cloudfront=true \
+  -var enable_waf=true -var email_provider_mode=ses -var ses_sender_email=<correo> \
+  -var sqs_consumer_max_concurrency=2
 ```
 
 Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`…): [`terraform/README.md`](terraform/README.md). Backend: [`back/README.md`](back/README.md). Frontend: [`front/README.md`](front/README.md).
@@ -515,13 +531,16 @@ Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El 
 
 | Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
 | --- | --- | --- |
-| Cargas medidas en local (con latencia de AWS simulada en el import) | Falta la cifra en AWS | Correr `checkin-load.js` e `import-load.js` con `--target=http` en `lab` (issue #10) |
+| Cargas medidas en local (con latencia de AWS simulada en el import) | Falta la cifra en AWS | Correr `checkin-load.js` e `import-load.js` con `--target=http` contra la demo desplegada |
+| Conexiones a la base a gran escala (ADR-7) | A 1 000 Lambdas × 5 conexiones se agotan las ~80 de RDS micro (o las de Aurora) | RDS Proxy + `DB_POOL_MAX` 1–2 + concurrencia reservada para `api` |
+| Cuenta en plan gratuito (ADR-6) | 10 Lambdas simultáneas, respaldos de 1 día, sin SMS | Aumento de concurrencia solicitado; plan de pago para SMS y PITR de 7 días |
+| SES en *sandbox* | Solo llegan correos a direcciones verificadas (máx. 200 al día) | Pedir acceso de producción en SES (≈ 24 h); con dominio propio, DKIM/SPF/DMARC |
 | Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
 | Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |
-| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN ni WAF en `lab` | Ya automático en `prod` (workflow Deploy) |
+| Learner Lab bloquea SES, SMS, CloudFront, roles IAM, Aurora y el *object lock* de S3 | No se puede desplegar completo ahí (Terraform falla en S3) | La demo vive en una cuenta propia (ADR-6) |
 | ¿Dominio propio? (por confirmar con el profesor) | Sin él no hay SPF/DKIM/DMARC ni URL propia con HTTPS | Listo en Terraform: definir `CUSTOM_DOMAIN` y `ROUTE53_ZONE_ID` y desplegar |
 | Datos del responsable en el Aviso de privacidad | El aviso necesita razón social, domicilio y correo ARCO reales | Completar `environment.privacy` en el front (revisión legal recomendada) |
-| PSP simulado (`MockStripeTestAdapter`) | Sin integración real | Adaptador Stripe en modo test detrás del puerto `PaymentProvider` (el contract test ya existe) |
+| Stripe en modo prueba | Sin cobros reales | Cambiar a llave `sk_live` y registrar el webhook (`STRIPE_WEBHOOK_SECRET`) al salir a producción |
 
 ---
 
@@ -541,7 +560,7 @@ Cada requisito transversal del README contra lo que lo cumple. **Lo único pendi
 | SPF, DKIM y DMARC | Registros en Route 53 + identidad SES verificada | `domain.tf` (requiere dominio) |
 | WAF | Reglas administradas + límite por IP en CloudFront | `waf.tf` |
 | Si cae una zona no se pierde nada | Aurora: almacenamiento en 6 copias / 3 AZ + réplica para failover | `database.tf` |
-| PITR 7 días, RPO ≤ 5 min, RTO < 1 h | `backup_retention_period = 7` en `prod`; Aurora PITR | `database.tf` |
+| PITR 7 días, RPO ≤ 5 min, RTO < 1 h | `backup_retention_period = 7` en `prod`; Aurora PITR (la demo en plan gratuito: 1 día, ADR-6) | `database.tf` |
 | Alarmas de p99, 5xx y colas atascadas en < 5 min | API 5xx, latencia p99, errores por Lambda, edad del mensaje más viejo por cola, DLQ, frescura, PSP; todas notifican a SNS (+ email) | `observability.tf` |
 | Aislamiento de fallas | Colas independientes por canal; PSP y notificaciones nunca bloquean check-in ni contratación | `notify-*`, `payment-reconciliation.js` |
 | Pagos reales sin tocar tarjetas | Stripe Checkout hospedado (PCI SAQ A) con el diseño de Orquesta; webhook con firma `Stripe-Signature`; reembolso automático si se cancela una reserva pagada | `StripePspAdapter`, `routes/payments.js` |
