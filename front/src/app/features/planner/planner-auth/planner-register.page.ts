@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
@@ -38,6 +38,7 @@ import { AuthService } from '../../../core/auth/auth.service';
           <div class="oq-alert oq-alert-success">{{ success() }}</div>
         }
 
+        @if (step() === 'datos') {
         <form class="oq-form-grid" (ngSubmit)="register()">
           <div class="oq-field">
             <label class="oq-label" for="regEmail">Correo electrónico</label>
@@ -74,29 +75,33 @@ import { AuthService } from '../../../core/auth/auth.service';
           </p>
         </form>
 
-        <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />
-
-        <h2>Verificar correo electrónico</h2>
-        <p class="oq-hint">Pega el código que te enviamos por correo. Vence en 72 horas.</p>
-        <form class="oq-row" (ngSubmit)="verifyEmail()">
+        <p class="oq-hint" style="margin-top: 1rem">
+          ¿Ya tienes cuenta? <a routerLink="/planner/login">Inicia sesión</a>
+        </p>
+        } @else {
+        <h2>Revisa tu correo</h2>
+        <p class="oq-hint">
+          Te enviamos un código a <strong>{{ email() }}</strong>. Pégalo aquí para activar tu cuenta;
+          vence en 72 horas.
+        </p>
+        <form class="oq-form-grid" (ngSubmit)="verifyEmail()">
           <input
             name="verifyToken"
             class="oq-input mono"
-            style="flex: 1 1 220px"
             aria-label="Código de verificación"
             autocomplete="one-time-code"
             placeholder="Código de verificación"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
-          <button type="submit" class="oq-btn oq-btn-accent" [disabled]="loading()">
-            Verificar correo
+          <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading() || !verifyToken().trim()">
+            {{ loading() ? 'Verificando…' : 'Verificar y entrar' }}
           </button>
         </form>
-
         <p class="oq-hint" style="margin-top: 1rem">
-          ¿Ya verificaste tu correo? <a routerLink="/planner/login">Ir al login</a>
+          ¿Te equivocaste de correo? <button type="button" class="oq-link-button" (click)="step.set('datos')">Cambiarlo</button>
         </p>
+        }
       </section>
       </div>
       <aside class="oq-auth-art" aria-hidden="true">
@@ -108,6 +113,9 @@ import { AuthService } from '../../../core/auth/auth.service';
 })
 export class PlannerRegisterPage {
   private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly step = signal<'datos' | 'codigo'>('datos');
 
   readonly email = signal('');
   readonly password = signal('');
@@ -124,11 +132,11 @@ export class PlannerRegisterPage {
 
     try {
       const res = await this.auth.registerPlanner(this.email().trim(), this.password());
-      this.success.set(
-        res.email_verificado
-          ? 'Cuenta creada. Ya puedes iniciar sesión.'
-          : 'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
-      );
+      if (res.email_verificado) {
+        await this.router.navigate(['/planner/login'], { queryParams: { email: this.email().trim(), listo: 1 } });
+        return;
+      }
+      this.step.set('codigo');
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
@@ -147,7 +155,13 @@ export class PlannerRegisterPage {
 
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
+      // Con el correo verificado entramos directo; si algo falla, mandamos al login ya llenado.
+      try {
+        await this.auth.login(this.email().trim(), this.password(), 'planner');
+        await this.router.navigate(['/planner/dashboard']);
+      } catch {
+        await this.router.navigate(['/planner/login'], { queryParams: { email: this.email().trim(), listo: 1 } });
+      }
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',

@@ -879,3 +879,13 @@ fieldset.oq-row > legend {
     display: none;
   }
 }
+
+.oq-link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--oq-olive);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
