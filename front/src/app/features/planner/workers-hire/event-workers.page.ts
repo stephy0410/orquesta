@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import {
@@ -14,27 +14,27 @@ import {
   PlannerWorkerRequestsResponse,
   PublicWorkerDto,
   ROLES_CATALOGO,
-  TarifaUnidad,
   WORKER_CATEGORIES,
-  WORKER_ZONES,
-  WorkerAvailabilityOccupiedResponse,
   WorkerRequestItemDto,
 } from '../../../core/api/models';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
+import { formatFecha, humanize, humanizeList, precio, total } from '../../../shared/labels';
 
 @Component({
   selector: 'app-event-workers-page',
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, EventSubnavComponent],
   templateUrl: './event-workers.page.html',
+  styleUrl: './event-workers.page.scss',
 })
 export class EventWorkersPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
 
+  readonly labelList = humanizeList;
   readonly allCategories = WORKER_CATEGORIES;
   readonly allRoles = ROLES_CATALOGO;
-  readonly allZones = WORKER_ZONES;
 
   readonly eventId = signal('');
   readonly event = signal<EventDto | null>(null);
@@ -43,29 +43,55 @@ export class EventWorkersPage implements OnInit {
   readonly requests = signal<WorkerRequestItemDto[]>([]);
   readonly alerts = signal<PlannerAlertDto[]>([]);
 
-  // 3D search filters (RF-07)
-  readonly filterCategorias = signal<string[]>([]);
-  readonly filterZonas = signal<string[]>([]);
-  readonly filterRadioKm = signal<number | null>(null);
-  readonly filterTarifaMin = signal<number | null>(null);
-  readonly filterTarifaMax = signal<number | null>(null);
-  readonly filterUnidad = signal<TarifaUnidad | ''>('');
-  readonly workers = signal<PublicWorkerDto[]>([]);
-  readonly occupiedByWorker = signal<Record<string, WorkerAvailabilityOccupiedResponse>>({});
+  readonly label = humanize;
+  readonly formatFecha = formatFecha;
+  readonly precio = precio;
+  readonly total = total;
 
-  // Request creation form (RF-08, TR-20)
-  readonly selectedWorker = signal<PublicWorkerDto | null>(null);
-  readonly reqRol = signal('mesero');
-  readonly reqPlazas = signal(1);
-  readonly reqInicio = signal('');
-  readonly reqFin = signal('');
-  readonly reqHoraLlegada = signal('');
+  workerName(workerId: string | null | undefined): string {
+    return this.workers().find((w) => w.worker_id === workerId)?.nombre_publico ?? 'Proveedor';
+  }
+
+  /** Catálogo publicado, solo para mostrar el nombre del proveedor en cada contratación. */
+  readonly workers = signal<PublicWorkerDto[]>([]);
+
+  /** Puestos con gente pendiente por contratar, en palabras ("Mesero (6), DJ (1)"). */
+  readonly missingRoles = computed(() =>
+    this.coverage()
+      .filter((c) => (c.cubiertos ?? 0) + (c.pendientes ?? 0) < c.cantidad)
+      .map((c) => `${humanize(c.rol)} (${c.cantidad - (c.cubiertos ?? 0) - (c.pendientes ?? 0)})`)
+      .join(', '),
+  );
+
+  readonly firstMissingCategory = computed(() => {
+    const cats: readonly string[] = WORKER_CATEGORIES;
+    return (
+      this.coverage().find(
+        (c) => (c.cubiertos ?? 0) + (c.pendientes ?? 0) < c.cantidad && cats.includes(c.rol),
+      )?.rol ?? ''
+    );
+  });
 
   // Emergency replacement & payments
   readonly replacementForResId = signal<string | null>(null);
   readonly replacementWorkerId = signal('');
   readonly cancelMotivos = signal<Record<string, string>>({});
   readonly paymentsByRes = signal<Record<string, PaymentDto>>({});
+  readonly cancelOpen = signal<string | null>(null);
+
+  // Pago con Stripe
+  private readonly checkoutDialog = viewChild<ElementRef<HTMLDialogElement>>('checkout');
+  readonly checkoutFor = signal<WorkerRequestItemDto | null>(null);
+  readonly paying = signal(false);
+  readonly payError = signal<string | null>(null);
+
+  /** Proveedores del mismo puesto que la contratación que se va a reemplazar. */
+  readonly replacementOptions = computed(() => {
+    const req = this.requests().find((r) => this.getResId(r) === this.replacementForResId());
+    return this.workers().filter(
+      (w) => w.worker_id !== req?.worker_id && (!req || (w.categorias ?? []).includes(req.rol)),
+    );
+  });
 
   readonly error = signal<string | null>(null);
   readonly success = signal<string | null>(null);
@@ -80,24 +106,56 @@ export class EventWorkersPage implements OnInit {
         this.loadRequests(),
         this.loadAlerts(),
       ]);
-      await this.searchWorkers();
+      await Promise.all([this.loadWorkerNames(), this.loadPayments()]);
+      this.handleCheckoutReturn();
     }
+  }
+
+  /** Stripe Checkout regresa con ?pago=exito o ?pago=cancelado. */
+  private handleCheckoutReturn(): void {
+    const pago = this.route.snapshot.queryParamMap.get('pago');
+    if (!pago) return;
+    if (pago === 'exito') this.success.set('Pago recibido. Puede tardar unos segundos en aparecer como pagado.');
+    if (pago === 'cancelado') this.error.set('No se hizo ningún cargo. Puedes intentar pagar de nuevo.');
+    void this.router.navigate([], { queryParams: { pago: null }, queryParamsHandling: 'merge', replaceUrl: true });
+  }
+
+  isPaid(pay: PaymentDto | undefined): boolean {
+    return !!pay && (pay.estado === 'confirmado' || pay.estado === 'pagado');
+  }
+
+  requestStateLabel(estado: string): string {
+    const map: Record<string, string> = {
+      solicitada: 'Esperando respuesta',
+      aceptada: 'Pago pendiente',
+      rechazada: 'Rechazó',
+      cancelada: 'Cancelada',
+      sin_cubrir: 'Sin cubrir',
+      completada: 'Completada',
+    };
+    return map[estado] ?? humanize(estado);
+  }
+
+  /** Estado de pago de cada contratación aceptada, para mostrar "Pagado" al entrar. */
+  async loadPayments(): Promise<void> {
+    const aceptadas = this.requests().filter((r) => r.estado === 'aceptada' || r.estado === 'completada');
+    await Promise.all(aceptadas.map((r) => this.queryPaymentStatus(this.getResId(r), true)));
+  }
+
+  openCheckout(r: WorkerRequestItemDto): void {
+    this.payError.set(null);
+    this.checkoutFor.set(r);
+    this.checkoutDialog()?.nativeElement.showModal();
+  }
+
+  closeCheckout(): void {
+    this.checkoutDialog()?.nativeElement.close();
   }
 
   async loadEvent(): Promise<void> {
     try {
       const ev = await this.api.get<EventDto>(`/v1/events/${encodeURIComponent(this.eventId())}`);
       this.event.set(ev);
-      if (ev.ventana?.inicio && !this.reqInicio()) {
-        this.reqInicio.set(toLocalDatetime(ev.ventana.inicio));
-        this.reqHoraLlegada.set(toLocalDatetime(ev.ventana.inicio));
-      }
-      if (ev.ventana?.fin && !this.reqFin()) {
-        this.reqFin.set(toLocalDatetime(ev.ventana.fin));
-      }
-      if (ev.venue?.zona && this.filterZonas().length === 0) {
-        this.filterZonas.set([ev.venue.zona]);
-      }
     } catch {
       // Handled elsewhere
     }
@@ -170,115 +228,28 @@ export class EventWorkersPage implements OnInit {
       });
       this.requirements.set(res.requerimientos ?? this.requirements());
       if (res.cobertura) this.coverage.set(this.extractCoverageRows(res.cobertura));
-      this.success.set('Requerimientos actualizados (RF-22).');
+      this.success.set('Listo: guardamos cuánta gente necesitas.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error guardando.',
+        err instanceof OrquestaApiError ? err.message : 'Error guardando.',
       );
     }
   }
 
-  toggleFilterCategory(cat: string): void {
-    this.filterCategorias.update((curr) =>
-      curr.includes(cat) ? curr.filter((c) => c !== cat) : [...curr, cat],
-    );
-  }
 
-  toggleFilterZone(z: string): void {
-    this.filterZonas.update((curr) =>
-      curr.includes(z) ? curr.filter((x) => x !== z) : [...curr, z],
-    );
-  }
 
-  async searchWorkers(): Promise<void> {
-    this.error.set(null);
-    const ev = this.event();
+
+
+
+
+  async loadWorkerNames(): Promise<void> {
     try {
       const res = await this.api.get<PaginatedResponse<PublicWorkerDto>>('/v1/workers', {
-        params: {
-          categorias: this.filterCategorias(),
-          zonas: this.filterZonas(),
-          radio_km: this.filterRadioKm() ?? undefined,
-          tarifa_min: this.filterTarifaMin() ?? undefined,
-          tarifa_max: this.filterTarifaMax() ?? undefined,
-          unidad: this.filterUnidad() || undefined,
-          desde: ev?.ventana?.inicio,
-          hasta: ev?.ventana?.fin,
-          limit: 25,
-        },
+        params: { limit: 50 },
       });
       this.workers.set(res.items ?? []);
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error buscando personal.',
-      );
-    }
-  }
-
-  async checkWorkerAvailability(workerId: string): Promise<void> {
-    const ev = this.event();
-    try {
-      const res = await this.api.get<WorkerAvailabilityOccupiedResponse>(
-        `/v1/workers/${encodeURIComponent(workerId)}/availability`,
-        {
-          params: {
-            desde: ev?.ventana?.inicio,
-            hasta: ev?.ventana?.fin,
-          },
-        },
-      );
-      this.occupiedByWorker.update((curr) => ({ ...curr, [workerId]: res }));
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
-          : 'Error consultando disponibilidad.',
-      );
-    }
-  }
-
-  selectWorkerForRequest(w: PublicWorkerDto): void {
-    this.selectedWorker.set(w);
-    if (w.categorias.length > 0) {
-      this.reqRol.set(w.categorias[0]);
-    }
-    this.reqPlazas.set(1);
-  }
-
-  async sendWorkerRequest(): Promise<void> {
-    const worker = this.selectedWorker();
-    if (!worker) return;
-
-    const inicio = toIso(this.reqInicio());
-    const fin = toIso(this.reqFin());
-    const horaLlegada = toIso(this.reqHoraLlegada());
-    if (!inicio || !fin || !horaLlegada) {
-      this.error.set('Ventana y hora de llegada válidas son obligatorias.');
-      return;
-    }
-
-    this.error.set(null);
-    this.success.set(null);
-    try {
-      const res = await this.api.post<WorkerRequestItemDto>(
-        `/v1/events/${encodeURIComponent(this.eventId())}/worker-requests`,
-        {
-          worker_id: worker.worker_id,
-          rol: this.reqRol(),
-          plazas: Math.max(1, Number(this.reqPlazas()) || 1),
-          ventana: { inicio, fin },
-          hora_llegada: horaLlegada,
-        },
-      );
-      this.success.set(
-        `Solicitud enviada (${res.id ?? res.reservation_id}). Costo congelado: ${res.costo_congelado.monto} ${res.costo_congelado.moneda}/${res.costo_congelado.unidad}.`,
-      );
-      this.selectedWorker.set(null);
-      await this.loadRequests();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error enviando solicitud.',
-      );
+    } catch {
+      // Solo enriquece los nombres; las contrataciones se muestran igual.
     }
   }
 
@@ -312,13 +283,12 @@ export class EventWorkersPage implements OnInit {
         `/v1/events/${encodeURIComponent(this.eventId())}/worker-requests/${encodeURIComponent(reservationId)}/cancel`,
         { motivo },
       );
-      this.success.set(
-        `Reserva ${reservationId} → ${res.estado}. Plazas liberadas: ${res.plazas_liberadas ?? 0}.`,
-      );
+      this.cancelOpen.set(null);
+      this.success.set(res.estado === 'cancelada' ? 'Contratación cancelada.' : `Contratación: ${humanize(res.estado).toLowerCase()}.`);
       await Promise.all([this.loadRequests(), this.loadAlerts()]);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al cancelar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al cancelar.',
       );
     }
   }
@@ -341,10 +311,10 @@ export class EventWorkersPage implements OnInit {
         { worker_id: workerId || null },
       );
       if (res.estado === 'sin_cubrir') {
-        this.error.set('SIN_CANDIDATO: La reserva quedó marcada como sin_cubrir con alerta.');
+        this.error.set('Marcamos el puesto como sin cubrir. Te avisaremos en este evento.');
       } else {
         this.success.set(
-          `Reemplazo de emergencia solicitado (${res.id ?? resId}, SLA 15 min).`,
+          'Solicitud urgente enviada. El proveedor tiene 15 minutos para aceptar.',
         );
       }
       this.replacementForResId.set(null);
@@ -353,40 +323,47 @@ export class EventWorkersPage implements OnInit {
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo enviar el reemplazo.',
       );
     }
   }
 
   /**
-   * TR-09: Reusa siempre la misma idempotency key `pay:${reservationId}` sin incrementarla.
+   * Cobra la contratación. Siempre usa la misma clave `pay:<reserva>` para que reintentar no cobre
+   * dos veces. Si el backend responde con `checkout_url` (Stripe Checkout), mandamos a la planner a
+   * esa página; al terminar Stripe regresa a esta misma pantalla con ?pago=exito|cancelado.
    */
-  async payReservationTestMode(reservationId: string): Promise<void> {
-    const key = `pay:${reservationId}`;
-    this.error.set(null);
-    this.success.set(null);
+  async confirmPayment(r: WorkerRequestItemDto): Promise<void> {
+    const reservationId = this.getResId(r);
+    this.paying.set(true);
+    this.payError.set(null);
     try {
-      const pay = await this.api.post<PaymentDto>(
+      const back = `${location.origin}/planner/events/${encodeURIComponent(this.eventId())}/workers`;
+      const res = await this.api.post<PaymentDto & { checkout_url?: string }>(
         `/v1/reservations/${encodeURIComponent(reservationId)}/payments`,
-        {},
-        { idempotencyKey: key },
+        { success_url: `${back}?pago=exito`, cancel_url: `${back}?pago=cancelado` },
+        { idempotencyKey: `pay:${reservationId}` },
       );
-      this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: pay }));
-      this.success.set(
-        pay.estado === 'desconocido'
-          ? `Resultado PSP desconocido (${pay.payment_id}). Consulta el estado antes de reintentar (TR-09).`
-          : `Pago en modo test ${pay.estado}: ${pay.monto} (key ${key}).`,
-      );
+      if (res.checkout_url) {
+        location.assign(res.checkout_url);
+        return;
+      }
+      this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: res }));
+      if (res.estado === 'desconocido') {
+        this.payError.set('No pudimos confirmar el pago con el banco. Revisa en unos minutos antes de reintentar.');
+      } else if (!this.isPaid(res)) {
+        this.payError.set('El pago quedó pendiente. Te avisaremos cuando se confirme.');
+      }
     } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error ejecutando pago.',
-      );
+      this.payError.set(err instanceof OrquestaApiError ? err.message : 'No pudimos procesar el pago. Intenta de nuevo.');
+    } finally {
+      this.paying.set(false);
     }
   }
 
-  async queryPaymentStatus(reservationId: string): Promise<void> {
-    this.error.set(null);
+  async queryPaymentStatus(reservationId: string, silent = false): Promise<void> {
+    if (!silent) this.error.set(null);
     try {
       const res = await this.api.get<PaginatedResponse<PaymentDto>>(
         `/v1/reservations/${encodeURIComponent(reservationId)}/payments`,
@@ -396,22 +373,9 @@ export class EventWorkersPage implements OnInit {
         this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: latest }));
       }
     } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Sin cobros registrados.',
-      );
+      if (!silent) {
+        this.error.set(err instanceof OrquestaApiError ? err.message : 'Sin cobros registrados.');
+      }
     }
   }
-}
-
-function toIso(localVal: string): string | null {
-  if (!localVal) return null;
-  const d = new Date(localVal);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function toLocalDatetime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

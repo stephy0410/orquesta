@@ -3,7 +3,12 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { ORQUESTA_API_BASE_URL } from '../../core/api/api-config';
 import { apiInterceptor } from '../../core/api/api.interceptor';
-import { InvitationPage, extractRsvpTokenFromHash } from './invitation.page';
+import {
+  InvitationPage,
+  extractRsvpTokenFromHash,
+  formatEventDate,
+  formatEventTime,
+} from './invitation.page';
 
 describe('InvitationPage (RF-18, NFR-02)', () => {
   let httpMock: HttpTestingController;
@@ -30,6 +35,13 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     expect(extractRsvpTokenFromHash('#t=rsvp_123')).toBe('rsvp_123');
     expect(extractRsvpTokenFromHash('#foo=1&t=rsvp_456')).toBe('rsvp_456');
     expect(extractRsvpTokenFromHash('')).toBeNull();
+  });
+
+  it('muestra fecha y hora legibles en la zona horaria del evento', () => {
+    expect(formatEventDate('2026-11-21')).toBe('sábado, 21 de noviembre de 2026');
+    expect(formatEventTime('2026-11-22T01:00:00.000Z', 'America/Mexico_City')).toBe('19:00');
+    expect(formatEventTime('2026-11-22T01:00:00.000Z', 'America/Cancun')).toBe('20:00');
+    expect(formatEventTime('19:00')).toBe('19:00');
   });
 
   it('loads invitation without cookies, keeps QR visible, and updates state on confirma/declina', async () => {
@@ -101,15 +113,12 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
   });
 
-  it('loads cacheable event summary without hitting origin GET /rsvp when eventId (e=...) is present in hash (NFR-02, AC-23)', async () => {
-    window.history.replaceState(
-      null,
-      '',
-      '#t=rsvp_tok_xyz&e=evt_01&c=483920&q=chk_qr_token_1',
-    );
+  it('renders cached event summary first and hydrates RSVP state & QR in background when eventId (e=...) is in hash (NFR-02, AC-23)', async () => {
+    window.history.replaceState(null, '', '#t=rsvp_tok_xyz&e=evt_01');
     const fixture = TestBed.createComponent(InvitationPage);
     fixture.detectChanges();
 
+    // Primero pide el resumen cacheable del evento (sin pedir /rsvp antes).
     httpMock.expectNone('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp');
     const summaryReq = httpMock.expectOne(
       'https://api.orquesta.test/v1/public/events/evt_01/summary',
@@ -126,27 +135,120 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
       venue: { nombre: 'Salon Norte', zona: 'norte', direccion: 'Av. 1' },
     });
 
+    await Promise.resolve();
+    await Promise.resolve();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(fixture.componentInstance.loading()).toBe(false);
+    expect(el.textContent).toContain('Gala Cacheada');
+
+    // Justo después hidrata el estado real y el QR vigente en segundo plano.
+    const rsvpReq = httpMock.expectOne(
+      'https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp',
+    );
+    expect(rsvpReq.request.method).toBe('GET');
+    expect(rsvpReq.request.withCredentials).toBe(false);
+    rsvpReq.flush({
+      respuesta: 'confirma',
+      respondido_en: '2026-06-01T12:00:00Z',
+      qr: { token: 'chk_qr_token_vigente', codigo_corto: '483920' },
+      evento: { nombre: 'Gala Cacheada', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Norte' },
+      bajas: { sms: false, email: false },
+    });
+
     await new Promise((r) => setTimeout(r, 25));
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const el = fixture.nativeElement as HTMLElement;
-    expect(el.textContent).toContain('Gala Cacheada');
+    expect(fixture.componentInstance.state()?.respuesta).toBe('confirma');
+    expect(el.textContent).toContain('Asistencia confirmada');
     expect(el.textContent).toContain('483920');
     expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
 
-    const postPromise = fixture.componentInstance.respond('confirma');
+    const postPromise = fixture.componentInstance.respond('declina');
     const postReq = httpMock.expectOne(
       'https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp',
     );
     expect(postReq.request.method).toBe('POST');
     postReq.flush({
-      respuesta: 'confirma',
-      respondido_en: '2026-06-01T12:00:00Z',
-      qr: { token: 'chk_qr_token_1', codigo_corto: '483920' },
+      respuesta: 'declina',
+      respondido_en: '2026-06-01T12:05:00Z',
+      qr: { token: 'chk_qr_token_vigente', codigo_corto: '483920' },
       evento: { nombre: 'Gala Cacheada', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Norte' },
     });
     await postPromise;
-    expect(fixture.componentInstance.state()?.respuesta).toBe('confirma');
+    expect(fixture.componentInstance.state()?.respuesta).toBe('declina');
+  });
+
+  it('keeps cached summary view if background RSVP hydration fails (NFR-02)', async () => {
+    window.history.replaceState(null, '', '#t=rsvp_tok_xyz&e=evt_01');
+    const fixture = TestBed.createComponent(InvitationPage);
+    fixture.detectChanges();
+
+    httpMock
+      .expectOne('https://api.orquesta.test/v1/public/events/evt_01/summary')
+      .flush({
+        event_id: 'evt_01',
+        nombre: 'Gala Cacheada',
+        fecha: '2026-06-15',
+        inicio: '19:00',
+        venue: { nombre: 'Salon Norte', zona: 'norte', direccion: 'Av. 1' },
+      });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    httpMock
+      .expectOne('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp')
+      .flush({ error: { code: 'ERR', message: 'fail' } }, { status: 503, statusText: 'Unavailable' });
+
+    await new Promise((r) => setTimeout(r, 25));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(fixture.componentInstance.error()).toBeNull();
+    expect(fixture.componentInstance.state()?.evento.nombre).toBe('Gala Cacheada');
+    expect(el.textContent).toContain('Gala Cacheada');
+  });
+
+  it('permite darse de baja por canal sin cuenta y conserva el pase (FR8)', async () => {
+    const fixture = TestBed.createComponent(InvitationPage);
+    fixture.detectChanges();
+    httpMock
+      .expectOne('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp')
+      .flush({
+        respuesta: 'confirma',
+        respondido_en: '2026-06-01T12:00:00Z',
+        qr: { token: 'chk_qr_token_1', codigo_corto: '483920' },
+        evento: { nombre: 'Gala Orquesta', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Sur' },
+        bajas: { sms: false, email: false },
+      });
+    await new Promise((r) => setTimeout(r, 25));
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Dejar de recibir SMS');
+    expect(el.querySelector('a[href="/privacidad"]')).toBeTruthy();
+
+    const comp = fixture.componentInstance;
+    const p = comp.unsubscribe('sms');
+    const req = httpMock.expectOne(
+      'https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/unsubscribe',
+    );
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toEqual({ canal: 'sms' });
+    expect(req.request.withCredentials).toBe(false);
+    req.flush({ bajas: { sms: true, email: false } });
+    await p;
+    fixture.detectChanges();
+
+    expect(comp.state()?.bajas).toEqual({ sms: true, email: false });
+    expect(el.textContent).not.toContain('Dejar de recibir SMS');
+    expect(el.textContent).toContain('Dejar de recibir correos');
+    expect(el.textContent).toContain('ya no te enviaremos mensajes SMS');
+    expect(el.querySelector('img.inv-qr-img')).toBeTruthy();
   });
 });

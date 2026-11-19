@@ -3,28 +3,30 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-planner-register-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Planner</span>
+          Orquesta <small>para planners</small>
         </a>
-        <div class="oq-nav-links">
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
           <a class="oq-nav-link" routerLink="/planner/login">Iniciar sesión</a>
-        </div>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Crear cuenta de Planner (RF-19)</h1>
+        <h1>Crea tu cuenta de planner</h1>
         <p class="oq-page-subtitle">
           Regístrate con tu correo y verifícalo para comenzar a gestionar eventos.
         </p>
@@ -67,23 +69,28 @@ import { AuthService } from '../../../core/auth/auth.service';
           <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
             {{ loading() ? 'Creando cuenta...' : 'Registrarme como planner' }}
           </button>
+          <p class="oq-hint">
+            Al registrarte aceptas el <a routerLink="/privacidad">Aviso de privacidad</a>.
+          </p>
         </form>
 
         <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />
 
         <h2>Verificar correo electrónico</h2>
-        <p class="oq-hint">Ingresa el token de verificación (uso único, 72 h).</p>
+        <p class="oq-hint">Pega el código que te enviamos por correo. Vence en 72 horas.</p>
         <form class="oq-row" (ngSubmit)="verifyEmail()">
           <input
             name="verifyToken"
             class="oq-input mono"
             style="flex: 1 1 220px"
-            placeholder="Token de verificación"
+            aria-label="Código de verificación"
+            autocomplete="one-time-code"
+            placeholder="Código de verificación"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
           <button type="submit" class="oq-btn oq-btn-accent" [disabled]="loading()">
-            Verificar email
+            Verificar correo
           </button>
         </form>
 
@@ -91,6 +98,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           ¿Ya verificaste tu correo? <a routerLink="/planner/login">Ir al login</a>
         </p>
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-tablescape-art stroke="#f5f2e8" fill="#56602a" />
+        <blockquote>Tu lista de invitados ya no vive en Excel.</blockquote>
+      </aside>
     </main>
   `,
 })
@@ -113,11 +125,13 @@ export class PlannerRegisterPage {
     try {
       const res = await this.auth.registerPlanner(this.email().trim(), this.password());
       this.success.set(
-        `Usuario creado (${res.user_id}). Email verificado: ${res.email_verificado ? 'Sí' : 'Pendiente'}.`,
+        res.email_verificado
+          ? 'Cuenta creada. Ya puedes iniciar sesión.'
+          : 'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al registrar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
       );
     } finally {
       this.loading.set(false);
@@ -133,10 +147,10 @@ export class PlannerRegisterPage {
 
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Email verificado correctamente. Ya puedes iniciar sesión.');
+      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido o vencido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     } finally {
       this.loading.set(false);

@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { humanize } from '../../../shared/labels';
 import {
   COMMON_TIMEZONES,
   EventDto,
@@ -19,11 +20,13 @@ import {
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './event-create.page.html',
+  styleUrl: './event-create.page.scss',
 })
 export class EventCreatePage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly router = inject(Router);
 
+  readonly label = humanize;
   readonly timezones = COMMON_TIMEZONES;
   readonly zones = WORKER_ZONES;
   readonly roles = WORKER_CATEGORIES;
@@ -34,9 +37,7 @@ export class EventCreatePage implements OnInit {
 
   // Event fields
   readonly nombre = signal('');
-  readonly fecha = signal('');
   readonly timezone = signal('America/Mexico_City');
-  readonly customTimezone = signal('');
   readonly ventanaInicio = signal('');
   readonly ventanaFin = signal('');
   readonly venueId = signal('');
@@ -67,7 +68,7 @@ export class EventCreatePage implements OnInit {
       }
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando venues.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos cargar tus lugares.',
       );
     }
   }
@@ -75,7 +76,7 @@ export class EventCreatePage implements OnInit {
   async createVenue(): Promise<void> {
     this.error.set(null);
     if (!this.venueNombre().trim() || !this.venueDireccion().trim()) {
-      this.error.set('Nombre y dirección del venue son obligatorios.');
+      this.error.set('Escribe el nombre y la dirección del lugar.');
       return;
     }
     try {
@@ -91,7 +92,7 @@ export class EventCreatePage implements OnInit {
       this.showNewVenue.set(false);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo crear venue.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos guardar el lugar.',
       );
     }
   }
@@ -117,16 +118,32 @@ export class EventCreatePage implements OnInit {
     );
   }
 
+  /** Al elegir el inicio, si no hay fin (o quedó antes), proponemos 5 horas después. */
+  setInicio(value: string): void {
+    this.ventanaInicio.set(value);
+    const ini = new Date(value);
+    if (!value || Number.isNaN(ini.getTime())) return;
+    const fin = new Date(this.ventanaFin());
+    if (!this.ventanaFin() || Number.isNaN(fin.getTime()) || fin <= ini) {
+      const p = new Date(ini.getTime() + 5 * 3600_000);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      this.ventanaFin.set(
+        `${p.getFullYear()}-${pad(p.getMonth() + 1)}-${pad(p.getDate())}T${pad(p.getHours())}:${pad(p.getMinutes())}`,
+      );
+    }
+  }
+
   async createEvent(): Promise<void> {
     if (this.loading()) return;
     this.error.set(null);
 
-    const tz = (this.customTimezone().trim() || this.timezone()).trim();
+    const tz = this.timezone();
+    const fecha = this.ventanaInicio().slice(0, 10);
     const inicioIso = toIso(this.ventanaInicio());
     const finIso = toIso(this.ventanaFin());
 
-    if (!this.nombre().trim() || !this.fecha() || !tz || !this.venueId() || !inicioIso || !finIso) {
-      this.error.set('Nombre, fecha, zona horaria IANA, venue y ventana son obligatorios.');
+    if (!this.nombre().trim() || !fecha || !tz || !this.venueId() || !inicioIso || !finIso) {
+      this.error.set('Completa el nombre, el horario y el lugar.');
       return;
     }
 
@@ -134,7 +151,7 @@ export class EventCreatePage implements OnInit {
     try {
       const created = await this.api.post<EventDto>('/v1/events', {
         nombre: this.nombre().trim(),
-        fecha: this.fecha(),
+        fecha,
         timezone: tz,
         ventana: { inicio: inicioIso, fin: finIso },
         venue_id: this.venueId(),
@@ -145,7 +162,7 @@ export class EventCreatePage implements OnInit {
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo crear el evento.',
       );
     } finally {

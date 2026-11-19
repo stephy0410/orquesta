@@ -1,4 +1,10 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
+import { decryptPii } from "../../shared/crypto.js";
+
+/** Escapa texto controlado por usuarios (nombres de invitado/evento del CSV) antes de meterlo en HTML. */
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -25,6 +31,7 @@ export function createNotifyEmailHandler(ctx) {
           !dCtx.delivery.direccion_plana ||
           dCtx.delivery.pii_anonimizada_en ||
           (dCtx.guest && dCtx.guest.deleted_at) ||
+          (dCtx.guest && dCtx.guest.baja_email_en) ||
           (dCtx.invitation && dCtx.invitation.rsvp_revocado_en) ||
           (dCtx.reminderJob && (dCtx.reminderJob.estado === "cancelado" || dCtx.reminderJob.pii_anonimizada_en));
 
@@ -43,8 +50,6 @@ export function createNotifyEmailHandler(ctx) {
         if (dCtx.invitation?.rsvp_token_plano) {
           const params = new URLSearchParams({ t: dCtx.invitation.rsvp_token_plano });
           if (dCtx.event?.id) params.set("e", dCtx.event.id);
-          if (dCtx.invitation?.codigo_corto) params.set("c", dCtx.invitation.codigo_corto);
-          if (dCtx.invitation?.qr_token_plano) params.set("q", dCtx.invitation.qr_token_plano);
           rsvpUrl = `${baseUrl}/invitacion/#${params.toString()}`;
         }
         const qrUrl = dCtx.invitation?.qr_s3_key
@@ -56,13 +61,20 @@ export function createNotifyEmailHandler(ctx) {
             : dCtx.delivery.plantilla === "recordatorio_rsvp"
               ? `Recordatorio RSVP — ${eventName}`
               : `Invitación a ${eventName}`;
+        const safeEvent = escapeHtml(eventName);
+        const footer = rsvpUrl
+          ? `<hr /><p style="font-size:12px;color:#666">¿No quieres recibir más mensajes de este evento? Abre
+               <a href="${rsvpUrl}">tu invitación</a> y elige «Dejar de recibir correos». Consulta el
+               <a href="${baseUrl}/privacidad">Aviso de privacidad</a>.</p>`
+          : "";
         const html =
           dCtx.delivery.plantilla === "recordatorio_llegada"
-            ? `<p>Recordatorio de hora de llegada (${msg.hora_llegada || ""}) para <strong>${eventName}</strong>.</p>`
-            : `<p>Hola ${dCtx.guest?.nombre || ""}, estás invitado a <strong>${eventName}</strong>.</p>
+            ? `<p>Recordatorio de hora de llegada (${escapeHtml(msg.hora_llegada || "")}) para <strong>${safeEvent}</strong>.</p>`
+            : `<p>Hola ${escapeHtml(dCtx.guest?.nombre || "")}, estás invitado a <strong>${safeEvent}</strong>.</p>
                <p><a href="${rsvpUrl}">Confirmar o declinar asistencia</a></p>
-               <p>Código corto: ${dCtx.invitation?.codigo_corto || ""}</p>
-               ${qrUrl ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>` : ""}`;
+               <p>Código corto: ${escapeHtml(dCtx.invitation?.codigo_corto || "")}</p>
+               ${qrUrl ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>` : ""}
+               ${footer}`;
 
         try {
           await ctx.emailProvider.send({
@@ -101,6 +113,15 @@ export function createNotifyEmailHandler(ctx) {
         continue;
       }
 
+      // Direcciones que vienen del outbox llegan cifradas (NFR-07); las de avisos directos, en claro.
+      if (msg.to_cifrado && !msg.to) {
+        try {
+          msg.to = decryptPii(msg.to_cifrado, ctx.piiKey);
+        } catch {
+          msg.to = null;
+        }
+        delete msg.to_cifrado;
+      }
       if (msg.to) {
         try {
           let subject = "Notificación Orquesta";
@@ -115,8 +136,14 @@ export function createNotifyEmailHandler(ctx) {
             subject = "Código OTP de Orquesta";
             html = `<p>Tu código OTP es: <strong>${msg.codigo_otp}</strong></p>`;
           } else if (msg.event_type === "worker_request_created") {
-            subject = `Nueva solicitud de trabajo (${msg.rol || "staff"})`;
-            html = `<p>Tienes una nueva solicitud de contratación.</p>`;
+            const base = (process.env.PUBLIC_BASE_URL || "https://orquesta.app").replace(/\/+$/, "");
+            subject = msg.modo_emergencia
+              ? `URGENTE: solicitud de emergencia (${msg.rol || "staff"})`
+              : `Nueva solicitud de trabajo (${msg.rol || "staff"})`;
+            html =
+              `<p>Tienes una nueva solicitud de contratación como <strong>${msg.rol || "staff"}</strong>.</p>` +
+              (msg.modo_emergencia ? "<p><strong>Es una emergencia: tienes 15 minutos para responder.</strong></p>" : "") +
+              `<p><a href="${base}/worker/requests">Ver y responder la solicitud</a></p>`;
           }
           await ctx.emailProvider.send({
             to: msg.to,

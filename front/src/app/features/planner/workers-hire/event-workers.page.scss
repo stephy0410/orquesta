@@ -1,0 +1,172 @@
+.hire-layout {
+  align-items: start;
+}
+
+.hire-cta {
+  background: var(--oq-olive);
+  border-color: var(--oq-olive);
+  color: var(--oq-bg);
+
+  h2 {
+    color: var(--oq-bg);
+  }
+
+  .oq-hint {
+    color: rgba(245, 242, 232, 0.85);
+    margin-bottom: 1rem;
+  }
+
+  .oq-btn-primary {
+    background: var(--oq-bg);
+    color: var(--oq-olive-deep);
+  }
+
+  .oq-btn-primary:hover {
+    background: var(--oq-sage-soft);
+  }
+}
+
+.hire-missing {
+  font-weight: 600;
+  margin-bottom: 1.25rem;
+}
+
+.hire-remove {
+  border: none;
+  background: none;
+  color: var(--oq-ink-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0 0.35rem;
+  cursor: pointer;
+}
+
+.hire-remove:hover {
+  color: var(--oq-danger, #8a3324);
+}
+
+.hire-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hire-item {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+  padding: 1rem 0;
+  border-top: 1px solid var(--oq-border);
+}
+
+.hire-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.hire-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  width: 100%;
+
+  .oq-hint {
+    display: block;
+  }
+}
+
+.hire-name {
+  font-size: 1.05rem;
+}
+
+.hire-meta {
+  margin: 0;
+}
+
+.hire-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--oq-ink-muted);
+  font: inherit;
+  font-size: 0.88rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.hire-cancel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+
+  .oq-input {
+    flex: 1 1 180px;
+    width: auto;
+  }
+}
+
+.pay-dialog {
+  width: min(440px, calc(100vw - 2rem));
+  border: none;
+  border-radius: var(--oq-radius-md);
+  padding: 1.75rem;
+  background: var(--oq-surface, #fbfaf4);
+  color: var(--oq-ink);
+
+  &::backdrop {
+    background: rgba(43, 46, 27, 0.45);
+  }
+
+  h2 {
+    margin: 0 0 1rem;
+  }
+}
+
+.pay-summary {
+  margin: 0 0 1rem;
+
+  div {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--oq-border);
+  }
+
+  dt {
+    color: var(--oq-ink-muted);
+  }
+
+  dd {
+    margin: 0;
+    text-align: right;
+  }
+
+  .pay-total {
+    font-size: 1.1rem;
+    font-weight: 600;
+    border-top-color: var(--oq-ink);
+  }
+}
+
+.pay-secure {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--oq-ink-muted);
+}
+
+.pay-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.pay-done p {
+  margin-bottom: 1.25rem;
+}

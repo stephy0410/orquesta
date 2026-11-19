@@ -1,0 +1,13 @@
+.ec-remove {
+  border: none;
+  background: none;
+  color: var(--oq-ink-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0 0.4rem;
+  cursor: pointer;
+
+  &:hover {
+    color: #8a3324;
+  }
+}

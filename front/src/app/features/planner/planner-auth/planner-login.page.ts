@@ -3,31 +3,33 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-planner-login-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Planner</span>
+          Orquesta <small>para planners</small>
         </a>
-        <div class="oq-nav-links">
-          <a class="oq-nav-link" routerLink="/worker/login">Soy Trabajador</a>
-          <a class="oq-nav-link" routerLink="/scan">Escáner QR</a>
-        </div>
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
+          <a class="oq-nav-link" routerLink="/worker/login">Soy proveedor</a>
+          <a class="oq-nav-link" routerLink="/scan">Escáner</a>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Consola del Planner</h1>
+        <h1>Entra a tu consola</h1>
         <p class="oq-page-subtitle">
-          Inicia sesión con tu cuenta verificada (sesión en cookie <code>httpOnly</code> + Bearer).
+          Usa el correo y la contraseña con los que verificaste tu cuenta.
         </p>
 
         @if (error()) {
@@ -101,7 +103,9 @@ import { AuthService } from '../../../core/auth/auth.service';
               <input
                 class="oq-input mono"
                 style="flex: 1 1 150px"
-                placeholder="Token de recuperación"
+                aria-label="Código de recuperación"
+                autocomplete="one-time-code"
+                placeholder="Código del correo"
                 [ngModel]="resetToken()"
                 (ngModelChange)="resetToken.set($event)"
               />
@@ -120,6 +124,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           </div>
         }
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-tablescape-art stroke="#f5f2e8" fill="#56602a" />
+        <blockquote>Tres eventos el mismo sábado, una sola pantalla.</blockquote>
+      </aside>
     </main>
   `,
 })
@@ -151,7 +160,7 @@ export class PlannerLoginPage {
       await this.router.navigateByUrl(redirect);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Credenciales inválidas.',
+        err instanceof OrquestaApiError ? err.message : 'Credenciales inválidas.',
       );
     } finally {
       this.loading.set(false);
@@ -166,7 +175,7 @@ export class PlannerLoginPage {
       this.info.set('Si el correo existe, enviamos instrucciones de recuperación.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error solicitando reset.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos enviar el correo de recuperación.',
       );
     }
   }
@@ -180,7 +189,7 @@ export class PlannerLoginPage {
       this.showReset.set(false);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido o vencido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     }
   }

@@ -3,356 +3,236 @@
     <div>
       <div class="oq-row">
         <h1>{{ ev.nombre }}</h1>
-        <span class="oq-badge oq-badge-info">{{ ev.estado }}</span>
+        <span class="oq-badge oq-badge-info">{{ estadoLabel(ev.estado) }}</span>
       </div>
-      <p class="oq-page-subtitle mono">
-        {{ ev.id }} · {{ ev.fecha }} · {{ ev.timezone }} · Aforo: {{ ev.aforo }}
+      <p class="oq-page-subtitle">
+        {{ fechaLarga(ev.fecha) }}{{ ev.venue?.nombre ? ', ' + ev.venue?.nombre : '' }}. Aforo de
+        {{ ev.aforo }} personas.
       </p>
     </div>
-    <a class="oq-btn oq-btn-secondary" routerLink="/planner/dashboard">← Tablero</a>
+    <a class="oq-btn oq-btn-secondary" routerLink="/planner/dashboard">Volver al tablero</a>
   </div>
 
   <app-event-subnav [eventId]="eventId()" />
 }
 
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 @if (success()) {
-  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+  <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 
 @if (event(); as ev) {
-  <div class="oq-grid-2">
-    <section class="oq-card">
-      <h2>Estado y ciclo de vida (RF-01, RF-15)</h2>
+  <section class="ed-next" aria-labelledby="edNextTitle">
+    <div>
+      <h2 id="edNextTitle">{{ nextStep(ev.estado).titulo }}</h2>
+      <p>{{ nextStep(ev.estado).texto }}</p>
+    </div>
+    @if (nextStep(ev.estado).accion; as acc) {
+      <button type="button" class="oq-btn oq-btn-lg" (click)="transition(acc.action)">
+        {{ acc.label }}
+      </button>
+    }
+  </section>
+
+  <div class="ed-grid">
+    <section class="oq-card" aria-labelledby="edDoorTitle">
+      <h2 id="edDoorTitle">Escáner de la puerta</h2>
       <p class="oq-hint">
-        Flujo: <code>borrador → publicado → en_curso → cerrado</code> (+ <code>cancelado</code>).
-        Solo <code>publicado</code> y <code>en_curso</code> aceptan envíos y check-in.
+        Comparte este acceso con quien recibirá a los invitados. Lo abre en su celular y escanea los
+        QR de las invitaciones, aunque no haya señal.
       </p>
 
-      <div class="oq-row" style="margin-bottom: 1rem">
-        <button
-          type="button"
-          class="oq-btn oq-btn-primary btn-sm"
-          [disabled]="ev.estado !== 'borrador'"
-          (click)="transition('publish')"
-        >
-          Publicar
-        </button>
-        <button
-          type="button"
-          class="oq-btn oq-btn-accent btn-sm"
-          [disabled]="ev.estado !== 'publicado'"
-          (click)="transition('start')"
-        >
-          Iniciar (en_curso)
-        </button>
-        <button
-          type="button"
-          class="oq-btn oq-btn-secondary btn-sm"
-          [disabled]="ev.estado === 'cerrado' || ev.estado === 'cancelado'"
-          (click)="transition('close')"
-        >
-          Cerrar evento (corte)
-        </button>
-      </div>
-
-      @if (ev.estado !== 'cerrado' && ev.estado !== 'cancelado') {
-        <div class="oq-row">
-          <input
-            class="oq-input"
-            style="flex: 1 1 200px"
-            placeholder="Motivo de cancelación"
-            [ngModel]="cancelMotivo()"
-            (ngModelChange)="cancelMotivo.set($event)"
-          />
-          <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="transition('cancel')">
-            Cancelar evento
-          </button>
-        </div>
-      }
-
-      @if (ev.cerrado_en) {
-        <div class="oq-alert oq-alert-info" style="margin-top: 1rem">
-          Cerrado en <span class="mono">{{ ev.cerrado_en }}</span> (solo lectura; replay dentro de
-          ventana marcado <code>tardio</code>).
-        </div>
-      }
-
-      <hr style="margin: 1.25rem 0; border: none; border-top: 1px solid var(--oq-border)" />
-
-      <h3>Editar configuración</h3>
-      <form class="oq-form-grid" (ngSubmit)="saveEventEdits()">
-        <div class="oq-field">
-          <label class="oq-label" for="edNom">Nombre</label>
-          <input
-            id="edNom"
-            name="editNombre"
-            class="oq-input"
-            [ngModel]="editNombre()"
-            (ngModelChange)="editNombre.set($event)"
-          />
-        </div>
-        <div class="oq-grid-3">
-          <div class="oq-field">
-            <label class="oq-label" for="edFec">Fecha</label>
-            <input
-              id="edFec"
-              name="editFecha"
-              class="oq-input"
-              type="date"
-              [ngModel]="editFecha()"
-              (ngModelChange)="editFecha.set($event)"
+      @if (issuedAccessToken(); as tok) {
+        <div class="ed-share">
+          @if (accessQrDataUrl()) {
+            <img
+              class="ed-qr"
+              [src]="accessQrDataUrl()!"
+              alt="QR para abrir el escáner de este evento"
+              width="168"
+              height="168"
             />
-          </div>
-          <div class="oq-field">
-            <label class="oq-label" for="edTz">Timezone</label>
-            <input
-              id="edTz"
-              name="editTimezone"
-              class="oq-input mono"
-              [ngModel]="editTimezone()"
-              (ngModelChange)="editTimezone.set($event)"
-            />
-          </div>
-          <div class="oq-field">
-            <label class="oq-label" for="edAforo">Aforo</label>
-            <input
-              id="edAforo"
-              name="editAforo"
-              class="oq-input"
-              type="number"
-              min="1"
-              [ngModel]="editAforo()"
-              (ngModelChange)="editAforo.set($event)"
-            />
-          </div>
-        </div>
-        <button type="submit" class="oq-btn oq-btn-secondary">Guardar cambios</button>
-      </form>
-    </section>
-
-    <section class="oq-grid">
-      <div class="oq-card">
-        <h2>QR de acceso al evento (EventAccessToken, RF-19)</h2>
-        <p class="oq-hint">
-          Emite un QR de acceso por rol para abrir la PWA de escaneo (<code>/scan</code>) sin
-          otorgar acceso global.
-        </p>
-
-        <div class="oq-row">
-          <select
-            class="oq-select"
-            style="width: auto"
-            [ngModel]="accessTokenRol()"
-            (ngModelChange)="accessTokenRol.set($event)"
-          >
-            @for (r of rolesCatalog; track r) {
-              <option [value]="r">{{ r }}</option>
-            }
-          </select>
-          <button type="button" class="oq-btn oq-btn-primary" (click)="issueAccessToken()">
-            Emitir QR de acceso
-          </button>
-        </div>
-
-        @if (issuedAccessToken(); as tok) {
-          <div style="margin-top: 1rem">
-            @if (accessQrDataUrl()) {
-              <img [src]="accessQrDataUrl()!" alt="QR de acceso al evento" width="180" height="180" />
-            }
-            <p class="oq-hint mono" style="word-break: break-all">
-              Token: {{ tok.qr_token }}<br />
-              Expira: {{ tok.expira_en }}
+          }
+          <div class="ed-share-body">
+            <p class="oq-hint">
+              Escanéalo con la cámara del celular o comparte el enlace. Vence el
+              {{ formatFecha(tok.expira_en) }}
             </p>
-            <a
-              class="oq-btn oq-btn-accent oq-btn-sm"
-              routerLink="/scan"
-              [queryParams]="{ token: tok.qr_token }"
-            >
-              Abrir en Escáner PWA
+            <div class="ed-share-actions">
+              <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="copyAccessLink()">
+                {{ copied() ? 'Enlace copiado' : 'Copiar enlace' }}
+              </button>
+              <a class="oq-btn oq-btn-secondary oq-btn-sm" [href]="whatsappHref()" target="_blank" rel="noopener">
+                Enviar por WhatsApp
+              </a>
+              @if (canShare) {
+                <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="shareAccess()">
+                  Compartir
+                </button>
+              }
+              @if (accessQrPng()) {
+                <a
+                  class="oq-btn oq-btn-secondary oq-btn-sm"
+                  [href]="accessQrPng()!"
+                  [download]="'escaner-' + slug(ev.nombre) + '.png'"
+                >
+                  Descargar QR
+                </a>
+              }
+            </div>
+            <a class="ed-open" routerLink="/scan" [queryParams]="{ token: tok.qr_token }">
+              Abrir el escáner en este dispositivo
             </a>
           </div>
-        }
-      </div>
-
-      <div class="oq-card">
-        <h2>Habilitación de escaneo (StaffAssignment)</h2>
-        <form class="oq-form-grid" (ngSubmit)="grantStaffAssignment()">
-          <div class="oq-field">
-            <label class="oq-label" for="staffUid">User ID del trabajador</label>
-            <input
-              id="staffUid"
-              name="staffUserId"
-              class="oq-input mono"
-              placeholder="usr_..."
-              [ngModel]="staffUserId()"
-              (ngModelChange)="staffUserId.set($event)"
-            />
-          </div>
-          <div class="oq-row">
-            <label class="oq-row">
-              <input
-                type="checkbox"
-                [ngModel]="staffPermRoster()"
-                [ngModelOptions]="{ standalone: true }"
-                (ngModelChange)="staffPermRoster.set($event)"
-              />
-              roster
-            </label>
-            <label class="oq-row">
-              <input
-                type="checkbox"
-                [ngModel]="staffPermCheckin()"
-                [ngModelOptions]="{ standalone: true }"
-                (ngModelChange)="staffPermCheckin.set($event)"
-              />
-              checkin
-            </label>
-            <label class="oq-row">
-              <input
-                type="checkbox"
-                [ngModel]="staffPermAnulacion()"
-                [ngModelOptions]="{ standalone: true }"
-                (ngModelChange)="staffPermAnulacion.set($event)"
-              />
-              anulacion (RF-14)
-            </label>
-          </div>
-          <button type="submit" class="oq-btn oq-btn-secondary">Habilitar escaneo</button>
-        </form>
-        @if (lastStaffAssignment(); as sa) {
-          <p class="oq-hint mono" style="margin-top: 0.5rem">
-            Asignación {{ sa.staff_assignment_id }} · permisos: {{ sa.permisos.join(', ') }}
-          </p>
-        }
-      </div>
-    </section>
-  </div>
-
-  <div class="oq-grid-2" style="margin-top: 1rem">
-    <section class="oq-card">
-      <h2>Miembros del evento (EventMembership, NFR-11)</h2>
-      <div class="oq-row" style="margin-bottom: 0.85rem">
-        <input
-          class="oq-input"
-          style="flex: 1 1 180px"
-          placeholder="Email del colega editor"
-          [ngModel]="newMemberEmail()"
-          (ngModelChange)="newMemberEmail.set($event)"
-        />
-        <input
-          class="oq-input mono"
-          style="flex: 1 1 140px"
-          placeholder="o user_id"
-          [ngModel]="newMemberUserId()"
-          (ngModelChange)="newMemberUserId.set($event)"
-        />
-        <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="addEditorMember()">
-          Agregar editor
+        </div>
+      } @else {
+        <button
+          type="button"
+          class="oq-btn oq-btn-primary"
+          [disabled]="ev.estado === 'cerrado' || ev.estado === 'cancelado'"
+          (click)="issueAccessToken()"
+        >
+          Generar acceso
         </button>
-      </div>
-
-      <div class="oq-table-wrap">
-        <table class="oq-table">
-          <thead>
-            <tr>
-              <th>Usuario</th>
-              <th>Rol</th>
-              <th>Acción</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (m of members(); track m.user_id) {
-              <tr>
-                <td>
-                  <div>{{ m.email }}</div>
-                  <div class="oq-hint mono">{{ m.user_id }}</div>
-                </td>
-                <td><span class="oq-badge oq-badge-info">{{ m.rol }}</span></td>
-                <td>
-                  @if (m.rol !== 'owner') {
-                    <button
-                      type="button"
-                      class="oq-btn oq-btn-danger oq-btn-sm"
-                      (click)="removeMember(m.user_id)"
-                    >
-                      Revocar
-                    </button>
-                  } @else {
-                    <span class="oq-hint">Owner</span>
-                  }
-                </td>
-              </tr>
-            } @empty {
-              <tr>
-                <td colspan="3" class="oq-hint">Sin miembros listados.</td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      </div>
+      }
     </section>
 
-    <section class="oq-card">
+    <section class="oq-card" aria-labelledby="edCheckinsTitle">
       <div class="oq-card-header">
-        <h2>Check-ins y Anulación (RF-14)</h2>
+        <h2 id="edCheckinsTitle">Entradas registradas</h2>
         <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadCheckins()">
-          Recargar
+          Actualizar
         </button>
       </div>
-      <div class="oq-table-wrap">
-        <table class="oq-table">
-          <thead>
-            <tr>
-              <th>Check-in</th>
-              <th>Veredicto</th>
-              <th>Anular</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (chk of checkins(); track chk.checkin_id) {
-              <tr>
-                <td>
-                  <div class="mono">{{ chk.checkin_id }}</div>
-                  <div class="oq-hint mono">{{ chk.invitation_id }}</div>
-                </td>
-                <td>
-                  <span class="oq-badge oq-badge-neutral mono">{{ chk.kind }}</span>
-                  <span class="mono">{{ chk.verdict }}</span>
-                </td>
-                <td>
-                  @if (chk.kind === 'admitido') {
-                    <div class="oq-row">
-                      <input
-                        class="oq-input"
-                        style="max-width: 150px"
-                        placeholder="Motivo"
-                        [ngModel]="annulMotivos()[chk.checkin_id] || ''"
-                        (ngModelChange)="setAnnulMotivo(chk.checkin_id, $event)"
-                      />
-                      <button
-                        type="button"
-                        class="oq-btn oq-btn-danger oq-btn-sm"
-                        (click)="annulCheckin(chk.checkin_id)"
-                      >
-                        Anular
-                      </button>
-                    </div>
-                  } @else {
-                    <span class="oq-hint mono">—</span>
-                  }
-                </td>
-              </tr>
-            } @empty {
-              <tr>
-                <td colspan="3" class="oq-hint">Sin check-ins registrados.</td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      </div>
+      @if (checkins().length === 0) {
+        <p class="oq-hint">Todavía no se registran entradas. Aparecerán aquí cuando empiecen a escanear.</p>
+      } @else {
+        <ul class="ed-list" role="list">
+          @for (chk of checkins(); track chk.checkin_id) {
+            <li>
+              <span class="oq-row">
+                <span
+                  class="oq-badge"
+                  [class.oq-badge-success]="chk.kind === 'admitido'"
+                  [class.oq-badge-neutral]="chk.kind !== 'admitido'"
+                >
+                  {{ verdictLabel(chk.kind) }}
+                </span>
+                <span class="oq-hint">{{ formatFecha(chk.scanned_at) }}</span>
+              </span>
+              @if (chk.kind === 'admitido') {
+                @if (annulOpen() === chk.checkin_id) {
+                  <span class="oq-row">
+                    <input
+                      class="oq-input ed-annul-input"
+                      aria-label="Motivo para anular la entrada"
+                      placeholder="Motivo"
+                      [ngModel]="annulMotivos()[chk.checkin_id] || ''"
+                      (ngModelChange)="setAnnulMotivo(chk.checkin_id, $event)"
+                    />
+                    <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="annulCheckin(chk.checkin_id)">
+                      Anular
+                    </button>
+                  </span>
+                } @else {
+                  <button type="button" class="ed-link" (click)="annulOpen.set(chk.checkin_id)">
+                    Anular entrada
+                  </button>
+                }
+              }
+            </li>
+          }
+        </ul>
+      }
     </section>
   </div>
+
+  <details class="ed-more">
+    <summary>Más opciones</summary>
+
+    <div class="ed-grid">
+      <section class="oq-card" aria-labelledby="edEditTitle">
+        <h2 id="edEditTitle">Datos del evento</h2>
+        <form class="oq-form-grid" (ngSubmit)="saveEventEdits()">
+          <div class="oq-field">
+            <label class="oq-label" for="edNom">Nombre</label>
+            <input id="edNom" name="editNombre" class="oq-input" [ngModel]="editNombre()" (ngModelChange)="editNombre.set($event)" />
+          </div>
+          <div class="ed-row">
+            <div class="oq-field">
+              <label class="oq-label" for="edFec">Fecha</label>
+              <input id="edFec" name="editFecha" class="oq-input" type="date" [ngModel]="editFecha()" (ngModelChange)="editFecha.set($event)" />
+            </div>
+            <div class="oq-field">
+              <label class="oq-label" for="edAforo">Aforo</label>
+              <input id="edAforo" name="editAforo" class="oq-input" type="number" min="1" [ngModel]="editAforo()" (ngModelChange)="editAforo.set($event)" />
+            </div>
+          </div>
+          <div class="oq-field">
+            <label class="oq-label" for="edTz">Zona horaria</label>
+            <select id="edTz" name="editTimezone" class="oq-select" [ngModel]="editTimezone()" (ngModelChange)="editTimezone.set($event)">
+              @for (tz of timezoneOptions(); track tz) {
+                <option [value]="tz">{{ label(tz) }}</option>
+              }
+            </select>
+          </div>
+          <button type="submit" class="oq-btn oq-btn-secondary">Guardar cambios</button>
+        </form>
+      </section>
+
+      <section class="oq-card" aria-labelledby="edTeamTitle">
+        <h2 id="edTeamTitle">Quién más puede editar</h2>
+        <p class="oq-hint">Invita a otra planner para que te ayude con este evento.</p>
+        <form class="oq-row ed-invite" (ngSubmit)="addEditorMember()">
+          <label class="oq-sr-only" for="edMember">Correo de la planner</label>
+          <input
+            id="edMember"
+            name="newMemberEmail"
+            class="oq-input"
+            type="email"
+            placeholder="Correo de la planner"
+            [ngModel]="newMemberEmail()"
+            (ngModelChange)="newMemberEmail.set($event)"
+          />
+          <button type="submit" class="oq-btn oq-btn-primary oq-btn-sm">Invitar</button>
+        </form>
+        <ul class="ed-list" role="list">
+          @for (m of members(); track m.user_id) {
+            <li>
+              <span>{{ m.email }}</span>
+              @if (m.rol !== 'owner') {
+                <button type="button" class="ed-link" [attr.aria-label]="'Quitar acceso a ' + m.email" (click)="removeMember(m.user_id)">
+                  Quitar
+                </button>
+              } @else {
+                <span class="oq-hint">Creó el evento</span>
+              }
+            </li>
+          }
+        </ul>
+      </section>
+
+      @if (ev.estado !== 'cerrado' && ev.estado !== 'cancelado') {
+        <section class="oq-card" aria-labelledby="edCancelTitle">
+          <h2 id="edCancelTitle">Cancelar el evento</h2>
+          <p class="oq-hint">Se avisa a los invitados y a los proveedores contratados. No se puede deshacer.</p>
+          <div class="oq-row">
+            <label class="oq-sr-only" for="edCancel">Motivo de cancelación</label>
+            <input
+              id="edCancel"
+              class="oq-input ed-annul-input"
+              placeholder="Motivo de cancelación"
+              [ngModel]="cancelMotivo()"
+              (ngModelChange)="cancelMotivo.set($event)"
+            />
+            <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="transition('cancel')">
+              Cancelar evento
+            </button>
+          </div>
+        </section>
+      }
+    </div>
+  </details>
 }

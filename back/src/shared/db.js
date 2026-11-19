@@ -1,6 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
 import pg from "pg";
-import QRCode from "qrcode";
 import { attachPgStoreMethods } from "./pg-store-methods.js";
 import {
   isValidCategoria,
@@ -31,6 +30,7 @@ import {
   windowsOverlap,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
+import { renderQrPng } from "./qr-png.js";
 import { ulid } from "./ulid.js";
 
 const { Pool } = pg;
@@ -156,6 +156,20 @@ export async function runMigrations(pool, migrationsDir = DEFAULT_MIGRATIONS_DIR
     }
     return { migrated: migrated.length > 0, applied: migrated };
   });
+}
+
+/** Ejecuta `fn` sobre `items` con a lo más `limit` promesas simultáneas, preservando el orden. */
+export async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 function toIso(d) {
@@ -1040,6 +1054,17 @@ export class PgStore {
     };
   }
 
+  /**
+   * Import de invitados (RF-02, NFR FR1: 1 000 en < 30 s; hasta 20 000 filas).
+   *
+   * Diseño para que escale en AWS, donde firmar un QR es una llamada a KMS y subir el PNG un PUT a S3:
+   *   1. Dentro de la tx (bajo lock por evento): clasificar filas, validar aforo, firmar los QR con
+   *      concurrencia acotada e insertar invitados e invitaciones EN LOTE (`unnest`, 2 consultas por
+   *      cada 1 000 filas en lugar de 2 por fila).
+   *   2. Después del COMMIT: generar y subir los PNG en paralelo con reintentos. El PNG es un
+   *      derivado cacheable del token (la invitación también puede dibujar el QR desde el token), así
+   *      que no retiene locks ni bloquea el import.
+   */
   async executeImportBatch({
     importId,
     eventId,
@@ -1048,7 +1073,9 @@ export class PgStore {
     objectStorage,
     assetsBucket = process.env.ASSETS_BUCKET || "orquesta-assets",
   }) {
-    await withTx(this.pool, async (client) => {
+    const concurrency = Number(process.env.IMPORT_SIGN_CONCURRENCY || 16);
+    const createdQrs = [];
+    const outcome = await withTx(this.pool, async (client) => {
       await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 1))`, [eventId]);
       const evRes = await client.query(`SELECT * FROM event WHERE id = $1 FOR UPDATE`, [eventId]);
       if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
@@ -1114,6 +1141,8 @@ export class PgStore {
           linea: r.linea,
           motivo: IMPORT_ROW_ERRORS.AFORO_EXCEDIDO,
         }));
+        // Se CONFIRMA el estado `fallido` (0 invitados creados) y se lanza después del COMMIT;
+        // lanzar aquí haría ROLLBACK del UPDATE y el job quedaría `en_proceso` para siempre.
         await client.query(
           `UPDATE import_job
               SET estado = 'fallido', progreso = 1.0, aceptadas = 0, rechazadas = $2,
@@ -1121,73 +1150,85 @@ export class PgStore {
             WHERE id = $1`,
           [importId, rechazadas + toCreate.length, duplicadas, JSON.stringify([...errores, ...overflow])]
         );
-        throw new AppError("AFORO_EXCEDIDO", "El import excede el aforo del evento");
+        return { aforoExcedido: true };
       }
 
-      const { key_id: activeKeyId } = await qrSigner.getPublicKey();
-      for (const item of toReactivate) {
+      if (toReactivate.length > 0) {
+        const ids = toReactivate.map((r) => r.existingGuest.id);
         await client.query(
-          `UPDATE guest SET deleted_at = NULL, nombre = $2, estado_envio = 'pendiente_envio' WHERE id = $1`,
-          [item.existingGuest.id, item.nombre]
+          `UPDATE guest g SET deleted_at = NULL, nombre = v.nombre, estado_envio = 'pendiente_envio'
+             FROM unnest($1::char(26)[], $2::text[]) AS v(id, nombre)
+            WHERE g.id = v.id`,
+          [ids, toReactivate.map((r) => r.nombre)]
         );
         await client.query(
           `UPDATE invitation SET deleted_at = NULL, rsvp_revocado_en = NULL, checkin_revocado_en = NULL
-            WHERE guest_id = $1`,
-          [item.existingGuest.id]
+            WHERE guest_id = ANY($1::char(26)[])`,
+          [ids]
         );
       }
 
-      for (const item of toCreate) {
+      const { key_id: activeKeyId } = await qrSigner.getPublicKey();
+      const rows = toCreate.map((item) => {
         let code = generateShortCode();
         while (usedShortCodes.has(code)) code = generateShortCode();
         usedShortCodes.add(code);
+        const invId = ulid();
+        return {
+          guestId: ulid(),
+          invId,
+          code,
+          rsvpRaw: generateOpaqueToken("rsvp_", 24),
+          qrS3Key: `qr/${invId}_v1.png`,
+          ...item,
+        };
+      });
+      // Firma con concurrencia acotada: en AWS cada firma es una llamada a KMS (cuota por segundo).
+      const qrTokens = await mapWithConcurrency(rows, concurrency, (r) =>
+        qrSigner.signJws(
+          { typ: "checkin_qr", invitation_id: r.invId, event_id: eventId, token_version: 1, key_id: activeKeyId },
+          activeKeyId
+        )
+      );
 
-        const guestId = ulid();
+      for (let i = 0; i < rows.length; i += 1000) {
+        const chunk = rows.slice(i, i + 1000);
+        const tokens = qrTokens.slice(i, i + 1000);
         await client.query(
           `INSERT INTO guest (id, event_id, nombre, email_cifrado, email_hmac, telefono_cifrado, telefono_hmac, estado_envio)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, 'pendiente_envio')`,
+           SELECT u.id, $1, u.nombre, u.email_cifrado, u.email_hmac, u.telefono_cifrado, u.telefono_hmac, 'pendiente_envio'
+             FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+                  AS u(id, nombre, email_cifrado, email_hmac, telefono_cifrado, telefono_hmac)`,
           [
-            guestId,
             eventId,
-            item.nombre,
-            item.email ? this._enc(item.email) : null,
-            item.email ? this._hmac(item.email) : null,
-            item.telefono ? this._enc(item.telefono) : null,
-            item.telefono ? this._hmac(item.telefono) : null,
+            chunk.map((r) => r.guestId),
+            chunk.map((r) => r.nombre),
+            chunk.map((r) => (r.email ? this._enc(r.email) : null)),
+            chunk.map((r) => (r.email ? this._hmac(r.email) : null)),
+            chunk.map((r) => (r.telefono ? this._enc(r.telefono) : null)),
+            chunk.map((r) => (r.telefono ? this._hmac(r.telefono) : null)),
           ]
         );
-
-        const invId = ulid();
-        const rsvpRaw = generateOpaqueToken("rsvp_", 24);
-        const qrToken = await qrSigner.signJws(
-          { typ: "checkin_qr", invitation_id: invId, event_id: eventId, token_version: 1, key_id: activeKeyId },
-          activeKeyId
-        );
-        const qrPng = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
-        const qrS3Key = `qr/${invId}_v1.png`;
-        await objectStorage.putObject({
-          bucket: assetsBucket,
-          key: qrS3Key,
-          body: qrPng,
-          contentType: "image/png",
-          cacheControl: "public, s-maxage=300, stale-while-revalidate=86400",
-        });
         await client.query(
-          `INSERT INTO invitation (id, event_id, guest_id, rsvp_token_hash, rsvp_token_cifrado, checkin_key_id, token_version, qr_token_cifrado, qr_s3_key, codigo_corto)
-           VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9)`,
+          `INSERT INTO invitation (id, event_id, guest_id, rsvp_token_hash, rsvp_token_cifrado, checkin_key_id,
+                                   token_version, qr_token_cifrado, qr_s3_key, codigo_corto)
+           SELECT u.id, $1, u.guest_id, u.rsvp_hash, u.rsvp_cifrado, $2, 1, u.qr_cifrado, u.qr_key, u.codigo
+             FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+                  AS u(id, guest_id, rsvp_hash, rsvp_cifrado, qr_cifrado, qr_key, codigo)`,
           [
-            invId,
             eventId,
-            guestId,
-            sha256Hex(rsvpRaw),
-            this._enc(rsvpRaw),
             activeKeyId,
-            this._enc(qrToken),
-            qrS3Key,
-            code,
+            chunk.map((r) => r.invId),
+            chunk.map((r) => r.guestId),
+            chunk.map((r) => sha256Hex(r.rsvpRaw)),
+            chunk.map((r) => this._enc(r.rsvpRaw)),
+            tokens.map((t) => this._enc(t)),
+            chunk.map((r) => r.qrS3Key),
+            chunk.map((r) => r.code),
           ]
         );
       }
+      rows.forEach((r, i) => createdQrs.push({ key: r.qrS3Key, token: qrTokens[i] }));
 
       const deltaInvitados = toCreate.length + toReactivate.length;
       if (deltaInvitados > 0) {
@@ -1206,7 +1247,39 @@ export class PgStore {
           WHERE id = $1`,
         [importId, deltaInvitados, rechazadas, duplicadas, JSON.stringify(errores)]
       );
+      return { aforoExcedido: false };
     });
+
+    if (outcome.aforoExcedido) {
+      throw new AppError("AFORO_EXCEDIDO", "El import excede el aforo del evento");
+    }
+
+    // PNG del QR fuera de la transacción, en paralelo y con reintentos (best effort).
+    let pngFallidos = 0;
+    await mapWithConcurrency(createdQrs, concurrency, async ({ key, token }) => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const png = await renderQrPng(token);
+          await objectStorage.putObject({
+            bucket: assetsBucket,
+            key,
+            body: png,
+            contentType: "image/png",
+            cacheControl: "public, s-maxage=300, stale-while-revalidate=86400",
+          });
+          return;
+        } catch (err) {
+          if (attempt === 3) {
+            pngFallidos += 1;
+            console.error(JSON.stringify({ level: "error", msg: "qr_png_upload_failed", key, error: err?.message }));
+          }
+        }
+      }
+    });
+    if (pngFallidos > 0 && this.metrics) {
+      this.metrics.emit("qr_png_upload_failed", pngFallidos, "Count", { EventId: eventId });
+    }
+
     // Lectura después del COMMIT (otra conexión del pool no ve la tx abierta).
     return this.getImportJob({ eventId, importId });
   }
@@ -1342,9 +1415,44 @@ export class PgStore {
       const wpRow = wpRes.rows[0];
       const workerId = wpRow.id;
       try {
+        // Nunca más proveedores que lugares (README FR4). Lock por (evento, rol) ANTES del lock por
+        // trabajador de la función SQL (orden fijo de locks: sin deadlocks). Solo aplica a una
+        // solicitud vigente; los replays y estados terminales los resuelve la función.
+        let plazasEfectivas = plazas;
+        const preRes = await client.query(
+          `SELECT event_id, rol, plazas, estado, expira_en FROM worker_reservation
+            WHERE id = $1 AND worker_id = $2 AND deleted_at IS NULL`,
+          [reservationId, workerId]
+        );
+        const pre = preRes.rows[0];
+        if (pre && pre.estado === "solicitada" && new Date(pre.expira_en) > new Date(now)) {
+          await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 3))`, [
+            pre.event_id,
+            pre.rol,
+          ]);
+          const reqRes = await client.query(
+            `SELECT er.cantidad,
+                    COALESCE((SELECT sum(wr.plazas) FROM worker_reservation wr
+                               WHERE wr.event_id = er.event_id AND wr.rol = er.rol AND wr.deleted_at IS NULL
+                                 AND wr.estado IN ('aceptada','completada')), 0)::integer AS cubiertos
+               FROM event_requirement er
+              WHERE er.event_id = $1 AND er.rol = $2 AND er.deleted_at IS NULL`,
+            [pre.event_id, pre.rol]
+          );
+          if (reqRes.rowCount > 0) {
+            const restantes = reqRes.rows[0].cantidad - reqRes.rows[0].cubiertos;
+            if (restantes <= 0) {
+              throw new AppError("REQUERIMIENTO_CUBIERTO", "El requerimiento de este rol ya está cubierto", {
+                rol: pre.rol,
+                event_id: pre.event_id,
+              });
+            }
+            plazasEfectivas = Math.min(plazas ?? pre.plazas, restantes);
+          }
+        }
         const res = await client.query(
           `SELECT * FROM aceptar_worker_reservation($1, $2, $3, $4)`,
-          [reservationId, workerId, plazas, toIso(now)]
+          [reservationId, workerId, plazasEfectivas, toIso(now)]
         );
         const row = res.rows[0];
 

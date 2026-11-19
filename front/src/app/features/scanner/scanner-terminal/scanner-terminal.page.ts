@@ -11,6 +11,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
+import jsQR from 'jsqr';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import {
@@ -26,9 +27,35 @@ import { ConnectivityService } from '../../../core/connectivity/connectivity.ser
 import { QrEvaluationResult, QrVerifierService } from '../../../core/crypto/qr-verifier.service';
 import { ScanStorageService, StoredRosterGuest } from '../../../core/storage/scan-storage.service';
 import { BatchSyncService } from '../../../core/sync/batch-sync.service';
+import { formatFecha, humanize } from '../../../shared/labels';
 
 interface BarcodeDetectorLike {
   detect(source: HTMLVideoElement): Promise<Array<{ rawValue?: string }>>;
+}
+
+export async function decodeVideoFrame(
+  videoEl: HTMLVideoElement,
+  detector: BarcodeDetectorLike | null,
+  canvasCtx: CanvasRenderingContext2D | null,
+  canvasEl: HTMLCanvasElement | null,
+): Promise<string | null> {
+  if (detector) {
+    const codes = await detector.detect(videoEl);
+    return codes[0]?.rawValue?.trim() || null;
+  }
+  if (!canvasCtx || !canvasEl) {
+    return null;
+  }
+  const width = videoEl.videoWidth || 640;
+  const height = videoEl.videoHeight || 480;
+  if (canvasEl.width !== width) canvasEl.width = width;
+  if (canvasEl.height !== height) canvasEl.height = height;
+  canvasCtx.drawImage(videoEl, 0, 0, width, height);
+  const imageData = canvasCtx.getImageData(0, 0, width, height);
+  const result = jsQR(imageData.data, imageData.width, imageData.height, {
+    inversionAttempts: 'dontInvert',
+  });
+  return result?.data?.trim() || null;
 }
 
 declare global {
@@ -64,6 +91,8 @@ export class ScannerTerminalPage implements OnInit {
   private readonly verifier = inject(QrVerifierService);
   readonly sync = inject(BatchSyncService);
   readonly connectivity = inject(ConnectivityService);
+  readonly label = humanize;
+  readonly formatFecha = formatFecha;
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -84,7 +113,10 @@ export class ScannerTerminalPage implements OnInit {
   readonly bannerInfo = signal<string | null>(null);
 
   readonly cameraSupported = signal<boolean>(
-    typeof window !== 'undefined' && typeof window.BarcodeDetector === 'function',
+    typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia),
+  );
+  readonly usingCanvasFallback = signal<boolean>(
+    typeof window !== 'undefined' && typeof window.BarcodeDetector !== 'function',
   );
   readonly cameraActive = signal<boolean>(false);
   readonly cameraError = signal<string | null>(null);
@@ -147,13 +179,7 @@ export class ScannerTerminalPage implements OnInit {
     this.cameraError.set(null);
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      this.cameraError.set('El navegador no permite acceso a la cámara. Usa el fallback manual o pega el token.');
-      return;
-    }
-    if (typeof window === 'undefined' || !window.BarcodeDetector) {
-      this.cameraError.set(
-        'BarcodeDetector nativo no disponible en este navegador. Usa el campo de token directo o la búsqueda manual por 6 dígitos.',
-      );
+      this.cameraError.set('Este navegador no permite usar la cámara. Busca al invitado por nombre o código.');
       return;
     }
 
@@ -173,7 +199,7 @@ export class ScannerTerminalPage implements OnInit {
         }
       }, 50);
     } catch {
-      this.cameraError.set('Permiso de cámara denegado o sin cámara disponible. Usa el fallback manual.');
+      this.cameraError.set('No hay permiso para usar la cámara. Actívalo en el navegador o busca al invitado por nombre.');
       this.stopCamera();
     }
   }
@@ -193,15 +219,16 @@ export class ScannerTerminalPage implements OnInit {
   }
 
   private startBarcodeLoop(videoEl: HTMLVideoElement): void {
-    const DetectorCtor = window.BarcodeDetector;
-    if (!DetectorCtor) return;
-    const detector = new DetectorCtor({ formats: ['qr_code'] });
+    const DetectorCtor = typeof window !== 'undefined' ? window.BarcodeDetector : undefined;
+    const detector = DetectorCtor ? new DetectorCtor({ formats: ['qr_code'] }) : null;
+    const canvasEl = detector || typeof document === 'undefined' ? null : document.createElement('canvas');
+    const canvasCtx = canvasEl ? canvasEl.getContext('2d', { willReadFrequently: true }) : null;
+    this.usingCanvasFallback.set(!detector);
 
     this.scanLoopTimer = setInterval(async () => {
       if (videoEl.readyState < 2) return;
       try {
-        const codes = await detector.detect(videoEl);
-        const raw = codes[0]?.rawValue?.trim();
+        const raw = await decodeVideoFrame(videoEl, detector, canvasCtx, canvasEl);
         if (!raw) return;
 
         const now = Date.now();
@@ -227,7 +254,7 @@ export class ScannerTerminalPage implements OnInit {
   async processQrToken(rawToken: string): Promise<void> {
     const ses = this.session();
     if (!ses || !ses.key_publica_pem) {
-      this.bannerError.set('Falta la sesión o clave pública del roster. Refresca la sesión.');
+      this.bannerError.set('Falta descargar la lista del evento. Toca "Actualizar lista de invitados".');
       return;
     }
     this.bannerError.set(null);
@@ -245,7 +272,7 @@ export class ScannerTerminalPage implements OnInit {
     if (!evaluation.validSignature || !evaluation.verdict || !evaluation.invitationId) {
       this.lastVerdict.set({
         verdict: 'error',
-        title: evaluation.errorCode === 'TOKEN_TIPO_INCORRECTO' ? 'Token incorrecto (RSVP)' : 'QR inválido',
+        title: evaluation.errorCode === 'TOKEN_TIPO_INCORRECTO' ? 'Este no es el pase de entrada' : 'QR no válido',
         subtitle: evaluation.message,
         tone: 'danger',
         durationMs: evaluation.durationMs,
@@ -256,7 +283,7 @@ export class ScannerTerminalPage implements OnInit {
     if (evaluation.verdict === 'no_en_roster' && evaluation.requiresConditionalConfirm) {
       this.lastVerdict.set({
         verdict: 'no_en_roster',
-        title: 'No está en el roster local (no_en_roster)',
+        title: 'No está en la lista',
         subtitle: evaluation.message,
         tone: 'warning',
         durationMs: evaluation.durationMs,
@@ -301,7 +328,7 @@ export class ScannerTerminalPage implements OnInit {
       this.serverSearchResults.set(res.items);
     } catch (err) {
       this.bannerError.set(
-        err instanceof OrquestaApiError ? err.message : 'No se pudo consultar en servidor.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos buscar en línea.',
       );
     }
   }
@@ -353,7 +380,10 @@ export class ScannerTerminalPage implements OnInit {
     this.recentLocalQueue.set(await this.storage.getRecentOutboundEvents(40));
     if (ack) {
       this.bannerInfo.set(
-        `Sincronizado lote ${ack.batch_id}: ${ack.contadores.aceptados} aceptados, ${ack.contadores.duplicados} duplicados, ${ack.contadores.tardios} tardíos.`,
+        `Listo: se enviaron ${ack.contadores.aceptados} entradas` +
+          (ack.contadores.duplicados ? `, ${ack.contadores.duplicados} repetidas` : '') +
+          (ack.contadores.tardios ? `, ${ack.contadores.tardios} tardías` : '') +
+          '.',
       );
       if (this.connectivity.isOnline()) {
         void this.loadServerCheckins();
@@ -371,16 +401,16 @@ export class ScannerTerminalPage implements OnInit {
       await this.runManualSearch(this.manualQuery());
       this.bannerInfo.set(
         res.rosterUpdated
-          ? `Roster actualizado y verificado (${this.rosterCount()} invitados, ${res.revocationsCount} revocaciones).`
-          : `Roster sin cambios (304). Lista de revocación renovada por 2 h (${res.revocationsCount} revocadas).`,
+          ? `Lista actualizada: ${this.rosterCount()} invitados y ${res.revocationsCount} invitaciones canceladas.`
+          : `La lista ya estaba al día (${res.revocationsCount} invitaciones canceladas).`,
       );
     } catch (err) {
       this.bannerError.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : err instanceof Error
             ? err.message
-            : 'No se pudo refrescar el roster.',
+            : 'No pudimos actualizar la lista.',
       );
     }
   }
@@ -410,7 +440,7 @@ export class ScannerTerminalPage implements OnInit {
     const ses = this.session();
     const motivo = (this.annulMotivoMap()[checkinId] ?? '').trim();
     if (!ses || !motivo) {
-      this.bannerError.set('Ingresa un motivo obligatorio para anular el check-in (RF-14).');
+      this.bannerError.set('Escribe el motivo para anular la entrada.');
       return;
     }
 
@@ -426,12 +456,12 @@ export class ScannerTerminalPage implements OnInit {
         await this.storage.removeLocalAdmission(target.invitation_id);
         this.localAdmissionsSet.delete(target.invitation_id);
       }
-      this.bannerInfo.set(`Check-in ${checkinId} anulado con registro compensatorio (RF-14).`);
+      this.bannerInfo.set('Entrada anulada.');
       await this.loadServerCheckins();
     } catch (err) {
       this.bannerError.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo anular el check-in.',
       );
     }
@@ -445,16 +475,16 @@ export class ScannerTerminalPage implements OnInit {
 
 function mapVerdictDisplay(evalRes: QrEvaluationResult, sequence: number): VerdictDisplayState {
   const titles: Record<CheckinVerdict, { title: string; tone: 'success' | 'warning' | 'danger' }> = {
-    admitido: { title: 'Admitido', tone: 'success' },
-    ya_registrado: { title: 'Ya registrado', tone: 'warning' },
-    no_corresponde_al_evento: { title: 'No corresponde al evento', tone: 'danger' },
-    invitacion_revocada: { title: 'Invitación revocada', tone: 'danger' },
+    admitido: { title: 'Puede pasar', tone: 'success' },
+    ya_registrado: { title: 'Ya entró antes', tone: 'warning' },
+    no_corresponde_al_evento: { title: 'Es de otro evento', tone: 'danger' },
+    invitacion_revocada: { title: 'Invitación cancelada', tone: 'danger' },
     no_verificable_offline: {
-      title: 'Admitido condicional (revocación > 2 h)',
+      title: 'Puede pasar (se revisará después)',
       tone: 'warning',
     },
     no_en_roster: {
-      title: 'Admitido condicional (no_en_roster)',
+      title: 'Puede pasar (no estaba en la lista)',
       tone: 'warning',
     },
   };

@@ -14,3 +14,27 @@
 .setup-event-input {
   flex: 1 1 220px;
 }
+
+.setup-steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+
+  li::marker {
+    color: var(--oq-olive);
+    font-family: var(--oq-font-display);
+  }
+}
+
+.setup-code {
+  margin-top: 1.25rem;
+
+  summary {
+    cursor: pointer;
+    padding: 0.5rem 0;
+    margin-bottom: 0.75rem;
+    color: var(--oq-olive);
+    text-decoration: underline;
+  }
+}

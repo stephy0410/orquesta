@@ -4,28 +4,30 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { WorkerTipo } from '../../../core/api/models';
+import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
   selector: 'app-worker-register-page',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink],
+  imports: [CommonModule, FormsModule, RouterLink, TablescapeArtComponent],
   template: `
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
     <header class="oq-topbar">
       <div class="oq-topbar-inner">
         <a class="oq-brand" routerLink="/">
-          <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-          <span>Orquesta · Trabajador</span>
+          Orquesta <small>para proveedores</small>
         </a>
-        <div class="oq-nav-links">
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
           <a class="oq-nav-link" routerLink="/worker/login">Iniciar sesión</a>
-        </div>
+        </nav>
       </div>
     </header>
 
-    <main class="oq-container-narrow">
+    <main id="contenido" class="oq-auth" tabindex="-1">
+      <div class="oq-auth-form">
       <section class="oq-card">
-        <h1>Registro de Trabajador (RF-19)</h1>
+        <h1>Registra tu perfil de proveedor</h1>
         <p class="oq-page-subtitle">
           Crea tu cuenta como persona independiente o empresa con cuadrilla (1–50 plazas).
         </p>
@@ -82,6 +84,9 @@ import { AuthService } from '../../../core/auth/auth.service';
           <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
             {{ loading() ? 'Registrando...' : 'Crear cuenta de trabajador' }}
           </button>
+          <p class="oq-hint">
+            Al registrarte aceptas el <a routerLink="/privacidad">Aviso de privacidad</a>.
+          </p>
         </form>
 
         <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />
@@ -92,7 +97,9 @@ import { AuthService } from '../../../core/auth/auth.service';
             name="verifyToken"
             class="oq-input mono"
             style="flex: 1 1 220px"
-            placeholder="Token de verificación recibido por email"
+            aria-label="Código de verificación"
+            autocomplete="one-time-code"
+            placeholder="Código que te enviamos por correo"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
@@ -105,6 +112,11 @@ import { AuthService } from '../../../core/auth/auth.service';
           ¿Ya verificaste tu correo? <a routerLink="/worker/login">Ir al login</a>
         </p>
       </section>
+      </div>
+      <aside class="oq-auth-art" aria-hidden="true">
+        <app-tablescape-art stroke="#f5f2e8" fill="#56602a" />
+        <blockquote>Que las planners te encuentren cuando más te necesitan.</blockquote>
+      </aside>
     </main>
   `,
 })
@@ -127,11 +139,11 @@ export class WorkerRegisterPage {
     try {
       const res = await this.auth.registerWorker(this.email().trim(), this.password(), this.tipo());
       this.success.set(
-        `Cuenta creada (${res.user_id}). Estado email: ${res.estado_email}. Verifica tu correo para iniciar sesión.`,
+        'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al registrar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
       );
     } finally {
       this.loading.set(false);
@@ -146,10 +158,10 @@ export class WorkerRegisterPage {
     this.success.set(null);
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Correo verificado correctamente. Ya puedes iniciar sesión.');
+      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     } finally {
       this.loading.set(false);

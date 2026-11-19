@@ -3,6 +3,7 @@ import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { humanize } from '../../../shared/labels';
 import {
   COMMON_LANGUAGES,
   SERVICES_BY_CATEGORY,
@@ -35,6 +36,7 @@ export class WorkerProfilePage implements OnInit {
   readonly error = signal<string | null>(null);
   readonly success = signal<string | null>(null);
 
+  readonly label = humanize;
   readonly estado = signal<WorkerProfileEstado>('borrador');
   readonly eventosCompletados = signal<number>(0);
   readonly emailVerified = signal(false);
@@ -97,7 +99,7 @@ export class WorkerProfilePage implements OnInit {
         this.hasExistingProfile.set(false);
       } else {
         this.error.set(
-          err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando perfil.',
+          err instanceof OrquestaApiError ? err.message : 'Error cargando perfil.',
         );
       }
     } finally {
@@ -200,19 +202,19 @@ export class WorkerProfilePage implements OnInit {
       if (this.hasExistingProfile()) {
         const res = await this.api.patch<{ perfil: WorkerProfileDto }>('/v1/worker/profile', payload);
         if (res.perfil) this.applyProfile(res.perfil);
-        this.success.set('Perfil actualizado correctamente.');
+        this.success.set('Cambios guardados.');
       } else {
         await this.api.post<{ worker_id: string; estado: WorkerProfileEstado }>(
           '/v1/worker/profile',
           payload,
         );
         this.hasExistingProfile.set(true);
-        this.success.set('Perfil creado en borrador. Completa la verificación OTP para publicar.');
+        this.success.set('Perfil creado. Verifica tu correo y tu teléfono para poder publicarlo.');
         await this.loadProfile();
       }
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error guardando perfil.',
+        err instanceof OrquestaApiError ? err.message : 'Error guardando perfil.',
       );
     } finally {
       this.saving.set(false);
@@ -229,15 +231,15 @@ export class WorkerProfilePage implements OnInit {
       );
       if (canal === 'email') {
         this.emailDesafioId.set(res.desafio_id);
-        this.success.set(`Código enviado por email (desafío ${res.desafio_id}).`);
+        this.success.set('Te enviamos un código a tu correo.');
       } else {
         this.phoneDesafioId.set(res.desafio_id);
-        this.success.set(`OTP enviado por SMS (desafío ${res.desafio_id}).`);
+        this.success.set('Te enviamos un código por SMS.');
       }
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo iniciar la verificación.',
       );
     }
@@ -265,11 +267,12 @@ export class WorkerProfilePage implements OnInit {
         this.phoneOtp.set('');
       }
       this.success.set(
-        `Canal ${canal} verificado. Visible en búsqueda: ${res.visible_en_busqueda ? 'Sí' : 'Falta publicar/verificar otro canal'}.`,
+        (canal === 'email' ? 'Correo verificado.' : 'Teléfono verificado.') +
+          (res.visible_en_busqueda ? ' Ya apareces en las búsquedas.' : ''),
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Código OTP inválido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     }
   }
@@ -283,11 +286,11 @@ export class WorkerProfilePage implements OnInit {
         {},
       );
       this.estado.set(res.estado);
-      this.success.set('Perfil publicado. Ya eres visible para contratación cuando tengas ventanas declaradas.');
+      this.success.set('Perfil publicado. Las planners te verán en los horarios que marques como disponibles.');
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo publicar el perfil.',
       );
     }
@@ -302,10 +305,10 @@ export class WorkerProfilePage implements OnInit {
         {},
       );
       this.estado.set(res.estado);
-      this.success.set('Perfil suspendido. Dejó de aparecer en búsquedas.');
+      this.success.set('Perfil pausado. Ya no apareces en las búsquedas.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al suspender.',
+        err instanceof OrquestaApiError ? err.message : 'Error al suspender.',
       );
     }
   }

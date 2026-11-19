@@ -1,0 +1,147 @@
+/* Siguiente paso: una sola acción clara según el estado del evento */
+.ed-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+  padding: 1.5rem 1.75rem;
+  margin-bottom: 1.25rem;
+  border-radius: var(--oq-radius-md);
+  background: var(--oq-olive);
+  color: var(--oq-bg);
+
+  h2 {
+    color: var(--oq-bg);
+    font-size: 1.5rem;
+    margin: 0 0 0.25rem;
+  }
+
+  p {
+    margin: 0;
+    max-width: 60ch;
+    color: rgba(245, 242, 232, 0.88);
+  }
+
+  .oq-btn {
+    background: var(--oq-bg);
+    color: var(--oq-olive-deep);
+  }
+
+  .oq-btn:hover {
+    background: var(--oq-sage-soft);
+  }
+}
+
+.ed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.ed-share {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+
+.ed-qr {
+  flex: none;
+  border: 1px solid var(--oq-border);
+  border-radius: var(--oq-radius-sm);
+  background: #ffffff;
+  padding: 0.4rem;
+}
+
+.ed-share-body {
+  flex: 1 1 200px;
+  display: grid;
+  gap: 0.75rem;
+
+  .oq-hint {
+    margin: 0;
+  }
+}
+
+.ed-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ed-open {
+  font-size: 0.88rem;
+}
+
+.ed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem 0;
+    border-top: 1px solid var(--oq-border);
+  }
+
+  li:first-child {
+    border-top: none;
+  }
+}
+
+.ed-link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--oq-olive);
+  font: inherit;
+  font-size: 0.88rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ed-annul-input {
+  flex: 1 1 160px;
+  width: auto;
+}
+
+.ed-invite {
+  margin-bottom: 0.75rem;
+
+  .oq-input {
+    flex: 1 1 200px;
+    width: auto;
+  }
+}
+
+.ed-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ed-more {
+  margin-top: 2rem;
+
+  summary {
+    cursor: pointer;
+    padding: 0.75rem 0;
+    margin-bottom: 1rem;
+    border-top: 1px solid var(--oq-border);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--oq-ink-muted);
+  }
+
+  summary:hover {
+    color: var(--oq-ink);
+  }
+}

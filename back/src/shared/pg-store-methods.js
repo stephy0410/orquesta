@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import {
   isValidCategoria,
   isValidIanaTimezone,
@@ -24,6 +23,7 @@ import {
   windowsOverlap,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
+import { renderQrPng } from "./qr-png.js";
 import { ulid } from "./ulid.js";
 
 function toIso(d) {
@@ -267,7 +267,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         keyId
       );
       const qrS3Key = `qr/${inv.id}_v${newVersion}.png`;
-      const pngBuf = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+      const pngBuf = await renderQrPng(qrToken);
       await objectStorage.putObject({
         bucket: assetsBucket,
         key: qrS3Key,
@@ -360,6 +360,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       for (const g of gRes.rows) {
         await client.query(`UPDATE guest SET estado_envio = 'enviado' WHERE id = $1`, [g.id]);
         for (const canal of canalesActivos) {
+          if (g[`baja_${canal}_en`]) continue; // baja del invitado en este canal (FR8)
           const addr =
             canal === "sms"
               ? g.telefono_cifrado
@@ -449,6 +450,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       let entregasEncoladas = 0;
       for (const g of gRes.rows) {
         for (const ch of selectedChannels) {
+          if (g[`baja_${ch}_en`]) continue; // baja del invitado en este canal (FR8)
           const addr =
             ch === "sms"
               ? g.telefono_cifrado
@@ -517,6 +519,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     const res = await this.pool.query(
       `SELECT d.*, i.guest_id, i.rsvp_revocado_en, i.rsvp_token_cifrado, i.qr_token_cifrado, i.qr_s3_key, i.codigo_corto,
               g.nombre AS guest_nombre, g.deleted_at AS guest_deleted_at,
+              g.baja_sms_en AS guest_baja_sms_en, g.baja_email_en AS guest_baja_email_en,
               e.nombre AS event_nombre,
               rj.estado AS reminder_estado, rj.pii_anonimizada_en AS reminder_anon
          FROM invitation_delivery d
@@ -544,7 +547,15 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
             qr_token_plano: r.qr_token_cifrado ? this._dec(r.qr_token_cifrado) : null,
           }
         : null,
-      guest: r.guest_id ? { id: r.guest_id, nombre: r.guest_nombre, deleted_at: r.guest_deleted_at } : null,
+      guest: r.guest_id
+        ? {
+            id: r.guest_id,
+            nombre: r.guest_nombre,
+            deleted_at: r.guest_deleted_at,
+            baja_sms_en: r.guest_baja_sms_en,
+            baja_email_en: r.guest_baja_email_en,
+          }
+        : null,
       event: { id: r.event_id, nombre: r.event_nombre },
       reminderJob: r.reminder_job_id ? { id: r.reminder_job_id, estado: r.reminder_estado, pii_anonimizada_en: r.reminder_anon } : null,
     };
@@ -626,7 +637,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse para RSVP");
     }
     const res = await this.pool.query(
-      `SELECT i.*, g.deleted_at AS guest_deleted_at,
+      `SELECT i.*, g.deleted_at AS guest_deleted_at, g.baja_sms_en, g.baja_email_en,
               e.nombre AS event_nombre, e.fecha, e.ventana_inicio, e.ventana_fin, e.timezone,
               v.nombre AS venue_nombre, v.direccion AS venue_direccion,
               r.respuesta, r.respondido_en
@@ -663,7 +674,44 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
         lugar: row.venue_nombre,
         direccion: row.venue_direccion,
       },
+      bajas: { sms: Boolean(row.baja_sms_en), email: Boolean(row.baja_email_en) },
     };
+  };
+
+  /**
+   * Baja del invitado por canal (README FR8), con el token de su invitación y sin cuenta.
+   * Idempotente: repetirla conserva la fecha original. Cancela los recordatorios pendientes del canal.
+   */
+  proto.unsubscribeGuest = async function ({ rawToken, canal, now = new Date() }) {
+    if (!["sms", "email", "ambos"].includes(canal)) throw validationError("canal debe ser sms, email o ambos", "canal");
+    if (typeof rawToken !== "string" || rawToken.split(".").length === 3) {
+      throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse aquí");
+    }
+    const canales = canal === "ambos" ? ["sms", "email"] : [canal];
+    const nowIso = toIso(now);
+    return withTx(this.pool, async (client) => {
+      const res = await client.query(
+        `SELECT g.id, g.event_id FROM invitation i JOIN guest g ON g.id = i.guest_id
+          WHERE i.rsvp_token_hash = $1 AND i.pii_anonimizada_en IS NULL FOR UPDATE OF g`,
+        [sha256Hex(rawToken)]
+      );
+      if (res.rowCount === 0) throw new AppError("TOKEN_INVALIDO", "Invitación no encontrada");
+      const g = res.rows[0];
+      const upd = await client.query(
+        `UPDATE guest
+            SET baja_sms_en = CASE WHEN $2 THEN COALESCE(baja_sms_en, $4) ELSE baja_sms_en END,
+                baja_email_en = CASE WHEN $3 THEN COALESCE(baja_email_en, $4) ELSE baja_email_en END
+          WHERE id = $1
+          RETURNING baja_sms_en, baja_email_en`,
+        [g.id, canales.includes("sms"), canales.includes("email"), nowIso]
+      );
+      await client.query(
+        `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'invitado_de_baja'
+          WHERE guest_id = $1 AND estado = 'programado' AND canal = ANY($2::text[])`,
+        [g.id, canales]
+      );
+      return { bajas: { sms: Boolean(upd.rows[0].baja_sms_en), email: Boolean(upd.rows[0].baja_email_en) } };
+    });
   };
 
   proto.submitPublicRsvp = async function ({ rawToken, respuesta, objectStorage, now = new Date() }) {
@@ -1170,7 +1218,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       for (const job of jobsRes.rows) {
         if (job.plantilla === "recordatorio_rsvp") {
           const gRes = await client.query(
-            `SELECT g.id, g.deleted_at, g.email_cifrado, g.telefono_cifrado,
+            `SELECT g.id, g.deleted_at, g.email_cifrado, g.telefono_cifrado, g.baja_sms_en, g.baja_email_en,
                     i.id AS invitation_id, i.deleted_at AS inv_deleted_at, i.rsvp_revocado_en
                FROM guest g
                LEFT JOIN invitation i ON i.guest_id = g.id
@@ -1200,6 +1248,14 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           if (rsvpRes.rowCount > 0) {
             await client.query(
               `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'rsvp_registrado' WHERE id = $1`,
+              [job.id]
+            );
+            cancelled += 1;
+            continue;
+          }
+          if (g[`baja_${job.canal}_en`]) {
+            await client.query(
+              `UPDATE reminder_job SET estado = 'cancelado', motivo_cancelacion = 'invitado_de_baja' WHERE id = $1`,
               [job.id]
             );
             cancelled += 1;
@@ -1370,6 +1426,45 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       return { transitioned };
     });
   };
+  /**
+   * README (LFPDPPP): los teléfonos de los invitados se borran 90 días después del evento
+   * (`ventana_fin`). También las direcciones SMS de entregas y recordatorios. Si el teléfono era la
+   * única clave de contacto, el invitado queda anonimizado (lo exige el CHECK de `guest`).
+   */
+  proto.sweepGuestPhones = async function ({ now = new Date() }) {
+    const cutoff = new Date(new Date(now).getTime() - 90 * 86400_000).toISOString();
+    const nowIso = toIso(now);
+    return withTx(this.pool, async (client) => {
+      const g = await client.query(
+        `UPDATE guest g
+            SET telefono_cifrado = NULL, telefono_hmac = NULL, telefono_e164 = NULL,
+                pii_anonimizada_en = CASE
+                  WHEN g.email_cifrado IS NULL AND g.email_normalizado IS NULL THEN COALESCE(g.pii_anonimizada_en, $2)
+                  ELSE g.pii_anonimizada_en END
+           FROM event e
+          WHERE e.id = g.event_id AND e.ventana_fin <= $1
+            AND (g.telefono_cifrado IS NOT NULL OR g.telefono_e164 IS NOT NULL)`,
+        [cutoff, nowIso]
+      );
+      await client.query(
+        `UPDATE invitation_delivery d
+            SET direccion_cifrada = NULL, pii_anonimizada_en = COALESCE(d.pii_anonimizada_en, $2)
+           FROM event e
+          WHERE e.id = d.event_id AND e.ventana_fin <= $1 AND d.canal = 'sms' AND d.direccion_cifrada IS NOT NULL`,
+        [cutoff, nowIso]
+      );
+      await client.query(
+        `UPDATE reminder_job j
+            SET direccion_cifrada = NULL
+           FROM event e
+          WHERE e.id = j.event_id AND e.ventana_fin <= $1 AND j.guest_id IS NOT NULL
+            AND j.canal = 'sms' AND j.direccion_cifrada IS NOT NULL`,
+        [cutoff]
+      );
+      return { telefonos_borrados: g.rowCount };
+    });
+  };
+
   proto.sweepRetention = async function ({ now = new Date() }) {
     const nowDate = new Date(now);
     const c12 = new Date(nowDate);
@@ -1626,6 +1721,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     ventana,
     horaLlegada,
     modoEmergencia = false,
+    canalesActivos = ["sms", "email"],
     now = new Date(),
   }) {
     return withTx(this.pool, async (client) => {
@@ -1673,6 +1769,34 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           new Date(now).toISOString(),
         ]
       );
+      // Aviso al proveedor por SMS y email en paralelo (RF-17, D11). Va por el outbox en la misma
+      // transacción para no perderse si SNS falla; el flush inmediato lo entrega en segundos, que
+      // es lo que cumple "en emergencias la solicitud llega en < 60 s". La dirección viaja cifrada
+      // (NFR-07): el outbox es persistente y no debe guardar PII en claro.
+      const uRes = await client.query(`SELECT email_cifrado FROM "user" WHERE id = $1`, [wp.user_id]);
+      for (const canal of canalesActivos) {
+        const toCifrado = canal === "sms" ? wp.telefono_cifrado : uRes.rows[0]?.email_cifrado;
+        if (!toCifrado) continue;
+        await this._insertOutbox(client, {
+          eventId,
+          topic: "notifications",
+          eventType: "worker_request_created",
+          canal,
+          payload: {
+            reservation_id: id,
+            worker_id: workerId,
+            event_id: eventId,
+            canal,
+            to_cifrado: toCifrado,
+            rol,
+            inicio: ventana.inicio,
+            fin: ventana.fin,
+            modo_emergencia: modoEmergencia,
+            expira_en: expiraEn,
+          },
+          tIngest: new Date(now).toISOString(),
+        });
+      }
       return {
         id,
         reservation_id: id,
@@ -1828,7 +1952,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     });
   };
 
-  proto.replaceEventReservation = async function ({ eventId, reservationId, workerId = null, now = new Date() }) {
+  proto.replaceEventReservation = async function ({ eventId, reservationId, workerId = null, canalesActivos = ["sms", "email"], now = new Date() }) {
     const fRes = await this.pool.query(
       `SELECT * FROM worker_reservation WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL`,
       [reservationId, eventId]
@@ -1883,6 +2007,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       ventana: { inicio: toIso(fallen.inicio), fin: toIso(fallen.fin) },
       horaLlegada: toIso(fallen.hora_llegada),
       modoEmergencia: true,
+      canalesActivos,
       now,
     });
     return { isSinCubrir: false, body: { ...created, sla_respuesta: "PT15M" } };
@@ -2167,6 +2292,39 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       let asistentesDelta = 0;
       let maxSeq = 0;
 
+      // Lecturas del lote en 3 consultas (antes eran 3 por escaneo): replays por
+      // (invitación, dispositivo, secuencia), invitación + invitado y ciclo de admisión vigente.
+      // Dentro del lote las secuencias son únicas y la ingesta no crea anulaciones, así que estos
+      // mapas no cambian mientras se procesa el lote.
+      const invIds = [...new Set(batch.events.map((e) => e.invitation_id))];
+      const [prevRes, invsRes, cyclesRes] = await Promise.all([
+        client.query(
+          // Arrays tipados como char(26) (el tipo de las columnas): con text[] PostgreSQL convierte la
+          // columna a text y ya no puede usar el índice uq_checkin_idempotency → seq scan.
+          `SELECT c.*
+             FROM unnest($2::char(26)[], $3::bigint[]) AS u(invitation_id, sequence)
+             JOIN checkin_event c
+               ON c.invitation_id = u.invitation_id AND c.device_id = $1 AND c.sequence = u.sequence`,
+          [batch.device_id, batch.events.map((e) => e.invitation_id), batch.events.map((e) => Number(e.sequence))]
+        ),
+        client.query(
+          `SELECT i.id, i.event_id, i.checkin_revocado_en, i.deleted_at, g.deleted_at AS guest_deleted_at
+             FROM invitation i JOIN guest g ON g.id = i.guest_id
+            WHERE i.id = ANY($1::char(26)[])`,
+          [invIds]
+        ),
+        client.query(
+          `SELECT invitation_id, count(*)::integer + 1 AS cycle
+             FROM checkin_event WHERE invitation_id = ANY($1::char(26)[]) AND kind = 'anulacion'
+            GROUP BY invitation_id`,
+          [invIds]
+        ),
+      ]);
+      const prevBySeq = new Map(prevRes.rows.map((r) => [`${r.invitation_id}|${r.sequence}`, r]));
+      const invById = new Map(invsRes.rows.map((r) => [r.id.trim(), r]));
+      const cycleByInv = new Map(cyclesRes.rows.map((r) => [r.invitation_id.trim(), r.cycle]));
+      const cycleOf = (invitationId) => cycleByInv.get(invitationId) || 1;
+
       for (const item of batch.events) {
         const seq = Number(item.sequence);
         if (seq > maxSeq) maxSeq = seq;
@@ -2185,13 +2343,10 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           continue;
         }
         const tardio = isClosed;
-        const existingSeq = await client.query(
-          `SELECT * FROM checkin_event WHERE invitation_id = $1 AND device_id = $2 AND sequence = $3`,
-          [item.invitation_id, batch.device_id, seq]
-        );
-        if (existingSeq.rowCount > 0) {
+        const prev = prevBySeq.get(`${item.invitation_id}|${seq}`);
+        if (prev) {
           // Replay del mismo (invitation, device, sequence): conserva el veredicto original (AC-03).
-          const e = existingSeq.rows[0];
+          const e = prev;
           results.push({
             sequence: seq,
             invitation_id: item.invitation_id,
@@ -2205,23 +2360,14 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           });
           continue;
         }
-        const invRes = await client.query(
-          `SELECT i.id, i.event_id, i.checkin_revocado_en, i.deleted_at, g.deleted_at AS guest_deleted_at
-             FROM invitation i JOIN guest g ON g.id = i.guest_id
-            WHERE i.id = $1`,
-          [item.invitation_id]
-        );
-        if (invRes.rowCount === 0 || invRes.rows[0].event_id !== ev.id || invRes.rows[0].deleted_at) {
+        const invRow = invById.get(item.invitation_id);
+        if (!invRow || invRow.event_id.trim() !== String(ev.id).trim() || invRow.deleted_at) {
           rechazados += 1;
           results.push({ sequence: seq, invitation_id: item.invitation_id, verdict: "no_corresponde_al_evento", tardio: false, duplicado: false });
           continue;
         }
-        const invRow = invRes.rows[0];
         if (invRow.checkin_revocado_en || invRow.guest_deleted_at) {
-          const cycRev = await client.query(
-            `SELECT count(*)::integer + 1 AS cycle FROM checkin_event WHERE invitation_id = $1 AND kind = 'anulacion'`,
-            [item.invitation_id]
-          );
+          const revCycle = cycleOf(item.invitation_id);
           const revId = ulid();
           const resolucion =
             item.verdict_local === "no_verificable_offline" || item.verdict_local === "admitido"
@@ -2231,7 +2377,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           await client.query(
             `INSERT INTO checkin_event (id, event_id, invitation_id, device_id, sequence, kind, veredicto, admision_ciclo, escaneado_en, recibido_en, tardio, verdict_local, resolucion_al_sincronizar)
              VALUES ($1,$2,$3,$4,$5,'duplicado_tardio','invitacion_revocada',$6,$7,$8,$9,$10,$11)`,
-            [revId, ev.id, item.invitation_id, batch.device_id, seq, cycRev.rows[0].cycle, toIso(item.scanned_at), tIngest, tardio, item.verdict_local || null, resolucion]
+            [revId, ev.id, item.invitation_id, batch.device_id, seq, revCycle, toIso(item.scanned_at), tIngest, tardio, item.verdict_local || null, resolucion]
           );
           results.push({
             sequence: seq,
@@ -2245,11 +2391,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           });
           continue;
         }
-        const cycRes = await client.query(
-          `SELECT count(*)::integer + 1 AS cycle FROM checkin_event WHERE invitation_id = $1 AND kind = 'anulacion'`,
-          [item.invitation_id]
-        );
-        const cycle = cycRes.rows[0].cycle;
+        const cycle = cycleOf(item.invitation_id);
         // El veredicto persistido lo decide el servidor: del cliente solo se aceptan las
         // admisiones condicionales marcadas (RF-13); cualquier otro valor cuenta como `admitido`.
         const finalVerdict =
@@ -2467,6 +2609,50 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       [eventId, invitationId, guestId, verdict]
     );
     return paginateArray(res.rows, limit, cursor);
+  };
+
+  /** Cobros asentados en el ledger con `cobrado_en` en [from, to) (conciliación diaria). */
+  proto.listLedgerCharges = async function ({ from, to }) {
+    const res = await this.pool.query(
+      `SELECT id AS payment_id, idempotency_key, monto, moneda, cobrado_en
+         FROM payment
+        WHERE cobrado_en >= $1 AND cobrado_en < $2 AND deleted_at IS NULL`,
+      [toIso(from), toIso(to)]
+    );
+    return res.rows.map((r) => ({ ...r, monto: Number(r.monto), cobrado_en: toIso(r.cobrado_en) }));
+  };
+
+  proto.getPaymentByIdempotencyKey = async function (key) {
+    const res = await this.pool.query(
+      `SELECT id AS payment_id, monto, moneda, cobrado_en FROM payment WHERE idempotency_key = $1`,
+      [key]
+    );
+    const r = res.rows[0];
+    return r ? { ...r, monto: Number(r.monto), cobrado_en: r.cobrado_en ? toIso(r.cobrado_en) : null } : null;
+  };
+
+  proto.getPaymentReconciliation = async function (dia) {
+    const res = await this.pool.query(`SELECT * FROM payment_reconciliation WHERE dia = $1::date`, [dia]);
+    const r = res.rows[0];
+    if (!r) return null;
+    return {
+      ...r,
+      dia,
+      monto_psp: Number(r.monto_psp),
+      monto_ledger: Number(r.monto_ledger),
+      ejecutado_en: toIso(r.ejecutado_en),
+    };
+  };
+
+  /** Inserta el resultado del día; si ya existía (otro poller ganó), conserva el primero. */
+  proto.savePaymentReconciliation = async function (run) {
+    await this.pool.query(
+      `INSERT INTO payment_reconciliation (dia, estado, cobros_psp, cobros_ledger, monto_psp, monto_ledger, diferencias, ejecutado_en)
+       VALUES ($1::date, $2, $3, $4, $5, $6, $7::jsonb, $8)
+       ON CONFLICT (dia) DO NOTHING`,
+      [run.dia, run.estado, run.cobros_psp, run.cobros_ledger, run.monto_psp, run.monto_ledger, JSON.stringify(run.diferencias), run.ejecutado_en]
+    );
+    return this.getPaymentReconciliation(run.dia);
   };
 
   /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */

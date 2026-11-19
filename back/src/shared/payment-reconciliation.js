@@ -40,3 +40,78 @@ export async function reconcileUnresolvedPayments(ctx, { now = ctx.now(), minAge
   }
   return summary;
 }
+
+/**
+ * Conciliación diaria ledger ↔ procesador (README FR6). Cuadra el día UTC anterior una sola vez:
+ *
+ *   - `cobro_sin_ledger`: el PSP cobró y el ledger no lo tiene → dinero cobrado sin registro.
+ *   - `ledger_sin_cobro`: el ledger dice cobrado y el PSP no tiene el cargo → registro sin dinero.
+ *   - `monto_distinto` / `moneda_distinta`: ambos lo tienen pero no coinciden.
+ *
+ * Los cobros cerca de medianoche pueden caer en días distintos en cada lado; antes de marcar una
+ * diferencia se busca la contraparte por llave de idempotencia fuera de la ventana.
+ * Se ejecuta a partir de `hora_minima_utc` (default 02:00) para dar tiempo a que el barrido de
+ * pagos `desconocido` resuelva los cobros de último minuto.
+ *
+ * Idempotente (PK por día) y aislado: nunca lanza. Las diferencias se registran en
+ * `payment_reconciliation`, en log estructurado y como métrica `psp_error` (dispara la alarma).
+ */
+export async function runDailyPaymentReconciliation(ctx, { now = ctx.now(), horaMinimaUtc = 2 } = {}) {
+  try {
+    const nowDate = new Date(now);
+    if (nowDate.getUTCHours() < horaMinimaUtc) return { estado: "esperando_ventana" };
+    const dayStart = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate() - 1));
+    const dayEnd = new Date(dayStart.getTime() + 86400_000);
+    const dia = dayStart.toISOString().slice(0, 10);
+
+    const existing = await ctx.store.getPaymentReconciliation(dia);
+    if (existing) return { estado: "ya_conciliado", dia };
+
+    const [pspCharges, ledgerCharges] = await Promise.all([
+      ctx.paymentProvider.listCharges({ from: dayStart, to: dayEnd }),
+      ctx.store.listLedgerCharges({ from: dayStart, to: dayEnd }),
+    ]);
+    const pspByKey = new Map(pspCharges.map((c) => [c.idempotency_key, c]));
+    const ledgerByKey = new Map(ledgerCharges.map((c) => [c.idempotency_key, c]));
+    const diferencias = [];
+
+    for (const [key, c] of pspByKey) {
+      const l = ledgerByKey.get(key) || (await ctx.store.getPaymentByIdempotencyKey(key));
+      if (!l || !l.cobrado_en) {
+        diferencias.push({ tipo: "cobro_sin_ledger", idempotency_key: key, psp_charge_id: c.psp_charge_id, monto_psp: c.amount });
+      } else if (Number(l.monto) !== Number(c.amount)) {
+        diferencias.push({ tipo: "monto_distinto", idempotency_key: key, monto_psp: c.amount, monto_ledger: Number(l.monto) });
+      } else if (String(l.moneda).toUpperCase() !== String(c.currency).toUpperCase()) {
+        diferencias.push({ tipo: "moneda_distinta", idempotency_key: key, moneda_psp: c.currency, moneda_ledger: l.moneda });
+      }
+    }
+    for (const [key, l] of ledgerByKey) {
+      if (pspByKey.has(key)) continue;
+      const q = await ctx.paymentProvider.queryByKey(key);
+      if (!q?.found || q.status !== "succeeded") {
+        diferencias.push({ tipo: "ledger_sin_cobro", idempotency_key: key, payment_id: l.payment_id, monto_ledger: l.monto });
+      }
+    }
+
+    const sum = (arr, f) => Math.round(arr.reduce((a, x) => a + Number(f(x)), 0) * 100) / 100;
+    const run = await ctx.store.savePaymentReconciliation({
+      dia,
+      estado: diferencias.length === 0 ? "conciliado" : "con_diferencias",
+      cobros_psp: pspCharges.length,
+      cobros_ledger: ledgerCharges.length,
+      monto_psp: sum(pspCharges, (c) => c.amount),
+      monto_ledger: sum(ledgerCharges, (c) => c.monto),
+      diferencias,
+      ejecutado_en: nowDate.toISOString(),
+    });
+    if (diferencias.length > 0) {
+      ctx.metrics?.pspError("reconciliation_mismatch");
+      console.error(JSON.stringify({ level: "error", msg: "payment_reconciliation_mismatch", dia, diferencias: diferencias.length }));
+    }
+    return run;
+  } catch (err) {
+    ctx.metrics?.pspError("reconciliation_failed");
+    console.error(JSON.stringify({ level: "error", msg: "payment_reconciliation_failed", error: err?.message }));
+    return { estado: "error" };
+  }
+}

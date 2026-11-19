@@ -3,6 +3,7 @@ import { Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { formatFecha, humanize, precio } from '../../../shared/labels';
 import {
   PaginatedResponse,
   PaymentDto,
@@ -31,6 +32,9 @@ export class WorkerRequestsPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly destroyRef = inject(DestroyRef);
 
+  readonly label = humanize;
+  readonly formatFecha = formatFecha;
+  readonly precio = precio;
   readonly requests = signal<WorkerRequestItemDto[]>([]);
   readonly workerTipo = signal<WorkerTipo>('persona');
   readonly filterEstado = signal<ReservationEstado | ''>('');
@@ -93,7 +97,7 @@ export class WorkerRequestsPage implements OnInit {
       this.partialPlazas.set(plazasInit);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando solicitudes.',
+        err instanceof OrquestaApiError ? err.message : 'Error cargando solicitudes.',
       );
     } finally {
       this.loading.set(false);
@@ -116,7 +120,7 @@ export class WorkerRequestsPage implements OnInit {
     if (!expiraEn) return '—';
     const diff = Date.parse(expiraEn) - this.nowMs();
     if (Number.isNaN(diff)) return expiraEn;
-    if (diff <= 0) return 'Expirada';
+    if (diff <= 0) return '0 min';
     const totalSec = Math.floor(diff / 1000);
     const h = Math.floor(totalSec / 3600);
     const m = Math.floor((totalSec % 3600) / 60);
@@ -145,9 +149,8 @@ export class WorkerRequestsPage implements OnInit {
         { idempotencyKey: `accept:${id}` },
       );
 
-      const dev = res.plazas_devueltas ? ` (${res.plazas_devueltas} plazas devueltas)` : '';
       this.success.set(
-        `Solicitud ${id} aceptada con ${res.plazas_aceptadas} plaza(s)${dev}.`,
+        `Aceptaste la solicitud con ${res.plazas_aceptadas} ${res.plazas_aceptadas === 1 ? 'persona' : 'personas'}.`,
       );
       await this.loadRequests();
     } catch (err) {
@@ -162,7 +165,7 @@ export class WorkerRequestsPage implements OnInit {
         });
       } else {
         this.error.set(
-          err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo aceptar.',
+          err instanceof OrquestaApiError ? err.message : 'No se pudo aceptar.',
         );
       }
     }
@@ -180,11 +183,11 @@ export class WorkerRequestsPage implements OnInit {
         { motivo: (this.actionMotivo()[id] ?? '').trim() || undefined },
         { idempotencyKey: `reject:${id}` },
       );
-      this.success.set(`Solicitud ${id} rechazada. Has regresado al catálogo disponible.`);
+      this.success.set('Solicitud rechazada.');
       await this.loadRequests();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al rechazar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al rechazar.',
       );
     }
   }
@@ -193,7 +196,7 @@ export class WorkerRequestsPage implements OnInit {
     const id = this.getReqId(item);
     const motivo = (this.actionMotivo()[id] ?? '').trim();
     if (!id || !motivo) {
-      this.error.set('Ingresa un motivo para cancelar la reserva aceptada.');
+      this.error.set('Escribe el motivo para cancelar la reserva.');
       return;
     }
     this.error.set(null);
@@ -205,12 +208,12 @@ export class WorkerRequestsPage implements OnInit {
         { motivo },
       );
       this.success.set(
-        `Reserva cancelada (${res.estado}). Alerta enviada al planner: ${res.alerta_planner ?? 'emitida'}.`,
+        'Reserva cancelada. Avisamos a la planner para que busque un reemplazo.',
       );
       await this.loadRequests();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo cancelar.',
+        err instanceof OrquestaApiError ? err.message : 'No se pudo cancelar.',
       );
     }
   }
@@ -226,12 +229,12 @@ export class WorkerRequestsPage implements OnInit {
         `/v1/worker/reservations/${encodeURIComponent(id)}/arrival`,
         { llegada_en: new Date().toISOString() },
       );
-      this.success.set(`Llegada registrada a las ${res.llegada_registrada_en}.`);
+      this.success.set(`Llegada registrada: ${formatFecha(res.llegada_registrada_en)}.`);
       await this.loadRequests();
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo registrar llegada.',
       );
     }
@@ -249,7 +252,7 @@ export class WorkerRequestsPage implements OnInit {
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'Sin pago registrado para esta reserva.',
       );
     }

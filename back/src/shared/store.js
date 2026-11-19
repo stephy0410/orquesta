@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import {
   isValidCategoria,
   isValidIanaTimezone,
@@ -28,6 +27,7 @@ import {
   windowsOverlap,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
+import { renderQrPng } from "./qr-png.js";
 import { ulid } from "./ulid.js";
 
 class KeyedMutex {
@@ -105,6 +105,7 @@ export class InMemoryStore {
     this.webhookEvents = new Map();
     this.plannerAlerts = [];
     this.seatingPlanVersions = new Map();
+    this.paymentReconciliations = new Map();
     this.revokedSessionJtis = new Map();
 
     this.syntheticSeqCounter = 100000;
@@ -1508,7 +1509,7 @@ export class InMemoryStore {
           key_id: activeKeyId,
         };
         const qrToken = await qrSigner.signJws(qrPayload, activeKeyId);
-        const qrPngBuffer = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+        const qrPngBuffer = await renderQrPng(qrToken);
         const qrS3Key = `qr/${invitationId}_v1.png`;
 
         await objectStorage.putObject({
@@ -1777,6 +1778,7 @@ export class InMemoryStore {
         g.updated_at = nowIso;
 
         for (const canal of canalesActivos) {
+          if (g[`baja_${canal}_en`]) continue; // baja del invitado (FR8)
           const addr =
             canal === "sms"
               ? g.telefono_cifrado
@@ -1891,6 +1893,7 @@ export class InMemoryStore {
         if (!inv) continue;
 
         for (const ch of selectedChannels) {
+          if (g[`baja_${ch}_en`]) continue; // baja del invitado (FR8)
           const addr =
             ch === "sms"
               ? g.telefono_cifrado
@@ -2076,7 +2079,7 @@ export class InMemoryStore {
       keyId
     );
     const qrS3Key = `qr/${inv.id}_v${newVersion}.png`;
-    const pngBuf = await QRCode.toBuffer(qrToken, { type: "png", errorCorrectionLevel: "M" });
+    const pngBuf = await renderQrPng(qrToken);
     await objectStorage.putObject({
       bucket: assetsBucket,
       key: qrS3Key,
@@ -2249,7 +2252,7 @@ export class InMemoryStore {
   }
 
   async getPublicInvitationByToken({ rawToken, objectStorage }) {
-    const { inv, ev, venue } = this._resolveInvitationForRsvp(rawToken);
+    const { inv, guest, ev, venue } = this._resolveInvitationForRsvp(rawToken);
     const activeRsvp = [...this.rsvpResponses.values()].find(
       (r) => r.invitation_id === inv.id && !r.superseded_at
     );
@@ -2270,7 +2273,31 @@ export class InMemoryStore {
         lugar: venue?.nombre || null,
         direccion: venue?.direccion || null,
       },
+      bajas: { sms: Boolean(guest?.baja_sms_en), email: Boolean(guest?.baja_email_en) },
     };
+  }
+
+  /** Baja del invitado por canal (README FR8). Idempotente; cancela recordatorios pendientes del canal. */
+  async unsubscribeGuest({ rawToken, canal, now = new Date() }) {
+    if (!["sms", "email", "ambos"].includes(canal)) throw validationError("canal debe ser sms, email o ambos", "canal");
+    if (typeof rawToken !== "string" || rawToken.split(".").length === 3) {
+      throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse aquí");
+    }
+    const hash = sha256Hex(rawToken);
+    const inv = [...this.invitations.values()].find((i) => i.rsvp_token_hash === hash && !i.pii_anonimizada_en);
+    if (!inv) throw new AppError("TOKEN_INVALIDO", "Invitación no encontrada");
+    const guest = this.guests.get(inv.guest_id);
+    const canales = canal === "ambos" ? ["sms", "email"] : [canal];
+    const nowIso = toIso(now);
+    for (const c of canales) guest[`baja_${c}_en`] = guest[`baja_${c}_en`] || nowIso;
+    for (const job of this.reminderJobs.values()) {
+      if (job.guest_id === guest.id && job.estado === "programado" && canales.includes(job.canal)) {
+        job.estado = "cancelado";
+        job.motivo_cancelacion = "invitado_de_baja";
+        job.updated_at = nowIso;
+      }
+    }
+    return { bajas: { sms: Boolean(guest.baja_sms_en), email: Boolean(guest.baja_email_en) } };
   }
 
   async submitPublicRsvp({ rawToken, respuesta, objectStorage, now = new Date() }) {
@@ -3270,6 +3297,19 @@ export class InMemoryStore {
     w.updated_at = now;
   }
 
+  /** Lugares sin cubrir del requerimiento (evento, rol); `null` si el evento no lo declara. */
+  _remainingRequirementSlots(eventId, rol) {
+    const req = [...this.eventRequirements.values()].find((r) => r.event_id === eventId && r.rol === rol && !r.deleted_at);
+    if (!req) return null;
+    let cubiertos = 0;
+    for (const r of this.workerReservations.values()) {
+      if (r.event_id === eventId && r.rol === rol && !r.deleted_at && (r.estado === "aceptada" || r.estado === "completada")) {
+        cubiertos += Number(r.plazas);
+      }
+    }
+    return req.cantidad - cubiertos;
+  }
+
   async createWorkerRequest({
     eventId,
     workerId,
@@ -3367,15 +3407,9 @@ export class InMemoryStore {
     // Notificar solicitud al trabajador en paralelo (D11, RF-17)
     const workerUser = this.users.get(wp.user_id);
     for (const canal of canalesActivos) {
-      const addr =
-        canal === "sms"
-          ? wp.telefono_cifrado
-            ? this._dec(wp.telefono_cifrado)
-            : null
-          : workerUser?.email_cifrado
-            ? this._dec(workerUser.email_cifrado)
-            : null;
-      if (!addr) continue;
+      // Misma forma que PgStore: dirección cifrada en el outbox (NFR-07).
+      const toCifrado = canal === "sms" ? wp.telefono_cifrado : workerUser?.email_cifrado;
+      if (!toCifrado) continue;
       this._pushOutbox({
         eventId,
         topic: "notifications",
@@ -3386,10 +3420,12 @@ export class InMemoryStore {
           worker_id: wp.id,
           event_id: eventId,
           canal,
-          to: addr,
+          to_cifrado: toCifrado,
           rol,
           inicio: reservation.inicio,
           fin: reservation.fin,
+          modo_emergencia: reservation.modo_emergencia,
+          expira_en: reservation.expira_en,
         },
         tIngest: nowIso,
       });
@@ -3735,6 +3771,17 @@ export class InMemoryStore {
         throw new AppError("REQUEST_EXPIRED", "La solicitud expiró sin respuesta");
       }
 
+      // Nunca más proveedores que lugares (README FR4): las plazas aceptadas del rol en el evento no
+      // superan la `cantidad` del requerimiento. Sin `await` entre la lectura y la escritura, así
+      // que es atómico frente a otros trabajadores que acepten a la vez.
+      const lugaresRestantes = this._remainingRequirementSlots(res.event_id, res.rol);
+      if (lugaresRestantes !== null && lugaresRestantes <= 0) {
+        throw new AppError("REQUERIMIENTO_CUBIERTO", "El requerimiento de este rol ya está cubierto", {
+          rol: res.rol,
+          event_id: res.event_id,
+        });
+      }
+
       const requestedPlazas = plazas === null || plazas === undefined ? res.plazas : Number(plazas);
       if (
         !Number.isInteger(requestedPlazas) ||
@@ -3773,7 +3820,7 @@ export class InMemoryStore {
 
       const ocupadas = overlappingAccepted.reduce((sum, r) => sum + Number(r.plazas), 0);
       const disponibles = wp.plazas_ofrecidas - ocupadas;
-      const aceptables = Math.min(requestedPlazas, disponibles);
+      const aceptables = Math.min(requestedPlazas, disponibles, lugaresRestantes ?? Infinity);
 
       if (aceptables <= 0) {
         const ganadora = overlappingAccepted[0];
@@ -4978,6 +5025,34 @@ export class InMemoryStore {
     });
   }
 
+  /** Cobros asentados en el ledger con `cobrado_en` en [from, to) (conciliación diaria). */
+  async listLedgerCharges({ from, to }) {
+    const f = new Date(from).getTime();
+    const t = new Date(to).getTime();
+    return [...this.payments.values()]
+      .filter((p) => p.cobrado_en && !p.deleted_at)
+      .filter((p) => {
+        const c = new Date(p.cobrado_en).getTime();
+        return c >= f && c < t;
+      })
+      .map((p) => ({ payment_id: p.id, idempotency_key: p.idempotency_key, monto: Number(p.monto), moneda: p.moneda, cobrado_en: toIso(p.cobrado_en) }));
+  }
+
+  async getPaymentByIdempotencyKey(key) {
+    const p = [...this.payments.values()].find((x) => x.idempotency_key === key);
+    return p ? { payment_id: p.id, monto: Number(p.monto), moneda: p.moneda, cobrado_en: p.cobrado_en ? toIso(p.cobrado_en) : null } : null;
+  }
+
+  async getPaymentReconciliation(dia) {
+    return this.paymentReconciliations.get(dia) || null;
+  }
+
+  /** Inserta el resultado del día; si ya existía, conserva el primero (idempotente). */
+  async savePaymentReconciliation(run) {
+    if (!this.paymentReconciliations.has(run.dia)) this.paymentReconciliations.set(run.dia, { ...run });
+    return this.paymentReconciliations.get(run.dia);
+  }
+
   /** Pagos sin confirmar (`pendiente`/`desconocido`) más viejos que `olderThan` (conciliación, RF-11). */
   async listUnresolvedPayments({ olderThan, limit = 25 }) {
     const cutoff = new Date(olderThan).getTime();
@@ -5115,6 +5190,13 @@ export class InMemoryStore {
         if (activeRsvp) {
           job.estado = "cancelado";
           job.motivo_cancelacion = "rsvp_registrado";
+          job.updated_at = nowIso;
+          cancelled += 1;
+          continue;
+        }
+        if (guest[`baja_${job.canal}_en`]) {
+          job.estado = "cancelado";
+          job.motivo_cancelacion = "invitado_de_baja";
           job.updated_at = nowIso;
           cancelled += 1;
           continue;
@@ -5260,6 +5342,38 @@ export class InMemoryStore {
     }
 
     return { transitioned };
+  }
+
+  /**
+   * README (LFPDPPP): los teléfonos de los invitados se borran 90 días después del evento.
+   * Se borra el teléfono del invitado y las direcciones SMS de sus entregas y recordatorios. Si el
+   * teléfono era su única clave de contacto, el invitado queda anonimizado.
+   */
+  async sweepGuestPhones({ now = new Date() }) {
+    const cutoff = new Date(now).getTime() - 90 * 86400_000;
+    const nowIso = toIso(now);
+    const expired = new Set(
+      [...this.events.values()].filter((e) => new Date(e.ventana_fin).getTime() <= cutoff).map((e) => e.id)
+    );
+    let borrados = 0;
+    for (const g of this.guests.values()) {
+      if (!expired.has(g.event_id) || !g.telefono_cifrado) continue;
+      g.telefono_cifrado = null;
+      g.telefono_hmac = null;
+      if (!g.email_cifrado && !g.pii_anonimizada_en) g.pii_anonimizada_en = nowIso;
+      g.updated_at = nowIso;
+      borrados += 1;
+    }
+    for (const d of this.invitationDeliveries.values()) {
+      if (expired.has(d.event_id) && d.canal === "sms" && d.direccion_cifrada) {
+        d.direccion_cifrada = null;
+        d.pii_anonimizada_en = d.pii_anonimizada_en || nowIso;
+      }
+    }
+    for (const j of this.reminderJobs.values()) {
+      if (expired.has(j.event_id) && j.guest_id && j.canal === "sms" && j.direccion_cifrada) j.direccion_cifrada = null;
+    }
+    return { telefonos_borrados: borrados };
   }
 
   async sweepRetention({ now = new Date() }) {

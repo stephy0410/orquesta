@@ -280,6 +280,13 @@ export interface TableDto {
   numero?: number;
   capacidad: number;
   ocupacion: number;
+  /** Versión del plano después de crear la mesa (FR7). */
+  plan_version?: number;
+}
+
+/** GET /v1/events/{id}/tables: incluye la versión del plano para control optimista (FR7). */
+export interface TableListResponse extends PaginatedResponse<TableDto> {
+  plan_version?: number;
 }
 
 export interface UnseatedGuestDto {
@@ -292,6 +299,7 @@ export interface SeatAssignmentResponse {
   guest_id: string;
   table_id: string;
   estado: 'asignado' | 'confirmado' | 'pendiente' | 'liberado';
+  plan_version?: number;
 }
 
 export interface TarifaDto {
@@ -440,6 +448,14 @@ export interface PublicRsvpStateResponse {
   qr: PublicQrInfo;
   evento: PublicEventSummary;
   recordatorios_cancelados?: number;
+  /** Canales por los que el invitado pidió no recibir más mensajes (FR8). */
+  bajas?: { sms: boolean; email: boolean };
+}
+
+export type CanalBaja = 'sms' | 'email' | 'ambos';
+
+export interface PublicUnsubscribeResponse {
+  bajas: { sms: boolean; email: boolean };
 }
 
 export interface RosterGuest {

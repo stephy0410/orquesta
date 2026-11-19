@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
+import { Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
@@ -13,13 +13,17 @@ import {
   PendingSummaryResponse,
   SendInvitationsResponse,
 } from '../../../core/api/models';
+import { humanize } from '../../../shared/labels';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
+
+type Filtro = 'todos' | 'confirma' | 'declina' | 'pendiente' | 'sin_enviar';
 
 @Component({
   selector: 'app-event-guests-page',
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, EventSubnavComponent],
   templateUrl: './event-guests.page.html',
+  styleUrl: './event-guests.page.scss',
 })
 export class EventGuestsPage implements OnInit {
   private readonly api = inject(ApiService);
@@ -41,11 +45,44 @@ export class EventGuestsPage implements OnInit {
   readonly guests = signal<GuestDto[]>([]);
   readonly guestsNextCursor = signal<string | null>(null);
   readonly selectedGuestIds = signal<Set<string>>(new Set());
-  readonly filterSinMesa = signal(false);
-  readonly filterDeleted = signal(false);
+  readonly uploadOpen = signal(false);
+  readonly confirmDelete = signal<string | null>(null);
+  readonly query = signal('');
+  readonly filtro = signal<Filtro>('todos');
+  readonly filtros: { id: Filtro; label: string }[] = [
+    { id: 'todos', label: 'Invitados' },
+    { id: 'confirma', label: 'Confirmaron' },
+    { id: 'declina', label: 'No vienen' },
+    { id: 'pendiente', label: 'Sin respuesta' },
+    { id: 'sin_enviar', label: 'Sin enviar' },
+  ];
+
+  readonly counts = computed(() => {
+    const c: Record<Filtro, number> = { todos: 0, confirma: 0, declina: 0, pendiente: 0, sin_enviar: 0 };
+    for (const g of this.guests()) {
+      c.todos++;
+      c[this.filtroDe(g)]++;
+    }
+    return c;
+  });
+
+  readonly visibleGuests = computed(() => {
+    const f = this.filtro();
+    const q = this.normalize(this.query().trim());
+    return this.guests().filter(
+      (g) =>
+        (f === 'todos' || this.filtroDe(g) === f) &&
+        (!q || this.normalize(`${g.nombre} ${g.email ?? ''} ${g.telefono ?? ''}`).includes(q)),
+    );
+  });
+
+  readonly allVisibleSelected = computed(() => {
+    const vis = this.visibleGuests();
+    const sel = this.selectedGuestIds();
+    return vis.length > 0 && vis.every((g) => sel.has(this.getGuestId(g)));
+  });
 
   readonly resendCanal = signal<'sms' | 'email' | 'ambos'>('ambos');
-  readonly resendVentana = signal('resend_1');
 
   readonly deliveries = signal<DeliveryDto[]>([]);
   readonly deliveryEstado = signal('');
@@ -70,6 +107,54 @@ export class EventGuestsPage implements OnInit {
     const file = input.files?.[0] ?? null;
     this.selectedFile.set(file);
     this.fileIdempotencyKey.set(file ? this.api.newIdempotencyKey() : null);
+  }
+
+  readonly label = humanize;
+
+  private normalize(t: string): string {
+    return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  }
+
+  private filtroDe(g: GuestDto): Exclude<Filtro, 'todos'> {
+    if (g.estado_rsvp === 'confirma') return 'confirma';
+    if (g.estado_rsvp === 'declina') return 'declina';
+    if (!g.estado_envio || g.estado_envio === 'pendiente_envio') return 'sin_enviar';
+    return 'pendiente';
+  }
+
+  guestStatus(g: GuestDto): { label: string; tone: string } {
+    switch (this.filtroDe(g)) {
+      case 'confirma':
+        return { label: 'Confirmó', tone: 'ok' };
+      case 'declina':
+        return { label: 'No viene', tone: 'no' };
+      case 'sin_enviar':
+        return { label: 'Sin enviar', tone: 'draft' };
+      default:
+        return { label: 'Sin respuesta', tone: 'wait' };
+    }
+  }
+
+  clearSelection(): void {
+    this.selectedGuestIds.set(new Set());
+  }
+
+  toggleAllVisible(): void {
+    const ids = this.visibleGuests().map((g) => this.getGuestId(g));
+    const all = this.allVisibleSelected();
+    this.selectedGuestIds.update((curr) => {
+      const next = new Set(curr);
+      for (const id of ids) {
+        if (all) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  }
+
+  guestName(guestId: string): string {
+    const g = this.guests().find((x) => this.getGuestId(x) === guestId);
+    return g?.nombre ?? 'Invitado';
   }
 
   downloadSampleCsv(): void {
@@ -127,9 +212,9 @@ export class EventGuestsPage implements OnInit {
             errores: extra as GuestImportJobDto['errores'],
           });
         }
-        this.error.set(`${err.code}: ${err.message}`);
+        this.error.set(err.message);
       } else {
-        this.error.set('No se pudo subir el CSV.');
+        this.error.set('No pudimos subir la lista. Revisa que sea un archivo CSV e inténtalo de nuevo.');
       }
     }
   }
@@ -146,7 +231,7 @@ export class EventGuestsPage implements OnInit {
           this.stopImportPoll();
           this.importing.set(false);
           this.success.set(
-            `Import ${job.estado}: ${job.aceptadas} aceptadas, ${job.rechazadas} rechazadas, ${job.duplicadas_en_archivo} duplicadas.`,
+            `Lista subida: ${job.aceptadas} agregados, ${job.rechazadas} con errores y ${job.duplicadas_en_archivo} repetidos.`,
           );
           await Promise.all([this.loadPendingSummary(), this.loadGuests()]);
         }
@@ -190,7 +275,7 @@ export class EventGuestsPage implements OnInit {
       alcance === 'seleccion' ? selectedIds.length : (summary?.destinatarios ?? 0);
 
     if (confirmedCount <= 0) {
-      this.error.set('No hay destinatarios confirmados para enviar.');
+      this.error.set('No hay invitados por enviar.');
       return;
     }
 
@@ -208,7 +293,7 @@ export class EventGuestsPage implements OnInit {
       this.lastSendResult.set(res);
       this.confirmSendOpen.set(false);
       this.success.set(
-        `Envío ${res.envio_id} encolado: ${res.entregas_encoladas} entregas por SMS y Email.`,
+        `Listo: se están enviando ${res.entregas_encoladas} invitaciones por SMS y correo.`,
       );
       await Promise.all([this.loadPendingSummary(), this.loadGuests(), this.loadDeliveries()]);
     } catch (err) {
@@ -216,7 +301,7 @@ export class EventGuestsPage implements OnInit {
         await this.loadPendingSummary();
       }
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error disparando envío.',
+        err instanceof OrquestaApiError ? err.message : 'Error disparando envío.',
       );
     }
   }
@@ -230,44 +315,48 @@ export class EventGuestsPage implements OnInit {
     this.error.set(null);
     this.success.set(null);
 
-    try {
-      const res = await this.api.post<SendInvitationsResponse>(
-        `/v1/events/${encodeURIComponent(this.eventId())}/invitations/resend`,
-        {
-          guest_ids: ids,
-          canal: this.resendCanal(),
-          ventana: this.resendVentana().trim() || 'resend_1',
-        },
-      );
-      this.success.set(
-        `Reenvío ${res.envio_id} encolado (${res.entregas_encoladas} entregas).`,
-      );
-      await this.loadDeliveries();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo reenviar.',
-      );
+    // Cada invitado admite un reenvío por ronda: probamos la siguiente ronda libre.
+    let lastErr: unknown = null;
+    for (const ventana of ['resend_1', 'resend_2', 'resend_3']) {
+      try {
+        const res = await this.api.post<SendInvitationsResponse>(
+          `/v1/events/${encodeURIComponent(this.eventId())}/invitations/resend`,
+          { guest_ids: ids, canal: this.resendCanal(), ventana },
+        );
+        if (res.entregas_encoladas === 0) continue;
+        this.success.set(`Listo: se están reenviando ${res.entregas_encoladas} invitaciones.`);
+        this.selectedGuestIds.set(new Set());
+        await this.loadDeliveries();
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
     }
+    this.error.set(
+      lastErr instanceof OrquestaApiError
+        ? lastErr.message
+        : 'Ya se reenvió el máximo de veces a estos invitados.',
+    );
   }
 
-  async loadGuests(cursor?: string): Promise<void> {
+  /** Trae la lista completa (hasta 2000) para poder contar, filtrar y buscar al instante. */
+  async loadGuests(): Promise<void> {
     try {
-      const res = await this.api.get<PaginatedResponse<GuestDto>>(
-        `/v1/events/${encodeURIComponent(this.eventId())}/guests`,
-        {
-          params: {
-            limit: 25,
-            cursor,
-            sin_mesa: this.filterSinMesa() ? 'true' : undefined,
-            deleted: this.filterDeleted() ? 'true' : undefined,
-          },
-        },
-      );
-      this.guests.set(res.items ?? []);
-      this.guestsNextCursor.set(res.next_cursor ?? null);
+      const all: GuestDto[] = [];
+      let cursor: string | undefined;
+      do {
+        const res = await this.api.get<PaginatedResponse<GuestDto>>(
+          `/v1/events/${encodeURIComponent(this.eventId())}/guests`,
+          { params: { limit: 100, cursor } },
+        );
+        all.push(...(res.items ?? []));
+        cursor = res.next_cursor ?? undefined;
+      } while (cursor && all.length < 2000);
+      this.guests.set(all);
+      this.guestsNextCursor.set(cursor ?? null);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error listando invitados.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos cargar la lista de invitados.',
       );
     }
   }
@@ -296,13 +385,16 @@ export class EventGuestsPage implements OnInit {
         jobs_cancelados: number;
         asientos_liberados: number;
       }>(`/v1/events/${encodeURIComponent(this.eventId())}/guests/${encodeURIComponent(guestId)}`);
+      this.confirmDelete.set(null);
       this.success.set(
-        `Invitado dado de baja (${res.deleted_at}). Token revocado, ${res.jobs_cancelados} jobs cancelados, ${res.asientos_liberados} asientos liberados.`,
+        res.asientos_liberados > 0
+          ? 'Quitamos al invitado. Su invitación ya no funciona y su lugar en la mesa quedó libre.'
+          : 'Quitamos al invitado. Su invitación ya no funciona.',
       );
       await Promise.all([this.loadGuests(), this.loadPendingSummary()]);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error dando de baja.',
+        err instanceof OrquestaApiError ? err.message : 'Error dando de baja.',
       );
     }
   }

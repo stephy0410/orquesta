@@ -1,50 +1,45 @@
 <div class="oq-page-header">
   <div>
-    <h1>Tablero en vivo (RF-06, NFR-03, NFR-10)</h1>
+    <h1>Tablero en vivo</h1>
     <p class="oq-page-subtitle">
-      Actualización cada 3 s (pausada en segundo plano), máx. 25 eventos por página y frescura
-      medida con reloj del servidor (<code>t_ingest → t_visible</code>).
+      Llegadas, confirmaciones y alertas de todos tus eventos. Se actualiza cada 3 segundos
+      mientras esta pestaña está abierta.
     </p>
   </div>
 
-  <div class="oq-row">
+  <div class="oq-row dash-toolbar">
     @if (generadoEn()) {
-      <span class="oq-badge oq-badge-neutral mono">Corte: {{ generadoEn() }}</span>
+      <span class="oq-hint dash-corte">
+        <span class="dash-pulse" [class.is-paused]="!pollingActive()" aria-hidden="true"></span>
+        {{ pollingActive() ? 'Actualizado' : 'En pausa desde' }} {{ formatCorte(generadoEn()) }}
+      </span>
     }
-    <label class="oq-row">
-      <span class="oq-hint">Por página (≤ 25):</span>
-      <select
-        class="oq-select"
-        style="width: 78px"
-        [ngModel]="limit()"
-        (ngModelChange)="onLimitChange($event)"
-      >
-        <option [ngValue]="10">10</option>
-        <option [ngValue]="25">25</option>
-      </select>
-    </label>
-    <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="togglePolling()">
-      {{ pollingActive() ? 'Pausar polling 3s' : 'Reanudar polling' }}
+    <button
+      type="button"
+      class="oq-btn oq-btn-secondary oq-btn-sm"
+      [attr.aria-pressed]="!pollingActive()"
+      (click)="togglePolling()"
+    >
+      {{ pollingActive() ? 'Pausar actualización' : 'Reanudar actualización' }}
     </button>
-    <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="fetchDashboard()">
-      Refrescar
-    </button>
-    <a class="oq-btn oq-btn-primary oq-btn-sm" routerLink="/planner/events/new">
-      + Crear evento
-    </a>
+    <a class="oq-btn oq-btn-primary oq-btn-sm" routerLink="/planner/events/new">Crear evento</a>
   </div>
 </div>
 
+<!-- Anuncios agrupados (máx. uno cada 15 s) para lectores de pantalla -->
+<p class="oq-sr-only" aria-live="polite" aria-atomic="true">{{ liveMessage() }}</p>
+
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 
-<div class="oq-grid">
+<div class="dash-list">
   @for (ev of items(); track ev.event_id) {
-    <article class="oq-card dash-event-card">
-      <div class="oq-between">
-        <div class="oq-row">
-          <h2 class="dash-event-title">
+    @let pct = arrivalPct(ev);
+    <article class="dash-event" [attr.aria-labelledby]="'ev-' + ev.event_id">
+      <header class="dash-event-head">
+        <div class="dash-event-title-row">
+          <h2 class="dash-event-title" [id]="'ev-' + ev.event_id">
             <a [routerLink]="['/planner/events', ev.event_id]">{{ ev.nombre }}</a>
           </h2>
           <span
@@ -54,84 +49,94 @@
             [class.oq-badge-neutral]="ev.estado === 'cerrado'"
             [class.oq-badge-danger]="ev.estado === 'cancelado'"
           >
-            {{ ev.estado }}
+            {{ estadoLabel(ev.estado) }}
           </span>
-          <span class="oq-hint mono">{{ ev.event_id }}</span>
         </div>
 
         <div class="oq-row">
-          <span class="oq-badge mono" [ngClass]="lagBadgeClass(ev.frescura.lag_ms)">
-            lag: {{ ev.frescura.lag_ms !== null ? ev.frescura.lag_ms + ' ms' : '—' }}
-            @if (ev.frescura.lag_p95_ms !== null) {
-              · p95: {{ ev.frescura.lag_p95_ms }} ms
-            }
-          </span>
-
-          @if (ev.pendientes.estado === 'desconocido') {
-            <span class="oq-badge oq-badge-warning" title="Sin heartbeat en los últimos 5 min (TR-18)">
-              Pendientes sync: desconocido
-            </span>
-          } @else {
-            <span class="oq-badge oq-badge-info">
-              Pendientes sync: {{ ev.pendientes.valor ?? ev.contadores.pendientes_sincronizar }}
+          @if (ev.contadores.entregas_parciales > 0) {
+            <span class="oq-badge oq-badge-warning">
+              {{ ev.contadores.entregas_parciales }} invitaciones no llegaron por un canal
             </span>
           }
-        </div>
-      </div>
-
-      <div class="oq-grid-stats dash-counters">
-        <div class="oq-stat">
-          <span class="oq-stat-label">Invitados</span>
-          <span class="oq-stat-value">{{ ev.contadores.invitados }}</span>
-        </div>
-        <div class="oq-stat">
-          <span class="oq-stat-label">Confirmados</span>
-          <span class="oq-stat-value">{{ ev.contadores.confirmados }}</span>
-        </div>
-        <div class="oq-stat">
-          <span class="oq-stat-label">Asistentes</span>
-          <span class="oq-stat-value">{{ ev.contadores.asistentes }}</span>
-        </div>
-        <div class="oq-stat">
-          <span class="oq-stat-label">Aún no llegaron</span>
-          <span class="oq-stat-value">{{ ev.contadores.aun_no_llegaron }}</span>
-        </div>
-        <div class="oq-stat">
-          <span class="oq-stat-label">Entregas parciales</span>
-          <span class="oq-stat-value">{{ ev.contadores.entregas_parciales }}</span>
-        </div>
-        <div class="oq-stat">
-          <span class="oq-stat-label">No-show (cierre)</span>
-          <span class="oq-stat-value">
-            @if (ev.estado === 'cerrado' && ev.no_show !== null) {
-              {{ ev.no_show }}
-            } @else {
-              <span class="oq-hint" style="font-size: 0.85rem">Al cierre</span>
-            }
+          @if (ev.pendientes.estado === 'desconocido') {
+            <span class="oq-badge oq-badge-warning">Escáneres sin reportar hace más de 5 min</span>
+          } @else if ((ev.pendientes.valor ?? ev.contadores.pendientes_sincronizar) > 0) {
+            <span class="oq-badge oq-badge-info">
+              {{ ev.pendientes.valor ?? ev.contadores.pendientes_sincronizar }} check-ins por sincronizar
+            </span>
+          }
+          <span class="oq-badge" [ngClass]="lagBadgeClass(ev.frescura.lag_ms)">
+            {{ freshnessLabel(ev.frescura.lag_ms) }}
           </span>
         </div>
+      </header>
+
+      <div class="dash-body">
+        <div class="dash-arrivals">
+          <p class="dash-arrivals-figure">
+            <span class="dash-big">{{ ev.contadores.asistentes }}</span>
+            <span class="dash-of">
+              @if (ev.contadores.confirmados > 0) {
+                de {{ ev.contadores.confirmados }} confirmados ya llegaron
+              } @else {
+                {{ ev.contadores.asistentes === 1 ? 'persona llegó' : 'personas llegaron' }}
+              }
+            </span>
+          </p>
+          <div
+            class="dash-meter"
+            role="meter"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            [attr.aria-valuenow]="pct"
+            [attr.aria-label]="'Llegadas de ' + ev.nombre"
+            [attr.aria-valuetext]="ev.contadores.asistentes + ' de ' + ev.contadores.confirmados + ' confirmados'"
+          >
+            <span [style.width.%]="pct"></span>
+          </div>
+        </div>
+
+        <dl class="oq-grid-stats dash-counters">
+          <div class="oq-stat">
+            <dt class="oq-stat-label">Invitados</dt>
+            <dd class="oq-stat-value">{{ ev.contadores.invitados }}</dd>
+          </div>
+          <div class="oq-stat">
+            <dt class="oq-stat-label">Confirmados</dt>
+            <dd class="oq-stat-value">{{ ev.contadores.confirmados }}</dd>
+          </div>
+          <div class="oq-stat">
+            <dt class="oq-stat-label">Aún no llegan</dt>
+            <dd class="oq-stat-value">{{ ev.contadores.aun_no_llegaron }}</dd>
+          </div>
+          <div class="oq-stat">
+            <dt class="oq-stat-label">No asistieron</dt>
+            <dd class="oq-stat-value">
+              @if (ev.estado === 'cerrado' && ev.no_show !== null) {
+                {{ ev.no_show }}
+              } @else {
+                <span class="dash-pending">al cierre</span>
+              }
+            </dd>
+          </div>
+        </dl>
       </div>
 
-      <div class="oq-between dash-footer">
-        <div class="oq-row">
-          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id]">
-            Gestionar evento
-          </a>
-          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'guests']">
-            Invitados e import
-          </a>
-          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'seating']">
-            Mesas
-          </a>
-          <a class="oq-btn oq-btn-secondary oq-btn-sm" [routerLink]="['/planner/events', ev.event_id, 'workers']">
-            Trabajadores y pagos
-          </a>
-        </div>
+      <footer class="oq-between dash-footer">
+        <nav class="oq-row" [attr.aria-label]="'Secciones de ' + ev.nombre">
+          <a class="dash-link" [routerLink]="['/planner/events', ev.event_id]">Resumen</a>
+          <a class="dash-link" [routerLink]="['/planner/events', ev.event_id, 'guests']">Invitados</a>
+          <a class="dash-link" [routerLink]="['/planner/events', ev.event_id, 'seating']">Mesas</a>
+          <a class="dash-link" [routerLink]="['/planner/events', ev.event_id, 'workers']">Personal y pagos</a>
+        </nav>
 
         @if ((ev.pendientes.dispositivos?.length ?? 0) > 0) {
           <button
             type="button"
             class="oq-btn oq-btn-secondary oq-btn-sm"
+            [attr.aria-expanded]="!!expandedDevices()[ev.event_id]"
+            [attr.aria-controls]="'devs-' + ev.event_id"
             (click)="toggleDevices(ev.event_id)"
           >
             {{
@@ -141,31 +146,28 @@
             }}
           </button>
         }
-      </div>
+      </footer>
 
       @if (expandedDevices()[ev.event_id] && ev.pendientes.dispositivos; as devs) {
-        <div class="oq-table-wrap dash-devices-table">
+        <div class="oq-table-wrap dash-devices-table" [id]="'devs-' + ev.event_id">
           <table class="oq-table">
+            <caption class="oq-sr-only">Escáneres de {{ ev.nombre }}</caption>
             <thead>
               <tr>
-                <th>Device ID</th>
-                <th>Cola reportada</th>
-                <th>Última seq ack</th>
-                <th>Seq confirmada</th>
-                <th>Heartbeat (TR-18)</th>
+                <th scope="col">Escáner</th>
+                <th scope="col">Entradas por enviar</th>
+                <th scope="col">Último reporte</th>
               </tr>
             </thead>
             <tbody>
               @for (d of devs; track d.device_id) {
                 <tr>
-                  <td class="mono">{{ d.device_id }}</td>
-                  <td class="mono">{{ d.cola_reportada }}</td>
-                  <td class="mono">{{ d.ultima_seq_ackeada }}</td>
-                  <td class="mono">{{ d.seq_confirmada }}</td>
+                  <td>Escáner {{ $index + 1 }}</td>
+                  <td>{{ d.cola_reportada }}</td>
                   <td>
-                    <span class="mono">{{ d.heartbeat_en }}</span>
+                    {{ formatCorte(d.heartbeat_en) }}
                     @if (isDeviceStale(d.heartbeat_en)) {
-                      <span class="oq-badge oq-badge-warning">desconocido (&gt; 5 min)</span>
+                      <span class="oq-badge oq-badge-warning">sin reportar</span>
                     }
                   </td>
                 </tr>
@@ -176,63 +178,77 @@
       }
     </article>
   } @empty {
-    <section class="oq-card">
-      <p class="oq-hint">
-        {{
-          loading()
-            ? 'Cargando tablero en vivo...'
-            : 'No tienes eventos activos en el tablero aún. Crea tu primer evento para comenzar.'
-        }}
-      </p>
-      <div class="oq-row">
-        <a class="oq-btn oq-btn-primary" routerLink="/planner/events/new">Crear evento</a>
-        <button type="button" class="oq-btn oq-btn-secondary" (click)="toggleAllEventsCatalog()">
-          Ver catálogo GET /v1/events
-        </button>
-      </div>
+    <section class="dash-empty">
+      @if (loading()) {
+        <p role="status">Cargando el tablero…</p>
+      } @else {
+        <h2>Aún no hay eventos en el tablero</h2>
+        <p class="oq-page-subtitle">
+          Crea tu primer evento; cuando lo publiques verás aquí confirmaciones y llegadas.
+        </p>
+        <div class="oq-row">
+          <a class="oq-btn oq-btn-primary" routerLink="/planner/events/new">Crear evento</a>
+          <button type="button" class="oq-btn oq-btn-secondary" (click)="toggleAllEventsCatalog()">
+            Ver todos mis eventos
+          </button>
+        </div>
+      }
     </section>
   }
 </div>
 
-<div class="oq-between dash-pagination">
-  <button
-    type="button"
-    class="oq-btn oq-btn-secondary oq-btn-sm"
-    [disabled]="cursorStack().length === 0"
-    (click)="prevPage()"
-  >
-    ← Página anterior
-  </button>
-  <button
-    type="button"
-    class="oq-btn oq-btn-secondary oq-btn-sm"
-    [disabled]="!nextCursor()"
-    (click)="nextPage()"
-  >
-    Siguiente página →
-  </button>
-</div>
+@if (cursorStack().length > 0 || nextCursor()) {
+  <nav class="oq-between dash-pagination" aria-label="Páginas del tablero">
+    <button
+      type="button"
+      class="oq-btn oq-btn-secondary oq-btn-sm"
+      [disabled]="cursorStack().length === 0"
+      (click)="prevPage()"
+    >
+      Página anterior
+    </button>
+    <label class="oq-row">
+      <span class="oq-hint">Eventos por página</span>
+      <select
+        class="oq-select dash-limit"
+        [ngModel]="limit()"
+        (ngModelChange)="onLimitChange($event)"
+      >
+        <option [ngValue]="10">10</option>
+        <option [ngValue]="25">25</option>
+      </select>
+    </label>
+    <button
+      type="button"
+      class="oq-btn oq-btn-secondary oq-btn-sm"
+      [disabled]="!nextCursor()"
+      (click)="nextPage()"
+    >
+      Página siguiente
+    </button>
+  </nav>
+}
 
 @if (showAllEventsFallback()) {
-  <section class="oq-card" style="margin-top: 1rem">
-    <h3>Eventos de membresía (GET /v1/events)</h3>
+  <section class="oq-card dash-catalog" aria-labelledby="catalogo-title">
+    <h2 id="catalogo-title">Todos mis eventos</h2>
     <div class="oq-table-wrap">
       <table class="oq-table">
         <thead>
           <tr>
-            <th>Evento</th>
-            <th>Fecha / TZ</th>
-            <th>Aforo</th>
-            <th>Estado</th>
+            <th scope="col">Evento</th>
+            <th scope="col">Fecha</th>
+            <th scope="col">Aforo</th>
+            <th scope="col">Estado</th>
           </tr>
         </thead>
         <tbody>
           @for (ev of allEvents(); track ev.id) {
             <tr>
               <td><a [routerLink]="['/planner/events', ev.id]">{{ ev.nombre }}</a></td>
-              <td class="mono">{{ ev.fecha }} ({{ ev.timezone }})</td>
+              <td>{{ ev.fecha }} <span class="oq-hint">({{ ev.timezone }})</span></td>
               <td>{{ ev.aforo }}</td>
-              <td><span class="oq-badge oq-badge-neutral">{{ ev.estado }}</span></td>
+              <td><span class="oq-badge oq-badge-neutral">{{ estadoLabel(ev.estado) }}</span></td>
             </tr>
           }
         </tbody>

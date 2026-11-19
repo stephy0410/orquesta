@@ -1,26 +1,26 @@
 <div class="oq-page-header">
   <div>
-    <h1>Ventanas de disponibilidad (RF-22)</h1>
+    <h1>Disponibilidad</h1>
     <p class="oq-page-subtitle">
-      Solo puedes aceptar solicitudes cuya ventana y rol estén contenidos en una ventana
-      declarada aquí. Sin ventana declarada no hay contratación.
+      Marca los días y horas en que puedes trabajar. Solo recibirás solicitudes dentro de estos
+      horarios.
     </p>
   </div>
 </div>
 
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 @if (success()) {
-  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+  <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 
 <div class="oq-grid-2">
   <section class="oq-card">
-    <h2>{{ editingId() ? 'Editar ventana' : 'Declarar nueva ventana [inicio, fin)' }}</h2>
+    <h2>{{ editingId() ? 'Editar horario' : 'Agrega un horario' }}</h2>
     <form class="oq-form-grid" (ngSubmit)="saveWindow()">
       <div class="oq-field">
-        <label class="oq-label" for="winRol">Rol</label>
+        <label class="oq-label" for="winRol">Puesto</label>
         <select
           id="winRol"
           name="rol"
@@ -29,7 +29,7 @@
           (ngModelChange)="rol.set($event)"
         >
           @for (r of allRoles; track r) {
-            <option [value]="r">{{ r }}</option>
+            <option [value]="r">{{ label(r) }}</option>
           }
         </select>
       </div>
@@ -44,13 +44,13 @@
           (ngModelChange)="zona.set($event)"
         >
           @for (z of allZones; track z) {
-            <option [value]="z">{{ z }}</option>
+            <option [value]="z">{{ label(z) }}</option>
           }
         </select>
       </div>
 
       <div class="oq-field">
-        <label class="oq-label" for="winInicio">Inicio</label>
+        <label class="oq-label" for="winInicio">Desde</label>
         <input
           id="winInicio"
           name="inicio"
@@ -63,7 +63,7 @@
       </div>
 
       <div class="oq-field">
-        <label class="oq-label" for="winFin">Fin exclusivo</label>
+        <label class="oq-label" for="winFin">Hasta</label>
         <input
           id="winFin"
           name="fin"
@@ -77,11 +77,11 @@
 
       <div class="oq-row">
         <button type="submit" class="oq-btn oq-btn-primary">
-          {{ editingId() ? 'Guardar cambios' : 'Agregar ventana' }}
+          {{ editingId() ? 'Guardar cambios' : 'Agregar horario' }}
         </button>
         @if (editingId()) {
           <button type="button" class="oq-btn oq-btn-secondary" (click)="cancelEdit()">
-            Cancelar edición
+            Cancelar
           </button>
         }
       </div>
@@ -90,7 +90,7 @@
 
   <section class="oq-card">
     <div class="oq-card-header">
-      <h2>Mis ventanas declaradas</h2>
+      <h2>Mis horarios</h2>
       <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadWindows()">
         Recargar
       </button>
@@ -100,21 +100,21 @@
       <table class="oq-table">
         <thead>
           <tr>
-            <th>Rol / Zona</th>
-            <th>Intervalo</th>
-            <th>Acciones</th>
+            <th scope="col">Puesto y zona</th>
+            <th scope="col">Horario</th>
+            <th scope="col"><span class="oq-sr-only">Acciones</span></th>
           </tr>
         </thead>
         <tbody>
           @for (w of windows(); track w.window_id) {
             <tr>
               <td>
-                <strong>{{ w.rol }}</strong>
-                <div class="oq-hint">{{ w.zona }}</div>
+                <strong>{{ label(w.rol) }}</strong>
+                <div class="oq-hint">{{ label(w.zona) }}</div>
               </td>
-              <td class="mono">
-                <div>{{ w.inicio }}</div>
-                <div>→ {{ w.fin }}</div>
+              <td>
+                <div>{{ formatFecha(w.inicio) }}</div>
+                <div class="oq-hint">a {{ formatFecha(w.fin) }}</div>
               </td>
               <td>
                 <div class="oq-row">
@@ -126,14 +126,14 @@
                     class="oq-btn oq-btn-danger oq-btn-sm"
                     (click)="deleteWindow(w.window_id)"
                   >
-                    Retirar
+                    Quitar
                   </button>
                 </div>
               </td>
             </tr>
           } @empty {
             <tr>
-              <td colspan="3" class="oq-hint">No tienes ventanas de disponibilidad declaradas.</td>
+              <td colspan="3" class="oq-hint">Todavía no marcas horarios. Agrega el primero arriba.</td>
             </tr>
           }
         </tbody>

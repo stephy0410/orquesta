@@ -23,6 +23,7 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 10. [Estructura del repositorio](#10-estructura-del-repositorio)
 11. [Equipo y responsables](#11-equipo-y-responsables)
 12. [Riesgos y trabajo pendiente](#12-riesgos-y-trabajo-pendiente)
+13. [Lista de verificación de producción](#13-lista-de-verificación-de-producción)
 
 ---
 
@@ -35,12 +36,14 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | FR3 | Tablero de todos los eventos casi en tiempo real | ✅ (polling ≤ 5 s p95, ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)) | *Check-in…* (contadores), *Retención…* (agregados) |
 | FR4 | Buscar y asignar proveedores, antes y en emergencia | ✅ | *Contratación: 100 solicitudes concurrentes…*, *Bordes normativos…* |
 | FR5 | Recordatorios: RSVP a invitados y hora de llegada a proveedores | ✅ | *Ciclo completo del invitado* (RSVP), *Recordatorio de llegada al proveedor* |
-| FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…* |
+| FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…*, *Pagos: conciliación diaria…* |
 | FR7 | Acomodo de mesas (con control de versión optimista) | ✅ | *Seating: 50 asignaciones concurrentes…*, *Seating: control de versión optimista* |
 | FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
 
-- **12/12 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
-- **82 endpoints HTTP**, **6 Lambdas**, **5 migraciones versionadas**.
+- **16/16 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
+- **Pruebas de carga (local, PostgreSQL 16):** check-in a **517/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s. Import de **1 000 invitados en 6.3 s** con latencia de AWS simulada (meta 30 s). Ver [§7.4](#74-pruebas-de-carga).
+- **Listo para producción** salvo la decisión del dominio: ver [§13](#13-lista-de-verificación-de-producción).
+- **83 endpoints HTTP**, **6 Lambdas**, **7 migraciones versionadas**.
 - Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
 
 ---
@@ -66,16 +69,16 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 
 | Área | Objetivo | Cómo se cumple hoy |
 | --- | --- | --- |
-| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS en páginas de 500 filas; QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
-| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. |
+| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados, p99 221 ms ([§7.4](#74-pruebas-de-carga)). |
 | **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
-| **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; emergencia con expiración de 15 min. |
+| **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; **tope por requerimiento** con lock `(evento, rol)` → `409 REQUERIMIENTO_CUBIERTO` o aceptación parcial; **aviso al proveedor por SMS + email vía outbox** (flush inmediato, segundos; en emergencia «URGENTE» y 15 min para responder). |
 | **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
-| **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **barrido de conciliación** de pagos `pendiente`/`desconocido` por llave de idempotencia. |
+| **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **reintento automático** de pagos `pendiente`/`desconocido` por llave de idempotencia y **conciliación diaria** ledger ↔ procesador (`payment_reconciliation`, alarma ante diferencias). |
 | **Mesas** (FR7) | Nadie en dos mesas; ninguna mesa sobre capacidad; edición concurrente rechazada con aviso (versión optimista); guardar < 1 s con 500 invitados / 50 mesas. | Lock por evento + conteo transaccional (AC-14); **`plan_version` + `If-Match`** → `409 SEATING_VERSION_CONFLICT`. |
-| **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`. |
+| **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`; **baja del invitado por canal** desde su invitación (`POST /public/invitations/{token}/unsubscribe`), respetada en envíos, reenvíos y recordatorios; SPF/DKIM/DMARC en Terraform al activar dominio propio (`domain.tf`). |
 
-**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, LFPDPPP y borrado de teléfonos de invitados; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
+**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, [Aviso de privacidad LFPDPPP](front/src/app/features/privacy/privacy.page.ts) y **borrado de teléfonos de invitados a los 90 días** del evento; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
 
 ### 1.3 Estimación de capacidad (lo que sí cambia el diseño)
 
@@ -93,15 +96,15 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 
 Cada entidad tiene **un solo módulo dueño**; los demás reciben copias por eventos de outbox o leen proyecciones. Detalle de columnas e invariantes: [`docs/delivery/02-entidades.md`](docs/delivery/02-entidades.md).
 
-| Dominio (servicio lógico) | Entidades | Responsable |
-| --- | --- | --- |
-| **Event** | `User`, `EventMembership`, `Venue`, `Event`, `EventRequirement`, `Guest`, `Invitation`, `RsvpResponse`, `ImportJob`, `Table`, `SeatAssignment`, `SeatingPlan` | Hannah |
-| **Checkin** | `EventAccessToken`, `StaffAssignment`, `ScanSession`, `CheckinEvent` (append-only), `DeviceSyncState`, `CheckinBatchAck` | Stephanie |
-| **Dispatch** | `WorkerProfile`, `AvailabilityWindow`, `WorkerReservation`, `PlannerAlert` | Emmanuel |
-| **Notification** | `InvitationDelivery`, `ReminderJob`, `VerificationChallenge` | Emmanuel |
-| **Payment** | `Payment`, `PaymentEntry` (ledger append-only), `WebhookEvent` | Stephanie |
-| **Live** | `event_counters` (read model), `outbox_event`, `projector_applied` | Hannah |
-| Transversal | `AuditEntry` (append-only), `idempotency_record` | — |
+| Dominio (servicio lógico) | Entidades |
+| --- | --- |
+| **Event** | `User`, `EventMembership`, `Venue`, `Event`, `EventRequirement`, `Guest`, `Invitation`, `RsvpResponse`, `ImportJob`, `Table`, `SeatAssignment`, `SeatingPlan` |
+| **Checkin** | `EventAccessToken`, `StaffAssignment`, `ScanSession`, `CheckinEvent` (append-only), `DeviceSyncState`, `CheckinBatchAck` |
+| **Dispatch** | `WorkerProfile`, `AvailabilityWindow`, `WorkerReservation`, `PlannerAlert` |
+| **Notification** | `InvitationDelivery`, `ReminderJob`, `VerificationChallenge` |
+| **Payment** | `Payment`, `PaymentEntry` (ledger append-only), `WebhookEvent` |
+| **Live** | `event_counters` (read model), `outbox_event`, `projector_applied` |
+| Transversal | `AuditEntry` (append-only), `idempotency_record` |
 
 ---
 
@@ -139,62 +142,159 @@ Detalle: [`docs/delivery/04-data-flow.md`](docs/delivery/04-data-flow.md).
 
 ## 5. High-Level Design
 
-### 5.1 Arquitectura entregada
+Vista general de **cómo funciona el sistema**, sin atarse a herramientas. Qué tecnología concreta implementa cada caja (y por qué) está en [Deep Dives §6.1](#61-arquitectura-en-aws-qué-se-conecta-con-qué).
+
+### 5.1 Componentes y cómo se comunican
 
 ```mermaid
 flowchart LR
-  subgraph Clientes
-    P[Consola planner]:::c
-    S[PWA de escaneo<br/>offline-first]:::c
-    I[Página RSVP<br/>sin cuenta]:::c
-    W[Consola proveedor]:::c
+  subgraph SG1["Clientes"]
+    P["Consola del planner"]
+    S["Escáner del staff<br/>funciona sin red"]
+    I["Invitación del invitado<br/>sin cuenta"]
+    W["Consola del proveedor"]
   end
-  CDN[CloudFront + S3<br/>shell, QR PNG]
-  APIGW[API Gateway<br/>HTTP API v2]
-  API[Lambda api<br/>82 endpoints]
-  DB[(PostgreSQL 16<br/>RDS / Aurora Sv2)]
-  OB[[outbox_event]]
-  SNS[SNS<br/>orquesta-notifications]
-  QS[SQS notify_sms + DLQ]
-  QE[SQS notify_email + DLQ]
-  QP[SQS projection + DLQ]
-  QI[SQS import_jobs + DLQ]
-  NS[Lambda notify-sms]
-  NE[Lambda notify-email]
-  PR[Lambda projector]
-  IW[Lambda import-worker]
-  OP[Lambda outbox-poller<br/>cada 1 min]
-  PSP[(Procesador de pagos)]
 
-  P & S & I & W --> CDN
-  P & S & I & W --> APIGW --> API --> DB
-  API -. misma tx .-> OB
-  API -- flush inmediato --> SNS & QP
-  OP -- rezagados, recordatorios,<br/>expiraciones, retención,<br/>conciliación --> DB
-  OP --> SNS & QP
-  OP <--> PSP
-  API <--> PSP
-  PSP -- webhook HMAC --> APIGW
-  SNS --> QS --> NS
-  SNS --> QE --> NE
-  QP --> PR --> DB
-  API --> QI --> IW --> DB
+  EST["Contenido estático<br/>app web, QR"]
+  GW["Puerta de entrada<br/>de la API"]
+
+  subgraph SG2["Servicios de dominio"]
+    EV["Eventos e invitados<br/>RSVP, mesas"]
+    CK["Check-in"]
+    DS["Proveedores<br/>búsqueda y asignación"]
+    PY["Pagos"]
+    LV["Tablero en vivo"]
+    NT["Notificaciones<br/>SMS y email"]
+    SCH["Tareas programadas<br/>recordatorios, expiraciones,<br/>conciliación"]
+  end
+
+  DB[("Base de datos<br/>transaccional")]
+  BUS[["Bus de eventos<br/>con colas y reintentos"]]
+  RM[("Contadores del<br/>tablero")]
+  EXT[("Procesador de pagos")]
+  CAN[("Proveedores de<br/>SMS y email")]
+
+  P & S & I & W --> EST
+  P & S & I & W --> GW
+  GW --> EV & CK & DS & PY & LV
+  EV & CK & DS & PY --> DB
+  EV & CK & DS & PY -->|"evento en la misma transacción"| BUS
+  BUS --> NT --> CAN
+  BUS --> LV --> RM
+  SCH --> DB
+  SCH --> BUS
+  PY <--> EXT
+  EXT -->|"confirmación firmada"| GW
 ```
 
-### 5.2 Servicios lógicos → módulos
+**Idea central:** cada escritura importante guarda el dato **y** el evento que la anuncia en la misma transacción (*outbox*). Todo lo lento o poco confiable (SMS, email, recalcular el tablero) se hace después, de forma asíncrona y con reintentos, así que una falla ahí nunca tumba el check-in ni la contratación.
 
-Los seis servicios del diseño original se conservan como **límites de dominio** (dueños de entidades, eventos de outbox entre ellos), desplegados como un **monolito modular serverless**:
+### 5.2 Responsabilidad de cada componente
 
-| Servicio lógico | Dónde vive | Notas |
+| Componente | Responsabilidad | Dónde vive en el código |
 | --- | --- | --- |
-| Event | `routes/{events,guests,invitations,public-rsvp,seating}.js`, `import-worker` | Mesas con versión optimista (migración `005`) |
-| Checkin | `routes/scan.js`, `front/src/app/features/scanner` | Escrituras append-only + índice único parcial |
-| Dispatch | `routes/workers.js`, función SQL `aceptar_worker_reservation` | Lock por trabajador, conflicto determinista |
-| Notification | `notify-sms`, `notify-email`, barridos del `outbox-poller` | Colas independientes por canal |
-| Payment | `routes/payments.js`, `shared/payment-reconciliation.js` | Ledger de doble entrada, conciliación |
-| Live | `routes/dashboard.js`, `projector` | Read model `event_counters` |
+| Eventos e invitados | Ciclo de vida del evento, import de invitados, invitaciones con QR, RSVP, mesas con versión optimista | `routes/{events,guests,invitations,public-rsvp,seating}.js`, `import-worker` |
+| Check-in | Sesiones de escaneo, roster firmado, ingesta de lotes offline, anulaciones | `routes/scan.js` · `front/…/scanner` |
+| Proveedores | Perfil, disponibilidad, búsqueda, solicitudes, aceptación sin doble reserva, emergencias | `routes/workers.js` + función SQL `aceptar_worker_reservation` |
+| Pagos | Cobro idempotente, ledger de doble entrada, reversos, webhook, conciliación | `routes/payments.js`, `shared/payment-reconciliation.js` |
+| Tablero en vivo | Contadores por evento proyectados desde los eventos del bus | `routes/dashboard.js`, `projector` |
+| Notificaciones | Envío por canal con dedupe, reintentos y estado por entrega | `notify-sms`, `notify-email` |
+| Tareas programadas | Rezagados del outbox, recordatorios, expiraciones, `indeterminado`, retención, conciliación de pagos | `outbox-poller` |
 
-### 5.3 Decisiones de arquitectura (ADR)
+## 6. Deep Dives
+
+### 6.1 Arquitectura en AWS: qué se conecta con qué
+
+```mermaid
+flowchart TB
+  subgraph SG1["Usuarios"]
+    U1["Planner · Proveedor<br/>navegador"]
+    U2["Staff<br/>PWA offline · IndexedDB"]
+    U3["Invitado<br/>link SMS / email"]
+  end
+
+  subgraph SG2["Borde"]
+    CF["Amazon CloudFront<br/>CDN · HTTPS"]
+    S3A[("Amazon S3 · assets<br/>app Angular · QR PNG")]
+    APIGW["Amazon API Gateway<br/>HTTP API v2 · CORS · throttling"]
+  end
+
+  subgraph SG3["AWS Lambda · Node.js 20"]
+    LAPI["api<br/>83 endpoints"]
+    LIMP["import-worker"]
+    LPRO["projector"]
+    LSMS["notify-sms"]
+    LEML["notify-email"]
+    LOUT["outbox-poller"]
+  end
+
+  subgraph SG4["Datos"]
+    RDS[("Amazon RDS PostgreSQL 16<br/>lab: db.t4g.micro<br/>prod: Aurora Serverless v2")]
+    S3I[("Amazon S3 · imports<br/>CSV · expira 7 días")]
+  end
+
+  subgraph SG5["Mensajería"]
+    SNS{{"Amazon SNS<br/>orquesta-notifications"}}
+    QSMS[["SQS notify_sms<br/>+ DLQ"]]
+    QEML[["SQS notify_email<br/>+ DLQ"]]
+    QPRO[["SQS projection<br/>+ DLQ"]]
+    QIMP[["SQS import_jobs<br/>+ DLQ"]]
+    EB["Amazon EventBridge<br/>rate 1 min"]
+  end
+
+  subgraph SG6["Seguridad y operación"]
+    KMS["AWS KMS<br/>firma ES256 del QR<br/>cifrado en reposo"]
+    SM["AWS Secrets Manager<br/>credenciales BD · llaves"]
+    CW["Amazon CloudWatch<br/>logs · métricas EMF · alarmas"]
+  end
+
+  subgraph SG7["Externos"]
+    SMSOUT["SNS SMS / End User Messaging"]
+    SES["Amazon SES<br/>SPF · DKIM · DMARC"]
+    PSP[("Procesador de pagos<br/>modo test")]
+  end
+
+  U1 & U2 & U3 --> CF --> S3A
+  U1 & U2 & U3 --> APIGW --> LAPI
+  LAPI <--> RDS
+  LAPI -->|"CSV"| S3I
+  LAPI --> QIMP --> LIMP
+  LIMP --> S3I
+  LIMP --> RDS
+  LIMP -->|"QR PNG"| S3A
+  LAPI -->|"flush inmediato"| SNS
+  LAPI -->|"flush inmediato"| QPRO
+  SNS --> QSMS --> LSMS --> SMSOUT
+  SNS --> QEML --> LEML --> SES
+  QPRO --> LPRO --> RDS
+  EB --> LOUT
+  LOUT <--> RDS
+  LOUT --> SNS
+  LOUT --> QPRO
+  LOUT <-->|"conciliación"| PSP
+  LAPI <-->|"cobro idempotente"| PSP
+  PSP -->|"webhook HMAC"| APIGW
+  LAPI & LOUT -.->|"firma"| KMS
+  LAPI & LIMP & LOUT & LPRO & LSMS & LEML -.->|"secretos"| SM
+  LAPI & LIMP & LOUT & LPRO & LSMS & LEML -.->|"logs y métricas"| CW
+```
+
+| Servicio AWS | Para qué se usa | Requisito que atiende |
+| --- | --- | --- |
+| **CloudFront + S3 (assets)** | Sirve la app Angular, el shell de la invitación y los QR PNG desde caché | FR1 (LCP < 2.5 s), ~40 M lecturas/mes |
+| **API Gateway HTTP API v2** | Entrada única al API, CORS, throttling (ráfaga 500, 250 req/s) | Todos |
+| **Lambda (6 funciones)** | `api` síncrona + 5 workers asíncronos; escalan por invocación | Todos; aislamiento de fallas |
+| **RDS PostgreSQL / Aurora Serverless v2** | Base transaccional única con constraints, triggers y locks | Pagos y reservas CP; check-in sin duplicados |
+| **S3 (imports)** | CSV de invitados, privado, expira a 7 días | FR1 |
+| **SQS + DLQ** (4 colas) | Desacople y reintentos: import, proyección del tablero, SMS, email | FR1, FR3, FR8 |
+| **SNS** | *Fan-out* de cada aviso a las colas de SMS y email en paralelo | FR8 (si falla un canal, el otro sale) |
+| **EventBridge** | Dispara el `outbox-poller` cada minuto | FR5 (recordatorios ± 5 min), FR6 (conciliación) |
+| **KMS** | Llave asimétrica P-256 que firma los QR; cifrado en reposo | FR1/FR2 (QR no falsificable, verificable offline) |
+| **Secrets Manager** | Credenciales de BD, secreto de sesión, secreto del webhook, llave de PII | Seguridad |
+| **CloudWatch** | Logs, métricas EMF y alarmas (frescura p95, cola offline > 500, error del PSP, DLQ > 0) | Observabilidad (< 5 min) |
+| **SES / SNS SMS** | Entrega de email y SMS (en Learner Lab en modo *capture*) | FR8 |
+
+### 6.2 Decisiones de arquitectura (ADR)
 
 #### ADR-1 · Monolito modular en Lambda en lugar de 6 servicios en ECS Fargate
 - **Contexto:** el entorno de entrega es AWS Learner Lab (USD 100, sesiones de 4 h, sin `iam:CreateRole`, `cloudfront:*` ni `ses:*`).
@@ -203,8 +303,8 @@ Los seis servicios del diseño original se conservan como **límites de dominio*
 
 #### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
 - **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
-- **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre. El pico de diseño (500/s) se absorbe en ~1–2 transacciones/s por venue gracias al batching.
-- **Riesgo:** no está probado con carga real (ver [§12](#12-riesgos-y-trabajo-pendiente)); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con condicionales.
+- **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre.
+- **Evidencia:** prueba de carga local ([§7.4](#74-pruebas-de-carga)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. Falta la medición en AWS (`db.t4g.micro`); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
 
 #### ADR-3 · Tablero por polling con read model en lugar de SSE + Valkey
 - **Decisión:** `event_counters` alimentado por outbox; el cliente consulta cada 3 s con `limit ≤ 25`.
@@ -221,15 +321,13 @@ Los seis servicios del diseño original se conservan como **límites de dominio*
 
 Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delivery/05-high-level-design.md) · [`07-system-design-back-front.md`](docs/delivery/07-system-design-back-front.md).
 
----
-
-## 6. Deep Dives
+### 6.3 Consistencia por funcionalidad
 
 **La consistencia se elige por funcionalidad, no por sistema.**
 
 | Funcionalidad | Modelo | Mecanismo implementado |
 | --- | --- | --- |
-| **Pagos** | CP, exactamente una vez. *Un cobro doble es peor que un pago que tarda.* | Llave `pay:{reservation_id}` hacia el PSP; `FOR UPDATE` sobre `payment` antes de asentar; ledger con unicidad `(pago, movimiento, cuenta)` y trigger diferido de balance; webhook idempotente por `event_id`; conciliación periódica por llave. |
+| **Pagos** | CP, exactamente una vez. *Un cobro doble es peor que un pago que tarda.* | Llave `pay:{reservation_id}` hacia el PSP; `FOR UPDATE` sobre `payment` antes de asentar; ledger con unicidad `(pago, movimiento, cuenta)` y trigger diferido de balance; webhook idempotente por `event_id`; reintento por llave cada minuto y cuadre diario ledger ↔ procesador. |
 | **Asignación de proveedores** (antes y en emergencia) | CP, sin doble reserva. | `pg_advisory_xact_lock(worker)` + suma de plazas aceptadas solapadas con `tstzrange`; la perdedora recibe `409 RESERVATION_OVERLAP` con la ganadora. |
 | **Check-in** | AP en el borde con reconciliación. *Una puerta que no abre por falta de señal es peor que un duplicado ocasional.* | Veredicto local en < 100 ms; lote idempotente por `(invitation, device, sequence)`; el segundo dispositivo queda `duplicado_tardio` apuntando al check-in vigente; el servidor decide el veredicto persistido. |
 | **Tablero** | Eventual, ≤ 5 s p95. | Outbox en la misma transacción + *flush* inmediato + proyector con *coalescing* de 1 s y dedupe por `outbox_event_id`. |
@@ -246,21 +344,22 @@ Los siete problemas difíciles y qué se rompe si falta cada mecanismo: [`docs/d
 
 | Nivel | Qué cubre | Comando |
 | --- | --- | --- |
-| Aceptación (memoria) | 12 escenarios end-to-end a través del handler HTTP real y los 5 workers; retroalimentación en ~3 s | `cd back && npm test` |
+| Aceptación (memoria) | 14 escenarios end-to-end a través del handler HTTP real y los 5 workers; retroalimentación en ~3 s | `cd back && npm test` |
 | Aceptación (PostgreSQL) | **La misma suite** contra PgStore, migraciones 001–005 y un esquema limpio por escenario: valida SQL, triggers, constraints y concurrencia real | `cd back && npm run db:up && npm run test:pg` |
 | Frontend | Build de producción + tests unitarios (Vitest) | `cd front && npx ng build && npx ng test --watch=false` |
 | Infraestructura | `terraform fmt -check` + `validate` | `cd terraform && terraform validate` |
+| Carga (check-in) | AC-01 y AC-04: tasa sostenida, pérdidas, dobles admisiones, ráfaga offline, convergencia del tablero | `cd back && npm run db:up && npm run load:checkin` |
 
 ### 7.2 Trazabilidad FR → criterios de aceptación → escenario
 
 | FR | AC de la spec | Escenario |
 | --- | --- | --- |
 | FR1 | AC-06, AC-12, AC-20, AC-21, AC-23 | Ciclo completo del invitado |
-| FR2 | AC-03, AC-05, AC-16, AC-17 (AC-01 y AC-04 requieren prueba de carga, ver §12) | Check-in offline, replay idempotente, convergencia… |
+| FR2 | AC-03, AC-05, AC-16, AC-17; AC-01 y AC-04 en la prueba de carga | Check-in offline, replay idempotente, convergencia…; `load/checkin-load.js` (§7.4) |
 | FR3 | AC-05, AC-16 (tablero = asistentes reales) | Check-in…; Retención… |
 | FR4 | AC-07, AC-22, AC-25, AC-26, AC-27, AC-29 | Contratación…; Auth, OTP…; Bordes normativos… |
 | FR5 | AC-12 (RSVP), RF-10 (llegada) | Ciclo completo del invitado; Recordatorio de llegada al proveedor |
-| FR6 | AC-08, AC-09, AC-26 | Pagos: contract test PSP…; Pagos: conciliación automática… |
+| FR6 | AC-08, AC-09, AC-26 + conciliación diaria | Pagos: contract test PSP…; Pagos: conciliación automática…; Pagos: conciliación diaria… |
 | FR7 | AC-14 + versión optimista | Seating: 50 asignaciones…; Seating: control de versión optimista |
 | FR8 | AC-21, RF-04 (`indeterminado`), RF-20 (bajas) | Ciclo completo del invitado; Bordes normativos… |
 
@@ -279,6 +378,43 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 | Anulación de check-in sin `AuditEntry` ni lock | Incumplía RF-14; dos anulaciones restaban 2 | Auditoría en la misma tx + `FOR UPDATE` |
 | Cierre de evento fallaba si un acceso se emitía en el mismo instante | Evento imposible de cerrar | Migración `004` |
 | Errores 500 sin log | Alarma de 5xx sin causa raíz | Log estructurado (sin PII) en `errorResponse` |
+| Import con KMS + S3 en serie dentro de la transacción | 1 000 invitados en 65 s; 20 000 superaban el timeout de la Lambda | Inserción en lote, firma en paralelo, PNG post-commit (§7.4) |
+| Aforo excedido en el worker hacía ROLLBACK del `fallido` | Job colgado en `en_proceso` | Se confirma `fallido` y se lanza después del commit |
+| En PostgreSQL no se avisaba al proveedor de solicitudes | Ninguna solicitud ni emergencia le llegaba | `worker_request_created` por outbox con dirección cifrada |
+| Arreglos `text[]` contra columnas `char(26)` | Seq scans en check-in e import | Arreglos `char(26)[]` (§7.4) |
+| Nombres de invitado/evento sin escapar en el HTML del correo | Inyección de HTML/enlaces en correos | `escapeHtml` en la plantilla |
+| `EMAIL_FROM` no definido en Terraform | SES rechazaría todos los correos en `prod` | `EMAIL_FROM` desde `domain.tf` |
+
+---
+
+### 7.4 Pruebas de carga
+
+#### Check-in
+
+Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cómo correrlo en AWS: [`back/load/README.md`](back/load/README.md)). Perfil *open loop*: 50 eventos × 2 dispositivos enviando lotes cada segundo, 2 % de escaneos repetidos en otra puerta y, a la mitad, un dispositivo que vuelve de estar offline con 1 000 escaneos.
+
+| Métrica (local, 2026-11-18) | Objetivo | Primera medición | Tras optimizar |
+| --- | --- | --- | --- |
+| Tasa sostenida 60 s | 500 check-ins/s (AC-01) | 517/s | **517/s** · 31 000 escaneos · 6 002 lotes · 0 errores |
+| Check-ins perdidos | 0 | 0 | **0** |
+| Invitaciones admitidas 2 veces | 0 | 0 | **0** (verificado también en la BD) |
+| Ráfaga offline (1 000 en 2 lotes de 500) | < 30 s (AC-04) | 1.4 s | **0.5 s** |
+| Convergencia del tablero tras la carga | ≤ 5 s (NFR-03) | 1.2 s | **1.2 s** |
+| Latencia por lote (5 escaneos) | p99 < 300 ms en línea | p50 179 · p95 358 · p99 **481 ms** ❌ | p50 122 · p95 193 · p99 **221 ms** ✅ |
+
+**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`. Falta confirmar la cifra en AWS (fase 2); el veredicto en la puerta, de todos modos, se calcula en el dispositivo (< 100 ms).
+
+#### Import de invitados
+
+Script: [`back/load/import-load.js`](back/load/import-load.js). Archivos con 2 % de duplicados y 1 % de filas inválidas; se verifica que aceptadas = válidas únicas, que no se envía nada y que reimportar no crea nada. Latencia de AWS simulada: 15 ms por firma en KMS y 30 ms por PUT a S3.
+
+| Filas | Antes | Después | Meta |
+| --- | --- | --- | --- |
+| 1 000 | 64.9 s ❌ | **6.3 s** ✅ | < 30 s |
+| 5 000 | — | 31 s | — |
+| 20 000 | ~21 min (supera el timeout) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
+
+Cambios: inserción en lote (`unnest`), firma de QR en paralelo con concurrencia acotada (cuota de KMS), PNG del QR después del COMMIT y con filtro PNG fijo (2× más rápido, mismo tamaño).
 
 ---
 
@@ -293,6 +429,7 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 1. *Settings → Branches → main*: exigir PR y los 4 checks de `CI` en verde.
 2. *Settings → Environments*: crear `lab` (y `prod` con revisores obligatorios).
 3. En cada environment: secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (en Learner Lab se renuevan cada sesión) y variable `TF_STATE_BUCKET` con un bucket S3 existente para el estado de Terraform.
+4. En `prod` (opcional): `ALARM_EMAIL` para recibir las alarmas, y `CUSTOM_DOMAIN` + `ROUTE53_ZONE_ID` para el dominio propio. El workflow aplica el perfil de producción solo: Aurora con réplica en otra zona, CloudFront + WAF, SES, SMS real y firma con KMS.
 
 Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con advisory lock; son **inmutables**: un cambio de esquema es un archivo `NNN_*.sql` nuevo.
 
@@ -301,6 +438,26 @@ Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con ad
 ## 9. Cómo correrlo
 
 **Requisitos:** Node 20+ (backend), Node 24 (frontend, Angular CLI 22), Docker (PostgreSQL local), Terraform ≥ 1.5.
+
+### Ver la app completa en tu máquina (sin AWS)
+
+```bash
+# Terminal 1: backend completo en http://localhost:3000
+cd back && npm ci
+npm run db:up          # PostgreSQL en Docker (o salta este paso y usa: npm run dev -- --memory)
+npm run dev
+
+# Terminal 2: frontend en http://localhost:4200 (requiere Node 24: brew install node@24 o nvm)
+cd front && npm ci && npx ng serve
+```
+
+Con el backend corriendo, `cd back && npm run seed` llena la app con datos de demostración (planner `demo@orquesta.test` / `Demo12345!`, una boda con mesas y DJ pagado, una gala en curso con check-ins, un proveedor y un link de invitado). Si el puerto 3000 está ocupado: `PORT=3001 npm run dev`, `API_URL=http://localhost:3001 npm run seed` y apunta el front con `window.__ORQUESTA_API__ = { baseUrl: 'http://localhost:3001' }` en `front/public/runtime-config.js` (cambio local, no se sube).
+
+`npm run dev` corre el mismo handler de la Lambda `api` y los workers en proceso (import, tablero, SMS, email, recordatorios y conciliación). **Email y SMS no se envían: se imprimen en la Terminal 1**, con los tokens de verificación, los códigos OTP y los links de invitación para copiarlos al navegador.
+
+Recorrido sugerido: registrarte como planner (pega el token de la consola) → crear y publicar un evento → importar un CSV → enviar invitaciones → abrir un link de invitación de la consola y confirmar → crear un acceso de staff y abrir `/scan` → ver el tablero.
+
+### Comandos por carpeta
 
 ```bash
 # Backend
@@ -341,13 +498,13 @@ orquesta/
 
 ## 11. Equipo y responsables
 
-| Persona | Servicios lógicos | Superficie principal |
+| Persona | Responsabilidad | Carpeta |
 | --- | --- | --- |
-| **Hannah** | Event, Live | Eventos, invitados, RSVP, mesas, tablero |
-| **Stephanie** | Checkin, Payment | Escaneo offline, pagos y ledger; integración y calidad del backend |
-| **Emmanuel** | Dispatch, Notification | Proveedores, emergencias, SMS/email, recordatorios; infraestructura |
+| **Hannah** | Frontend: consola del planner, consola del proveedor, invitación pública y PWA de escaneo | `front/` |
+| **Stephanie** | Backend: los 6 servicios de dominio, PostgreSQL y migraciones, pruebas de aceptación y de carga | `back/` |
+| **Emmanuel** | Infraestructura: AWS / Terraform, despliegue, observabilidad y Learner Lab | `terraform/`, `.github/workflows/deploy.yml` |
 
-Flujo de trabajo: rama por cambio → PR con CI en verde → revisión de otro integrante → merge a `main`. El trabajo abierto vive en [GitHub Issues](https://github.com/stephy0410/orquesta/issues).
+Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El trabajo abierto vive en [GitHub Issues](https://github.com/stephy0410/orquesta/issues).
 
 ---
 
@@ -355,9 +512,35 @@ Flujo de trabajo: rama por cambio → PR con CI en verde → revisión de otro i
 
 | Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
 | --- | --- | --- |
-| Sin prueba de carga del check-in (500 escrituras/s) ni del import (1 000 en < 30 s) | NFR no demostrados | Prueba con k6 / Artillery contra el entorno `lab` |
+| Cargas medidas en local (con latencia de AWS simulada en el import) | Falta la cifra en AWS | Correr `checkin-load.js` e `import-load.js` con `--target=http` en `lab` (issue #10) |
 | Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
-| Front aún no envía `If-Match` en mesas | El aviso de conflicto no se ve en la UI | Issue para el front; luego activar `SEATING_REQUIRE_IF_MATCH=true` |
 | Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |
-| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN en `lab` | Activar en `prod` (`email_provider_mode=ses`, `enable_cloudfront=true`) |
+| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN ni WAF en `lab` | Ya automático en `prod` (workflow Deploy) |
+| ¿Dominio propio? (por confirmar con el profesor) | Sin él no hay SPF/DKIM/DMARC ni URL propia con HTTPS | Listo en Terraform: definir `CUSTOM_DOMAIN` y `ROUTE53_ZONE_ID` y desplegar |
+| Datos del responsable en el Aviso de privacidad | El aviso necesita razón social, domicilio y correo ARCO reales | Completar `environment.privacy` en el front (revisión legal recomendada) |
 | PSP simulado (`MockStripeTestAdapter`) | Sin integración real | Adaptador Stripe en modo test detrás del puerto `PaymentProvider` (el contract test ya existe) |
+
+---
+
+## 13. Lista de verificación de producción
+
+Cada requisito transversal del README contra lo que lo cumple. **Lo único pendiente de decidir es el dominio propio**; todo lo demás se activa con el despliegue a `prod`.
+
+| Requisito | Cómo se cumple | Dónde |
+| --- | --- | --- |
+| TLS en todo el tráfico | CloudFront `redirect-to-https` (TLS 1.2+ con dominio propio); API Gateway solo HTTPS; RDS con TLS | `storage.tf`, `db.js` |
+| Cifrado en reposo con KMS | RDS/Aurora `storage_encrypted`; S3 SSE; PII cifrada con AES-256-GCM en la app; QR firmado con KMS | `database.tf`, `storage.tf`, `crypto.js` |
+| Cada organización solo ve sus datos | Autorización por membresía en cada endpoint (`404` si nunca hubo relación) | `http.js`, `authorizeEventAccess` |
+| QR sin datos personales | JWS con `{invitation_id, event_id, token_version}` | `pg-store-methods.js` |
+| Aviso de privacidad LFPDPPP | Página `/privacidad`, enlazada en invitación, registros y correos | `front/…/privacy.page.ts` |
+| Teléfonos de invitados se borran a los 90 días | Barrido diario en `outbox-poller` | `sweepGuestPhones` |
+| Baja del invitado respetada | Baja por canal sin cuenta; envíos, reenvíos y recordatorios la respetan | `unsubscribeGuest`, migración `007` |
+| SPF, DKIM y DMARC | Registros en Route 53 + identidad SES verificada | `domain.tf` (requiere dominio) |
+| WAF | Reglas administradas + límite por IP en CloudFront | `waf.tf` |
+| Si cae una zona no se pierde nada | Aurora: almacenamiento en 6 copias / 3 AZ + réplica para failover | `database.tf` |
+| PITR 7 días, RPO ≤ 5 min, RTO < 1 h | `backup_retention_period = 7` en `prod`; Aurora PITR | `database.tf` |
+| Alarmas de p99, 5xx y colas atascadas en < 5 min | API 5xx, latencia p99, errores por Lambda, edad del mensaje más viejo por cola, DLQ, frescura, PSP; todas notifican a SNS (+ email) | `observability.tf` |
+| Aislamiento de fallas | Colas independientes por canal; PSP y notificaciones nunca bloquean check-in ni contratación | `notify-*`, `payment-reconciliation.js` |
+| Congelamiento de despliegues en sábado | El workflow rechaza `apply` a `prod` en sábado | `deploy.yml` |
+| Accesibilidad WCAG 2.2 AA y LCP < 2.5 s | Auditoría axe + recorrido con teclado; LCP p75 2.35 s | PRs #14 y #15 (front) |
+

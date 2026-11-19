@@ -1,28 +1,27 @@
 <main class="inv-shell">
   <div class="oq-container-narrow">
     <header class="inv-brand">
-      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="32" height="32" />
-      <span>Orquesta · Invitación digital</span>
+      <span class="oq-brand">Orquesta</span>
     </header>
 
     @if (!token()) {
       <section class="oq-card inv-card">
         <h1>Abre tu invitación</h1>
         <p class="oq-page-subtitle">
-          El enlace de invitación usa un token privado en el fragmento de URL (<code>#t=...</code>)
-          para cuidar tu privacidad y no requerir cuenta.
+          Abre el enlace que te llegó por SMS o correo. Si solo tienes el código de tu invitación,
+          pégalo aquí.
         </p>
-        <form class="oq-form-grid" (ngSubmit)="openManualToken()">
+        <form class="oq-form-grid inv-manual" (submit)="$event.preventDefault(); openManualToken()">
           <div class="oq-field">
-            <label class="oq-label" for="rsvpTokenInput">Token de RSVP</label>
+            <label class="oq-label" for="rsvpTokenInput">Código de invitación</label>
             <input
               id="rsvpTokenInput"
               name="rsvpTokenInput"
               class="oq-input mono"
               type="text"
-              placeholder="rsvp_..."
-              [ngModel]="manualTokenInput()"
-              (ngModelChange)="manualTokenInput.set($event)"
+              autocomplete="off"
+              [value]="manualTokenInput()"
+              (input)="onManualTokenInput($event)"
             />
           </div>
           <button class="oq-btn oq-btn-primary" type="submit">Cargar invitación</button>
@@ -30,21 +29,19 @@
       </section>
     } @else if (loading()) {
       <section class="oq-card inv-card inv-center">
-        <p class="oq-page-subtitle">Cargando detalles del evento y pase QR...</p>
+        <p class="oq-page-subtitle" role="status">Cargando tu invitación…</p>
       </section>
     } @else if (error(); as apiErr) {
       <section class="oq-card inv-card">
-        <div class="oq-alert oq-alert-error">
-          <strong>{{ apiErr.code }}</strong> — {{ apiErr.message }}
-        </div>
+        <div class="oq-alert oq-alert-error" role="alert">{{ apiErr.message }}</div>
         @if (apiErr.code === 'TOKEN_TIPO_INCORRECTO') {
           <p class="oq-hint">
-            Estás intentando abrir un QR de check-in en la página de confirmación RSVP. Utiliza el
-            enlace enviado a tu SMS o correo.
+            Este código es tu pase de entrada, no el enlace para responder. Para confirmar tu
+            asistencia abre el enlace que te llegó por SMS o correo.
           </p>
         } @else if (apiErr.code === 'INVITACION_REVOCADA') {
           <p class="oq-hint">
-            Esta invitación fue dada de baja o reemplazada por el organizador del evento.
+            El organizador canceló esta invitación o te envió una más reciente. Revisa tus mensajes.
           </p>
         }
         <button class="oq-btn oq-btn-secondary" type="button" (click)="loadRsvpState(token()!)">
@@ -54,7 +51,7 @@
     } @else if (state(); as inv) {
       <section class="oq-card inv-card">
         <div class="oq-between">
-          <span class="oq-badge oq-badge-info">Sin cuenta requerida</span>
+          <span class="oq-hint">No necesitas crear cuenta</span>
           @if (inv.respuesta === 'confirma') {
             <span class="oq-badge oq-badge-success">Asistencia confirmada</span>
           } @else if (inv.respuesta === 'declina') {
@@ -64,24 +61,18 @@
           }
         </div>
 
+        <p class="inv-kicker">Tienes una invitación a</p>
         <h1 class="inv-title">{{ inv.evento.nombre }}</h1>
+        <app-olive-sprig class="inv-sprig" [width]="150" />
 
         <dl class="inv-meta">
           <div>
             <dt>Fecha</dt>
-            <dd>{{ inv.evento.fecha }}</dd>
+            <dd>{{ fechaLabel() }}</dd>
           </div>
           <div>
             <dt>Horario</dt>
-            <dd>
-              {{ inv.evento.inicio }}
-              @if (inv.evento.fin) {
-                – {{ inv.evento.fin }}
-              }
-              @if (inv.evento.timezone) {
-                <span class="oq-hint">({{ inv.evento.timezone }})</span>
-              }
-            </dd>
+            <dd>{{ horarioLabel() }}</dd>
           </div>
           @if (venueLabel()) {
             <div>
@@ -92,7 +83,7 @@
         </dl>
 
         @if (lastActionBanner()) {
-          <div class="oq-alert oq-alert-success">{{ lastActionBanner() }}</div>
+          <div class="oq-alert oq-alert-success" role="status">{{ lastActionBanner() }}</div>
         }
 
         <div class="inv-actions">
@@ -104,7 +95,7 @@
             [disabled]="submitting()"
             (click)="respond('confirma')"
           >
-            {{ inv.respuesta === 'confirma' ? 'Confirmado (mantener)' : 'Confirmar asistencia' }}
+            {{ inv.respuesta === 'confirma' ? 'Mantener confirmación' : 'Confirmar asistencia' }}
           </button>
 
           <button
@@ -113,13 +104,13 @@
             [disabled]="submitting()"
             (click)="respond('declina')"
           >
-            {{ inv.respuesta === 'declina' ? 'Declinado (mantener)' : 'No podré asistir' }}
+            {{ inv.respuesta === 'declina' ? 'Mantener que no asistiré' : 'No podré asistir' }}
           </button>
         </div>
 
         @if (inv.respondido_en) {
           <p class="oq-hint inv-timestamp">
-            Última respuesta: <span class="mono">{{ inv.respondido_en }}</span>
+            Respondiste el {{ respondidoLabel() }}
             @if (inv.recordatorios_cancelados) {
               · Recordatorios cancelados: {{ inv.recordatorios_cancelados }}
             }
@@ -129,24 +120,65 @@
         <hr class="inv-divider" />
 
         <div class="inv-qr-box">
-          <h2>Tu QR de check-in</h2>
+          <h2>Tu pase de entrada</h2>
           <p class="oq-hint">
-            Preséntalo en la entrada del venue. Permanece disponible antes y después de responder.
+            Muéstralo en la entrada. Lo puedes volver a abrir con el mismo enlace cuando quieras.
           </p>
 
           @if (qrDataUrl()) {
-            <img class="inv-qr-img" [src]="qrDataUrl()!" alt="Código QR de check-in" />
+            <img class="inv-qr-img" [src]="qrDataUrl()!" alt="Código QR de tu pase de entrada" />
           } @else if (inv.qr.png_url) {
-            <img class="inv-qr-img" [src]="inv.qr.png_url" alt="Código QR de check-in" />
+            <img class="inv-qr-img" [src]="inv.qr.png_url" alt="Código QR de tu pase de entrada" />
           }
 
           @if (inv.qr.codigo_corto) {
             <div class="inv-short-code">
-              <span>Código corto (fallback sin cámara)</span>
+              <span>Si la cámara no lee tu QR, dicta este código</span>
               <strong class="mono">{{ inv.qr.codigo_corto }}</strong>
             </div>
           }
         </div>
+
+        <hr class="inv-divider" />
+
+        <section class="inv-messages" aria-labelledby="inv-messages-title">
+          <h2 id="inv-messages-title">Mensajes sobre este evento</h2>
+          @if (bajaBanner()) {
+            <div class="oq-alert oq-alert-success" role="status">{{ bajaBanner() }}</div>
+          }
+          @if (inv.bajas?.sms && inv.bajas?.email) {
+            <p class="oq-hint">Ya no recibirás mensajes por SMS ni por correo. Tu pase sigue siendo válido.</p>
+          } @else {
+            <p class="oq-hint">
+              Puedes dejar de recibir recordatorios y avisos. Tu invitación y tu pase siguen siendo válidos.
+            </p>
+            <div class="inv-unsub">
+              @if (!inv.bajas?.sms) {
+                <button
+                  type="button"
+                  class="inv-unsub-btn"
+                  [disabled]="unsubscribing()"
+                  (click)="unsubscribe('sms')"
+                >
+                  Dejar de recibir SMS
+                </button>
+              }
+              @if (!inv.bajas?.email) {
+                <button
+                  type="button"
+                  class="inv-unsub-btn"
+                  [disabled]="unsubscribing()"
+                  (click)="unsubscribe('email')"
+                >
+                  Dejar de recibir correos
+                </button>
+              }
+            </div>
+          }
+          <p class="oq-hint">
+            Consulta cómo usamos tus datos en el <a href="/privacidad">Aviso de privacidad</a>.
+          </p>
+        </section>
       </section>
     }
   </div>
