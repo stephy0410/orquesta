@@ -3,6 +3,7 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { formatFecha, humanize } from '../../../shared/labels';
 import {
   AvailabilityWindowDto,
   ROLES_CATALOGO,
@@ -18,6 +19,8 @@ import {
 export class WorkerAvailabilityPage implements OnInit {
   private readonly api = inject(ApiService);
 
+  readonly label = humanize;
+  readonly formatFecha = formatFecha;
   readonly allRoles = ROLES_CATALOGO;
   readonly allZones = WORKER_ZONES;
 
@@ -44,7 +47,7 @@ export class WorkerAvailabilityPage implements OnInit {
       this.windows.set(res.items ?? []);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando ventanas.',
+        err instanceof OrquestaApiError ? err.message : 'Error cargando ventanas.',
       );
     } finally {
       this.loading.set(false);
@@ -72,7 +75,7 @@ export class WorkerAvailabilityPage implements OnInit {
     const inicioIso = toIsoString(this.inicio());
     const finIso = toIsoString(this.fin());
     if (!inicioIso || !finIso) {
-      this.error.set('Ingresa inicio y fin válidos.');
+      this.error.set('Revisa el horario: la hora de término debe ser después de la de inicio.');
       return;
     }
 
@@ -87,18 +90,18 @@ export class WorkerAvailabilityPage implements OnInit {
       const editId = this.editingId();
       if (editId) {
         await this.api.patch(`/v1/worker/availability/${encodeURIComponent(editId)}`, body);
-        this.success.set('Ventana actualizada.');
+        this.success.set('Horario actualizado.');
         this.cancelEdit();
       } else {
         await this.api.post('/v1/worker/availability', body);
-        this.success.set('Ventana de disponibilidad declarada (RF-22).');
+        this.success.set('Horario agregado.');
         this.inicio.set('');
         this.fin.set('');
       }
       await this.loadWindows();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo guardar.',
+        err instanceof OrquestaApiError ? err.message : 'No se pudo guardar.',
       );
     }
   }
@@ -108,11 +111,11 @@ export class WorkerAvailabilityPage implements OnInit {
     this.success.set(null);
     try {
       await this.api.delete(`/v1/worker/availability/${encodeURIComponent(windowId)}`);
-      this.success.set('Ventana retirada.');
+      this.success.set('Horario quitado.');
       await this.loadWindows();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo eliminar.',
+        err instanceof OrquestaApiError ? err.message : 'No se pudo eliminar.',
       );
     }
   }

@@ -200,6 +200,14 @@ export class PlannerDashboardPage implements OnInit {
       : d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   }
 
+  /** Qué tan al día están los números, en palabras (el detalle en ms es para monitoreo). */
+  freshnessLabel(lagMs: number | null): string {
+    if (lagMs === null) return 'Sin datos recientes';
+    if (lagMs < 5000) return 'Al día';
+    const s = Math.round(lagMs / 1000);
+    return s < 60 ? `Con ${s} s de retraso` : `Con ${Math.round(s / 60)} min de retraso`;
+  }
+
   lagBadgeClass(lagMs: number | null): string {
     if (lagMs === null) return 'oq-badge-neutral';
     if (lagMs <= 5000) return 'oq-badge-success';

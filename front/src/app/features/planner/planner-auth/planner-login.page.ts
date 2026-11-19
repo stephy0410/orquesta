@@ -103,7 +103,9 @@ import { AuthService } from '../../../core/auth/auth.service';
               <input
                 class="oq-input mono"
                 style="flex: 1 1 150px"
-                placeholder="Token de recuperación"
+                aria-label="Código de recuperación"
+                autocomplete="one-time-code"
+                placeholder="Código del correo"
                 [ngModel]="resetToken()"
                 (ngModelChange)="resetToken.set($event)"
               />
@@ -158,7 +160,7 @@ export class PlannerLoginPage {
       await this.router.navigateByUrl(redirect);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Credenciales inválidas.',
+        err instanceof OrquestaApiError ? err.message : 'Credenciales inválidas.',
       );
     } finally {
       this.loading.set(false);
@@ -173,7 +175,7 @@ export class PlannerLoginPage {
       this.info.set('Si el correo existe, enviamos instrucciones de recuperación.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error solicitando reset.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos enviar el correo de recuperación.',
       );
     }
   }
@@ -187,7 +189,7 @@ export class PlannerLoginPage {
       this.showReset.set(false);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido o vencido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     }
   }

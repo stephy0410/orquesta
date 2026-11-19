@@ -77,18 +77,20 @@ import { AuthService } from '../../../core/auth/auth.service';
         <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />
 
         <h2>Verificar correo electrónico</h2>
-        <p class="oq-hint">Ingresa el token de verificación (uso único, 72 h).</p>
+        <p class="oq-hint">Pega el código que te enviamos por correo. Vence en 72 horas.</p>
         <form class="oq-row" (ngSubmit)="verifyEmail()">
           <input
             name="verifyToken"
             class="oq-input mono"
             style="flex: 1 1 220px"
-            placeholder="Token de verificación"
+            aria-label="Código de verificación"
+            autocomplete="one-time-code"
+            placeholder="Código de verificación"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
           <button type="submit" class="oq-btn oq-btn-accent" [disabled]="loading()">
-            Verificar email
+            Verificar correo
           </button>
         </form>
 
@@ -123,11 +125,13 @@ export class PlannerRegisterPage {
     try {
       const res = await this.auth.registerPlanner(this.email().trim(), this.password());
       this.success.set(
-        `Usuario creado (${res.user_id}). Email verificado: ${res.email_verificado ? 'Sí' : 'Pendiente'}.`,
+        res.email_verificado
+          ? 'Cuenta creada. Ya puedes iniciar sesión.'
+          : 'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al registrar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
       );
     } finally {
       this.loading.set(false);
@@ -143,10 +147,10 @@ export class PlannerRegisterPage {
 
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Email verificado correctamente. Ya puedes iniciar sesión.');
+      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido o vencido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     } finally {
       this.loading.set(false);

@@ -101,7 +101,7 @@ export class WorkerLoginPage {
       await this.router.navigateByUrl(redirect);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Credenciales inválidas.',
+        err instanceof OrquestaApiError ? err.message : 'Credenciales inválidas.',
       );
     } finally {
       this.loading.set(false);

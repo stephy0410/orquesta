@@ -67,12 +67,7 @@
             </span>
           }
           <span class="oq-badge" [ngClass]="lagBadgeClass(ev.frescura.lag_ms)">
-            Retraso {{ ev.frescura.lag_ms !== null ? ev.frescura.lag_ms + ' ms' : '—' }}
-            <span class="oq-sr-only">
-              @if (ev.frescura.lag_p95_ms !== null) {
-                , percentil 95: {{ ev.frescura.lag_p95_ms }} ms
-              }
-            </span>
+            {{ freshnessLabel(ev.frescura.lag_ms) }}
           </span>
         </div>
       </header>
@@ -153,20 +148,16 @@
             <caption class="oq-sr-only">Escáneres de {{ ev.nombre }}</caption>
             <thead>
               <tr>
-                <th scope="col">Dispositivo</th>
-                <th scope="col">En cola</th>
-                <th scope="col">Última confirmada</th>
-                <th scope="col">Secuencia</th>
+                <th scope="col">Escáner</th>
+                <th scope="col">Entradas por enviar</th>
                 <th scope="col">Último reporte</th>
               </tr>
             </thead>
             <tbody>
               @for (d of devs; track d.device_id) {
                 <tr>
-                  <td class="mono">{{ d.device_id }}</td>
+                  <td>Escáner {{ $index + 1 }}</td>
                   <td>{{ d.cola_reportada }}</td>
-                  <td>{{ d.ultima_seq_ackeada }}</td>
-                  <td>{{ d.seq_confirmada }}</td>
                   <td>
                     {{ formatCorte(d.heartbeat_en) }}
                     @if (isDeviceStale(d.heartbeat_en)) {

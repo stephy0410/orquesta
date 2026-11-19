@@ -97,7 +97,9 @@ import { AuthService } from '../../../core/auth/auth.service';
             name="verifyToken"
             class="oq-input mono"
             style="flex: 1 1 220px"
-            placeholder="Token de verificación recibido por email"
+            aria-label="Código de verificación"
+            autocomplete="one-time-code"
+            placeholder="Código que te enviamos por correo"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
@@ -137,11 +139,11 @@ export class WorkerRegisterPage {
     try {
       const res = await this.auth.registerWorker(this.email().trim(), this.password(), this.tipo());
       this.success.set(
-        `Cuenta creada (${res.user_id}). Estado email: ${res.estado_email}. Verifica tu correo para iniciar sesión.`,
+        'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al registrar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
       );
     } finally {
       this.loading.set(false);
@@ -156,10 +158,10 @@ export class WorkerRegisterPage {
     this.success.set(null);
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Correo verificado correctamente. Ya puedes iniciar sesión.');
+      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Token inválido.',
+        err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',
       );
     } finally {
       this.loading.set(false);

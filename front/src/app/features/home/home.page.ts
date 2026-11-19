@@ -31,7 +31,7 @@ import { ProductTriptychComponent } from '../../shared/ui/product-triptych.compo
       <section class="home-intro">
         <h1>Dirige todos tus eventos desde un solo lugar</h1>
         <p class="home-lede">
-          Invitaciones con QR por SMS y correo, check-in en la puerta aunque no haya señal, un
+          Invitaciones con QR por SMS y correo, registro de entrada en la puerta aunque no haya señal, un
           tablero en vivo para todos los eventos del día y proveedores a un toque cuando algo
           falla.
         </p>

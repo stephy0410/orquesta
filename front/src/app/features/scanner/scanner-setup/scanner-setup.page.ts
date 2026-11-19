@@ -5,6 +5,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../../core/auth/auth.service';
 import { ActiveScanSessionMeta } from '../../../core/auth/auth-token.store';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { humanize } from '../../../shared/labels';
 import { ConnectivityService } from '../../../core/connectivity/connectivity.service';
 import { BatchSyncService } from '../../../core/sync/batch-sync.service';
 import { ScanStorageService } from '../../../core/storage/scan-storage.service';
@@ -20,6 +21,7 @@ export class ScannerSetupPage implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly sync = inject(BatchSyncService);
   private readonly storage = inject(ScanStorageService);
+  readonly label = humanize;
   readonly connectivity = inject(ConnectivityService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -52,17 +54,17 @@ export class ScannerSetupPage implements OnInit {
 
     this.loading.set(true);
     this.error.set(null);
-    this.statusMessage.set('Canjeando token de acceso al evento...');
+    this.statusMessage.set('Revisando tu código de acceso…');
 
     try {
       await this.auth.redeemEventAccessToken(token);
-      this.statusMessage.set('Descargando y verificando roster firmado (ES256)...');
+      this.statusMessage.set('Descargando la lista de invitados…');
       await this.sync.refreshRosterAndRevocations(true);
       await this.router.navigate(['/scan/terminal']);
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : err instanceof Error
             ? err.message
             : 'No se pudo iniciar la sesión de escaneo.',
@@ -79,17 +81,17 @@ export class ScannerSetupPage implements OnInit {
 
     this.loading.set(true);
     this.error.set(null);
-    this.statusMessage.set('Abriendo sesión de escaneo para el evento...');
+    this.statusMessage.set('Abriendo el escáner del evento…');
 
     try {
       await this.auth.openScanSessionFromAccount(eventId);
-      this.statusMessage.set('Descargando y verificando roster firmado (ES256)...');
+      this.statusMessage.set('Descargando la lista de invitados…');
       await this.sync.refreshRosterAndRevocations(true);
       await this.router.navigate(['/scan/terminal']);
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : err instanceof Error
             ? err.message
             : 'No se pudo abrir la sesión de escaneo.',

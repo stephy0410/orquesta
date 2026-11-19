@@ -13,6 +13,7 @@ import {
   PendingSummaryResponse,
   SendInvitationsResponse,
 } from '../../../core/api/models';
+import { humanize } from '../../../shared/labels';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
 
 @Component({
@@ -72,6 +73,13 @@ export class EventGuestsPage implements OnInit {
     this.fileIdempotencyKey.set(file ? this.api.newIdempotencyKey() : null);
   }
 
+  readonly label = humanize;
+
+  guestName(guestId: string): string {
+    const g = this.guests().find((x) => this.getGuestId(x) === guestId);
+    return g?.nombre ?? 'Invitado';
+  }
+
   downloadSampleCsv(): void {
     const csv = 'nombre,email,telefono\nAna Ruiz,ana@example.com,+525512345678\nLuis Prado,,+525500001111\n';
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -127,9 +135,9 @@ export class EventGuestsPage implements OnInit {
             errores: extra as GuestImportJobDto['errores'],
           });
         }
-        this.error.set(`${err.code}: ${err.message}`);
+        this.error.set(err.message);
       } else {
-        this.error.set('No se pudo subir el CSV.');
+        this.error.set('No pudimos subir la lista. Revisa que sea un archivo CSV e inténtalo de nuevo.');
       }
     }
   }
@@ -146,7 +154,7 @@ export class EventGuestsPage implements OnInit {
           this.stopImportPoll();
           this.importing.set(false);
           this.success.set(
-            `Import ${job.estado}: ${job.aceptadas} aceptadas, ${job.rechazadas} rechazadas, ${job.duplicadas_en_archivo} duplicadas.`,
+            `Lista subida: ${job.aceptadas} agregados, ${job.rechazadas} con errores y ${job.duplicadas_en_archivo} repetidos.`,
           );
           await Promise.all([this.loadPendingSummary(), this.loadGuests()]);
         }
@@ -190,7 +198,7 @@ export class EventGuestsPage implements OnInit {
       alcance === 'seleccion' ? selectedIds.length : (summary?.destinatarios ?? 0);
 
     if (confirmedCount <= 0) {
-      this.error.set('No hay destinatarios confirmados para enviar.');
+      this.error.set('No hay invitados por enviar.');
       return;
     }
 
@@ -208,7 +216,7 @@ export class EventGuestsPage implements OnInit {
       this.lastSendResult.set(res);
       this.confirmSendOpen.set(false);
       this.success.set(
-        `Envío ${res.envio_id} encolado: ${res.entregas_encoladas} entregas por SMS y Email.`,
+        `Listo: se están enviando ${res.entregas_encoladas} invitaciones por SMS y correo.`,
       );
       await Promise.all([this.loadPendingSummary(), this.loadGuests(), this.loadDeliveries()]);
     } catch (err) {
@@ -216,7 +224,7 @@ export class EventGuestsPage implements OnInit {
         await this.loadPendingSummary();
       }
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error disparando envío.',
+        err instanceof OrquestaApiError ? err.message : 'Error disparando envío.',
       );
     }
   }
@@ -240,12 +248,12 @@ export class EventGuestsPage implements OnInit {
         },
       );
       this.success.set(
-        `Reenvío ${res.envio_id} encolado (${res.entregas_encoladas} entregas).`,
+        `Listo: se están reenviando ${res.entregas_encoladas} invitaciones.`,
       );
       await this.loadDeliveries();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'No se pudo reenviar.',
+        err instanceof OrquestaApiError ? err.message : 'No se pudo reenviar.',
       );
     }
   }
@@ -267,7 +275,7 @@ export class EventGuestsPage implements OnInit {
       this.guestsNextCursor.set(res.next_cursor ?? null);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error listando invitados.',
+        err instanceof OrquestaApiError ? err.message : 'Error listando invitados.',
       );
     }
   }
@@ -297,12 +305,14 @@ export class EventGuestsPage implements OnInit {
         asientos_liberados: number;
       }>(`/v1/events/${encodeURIComponent(this.eventId())}/guests/${encodeURIComponent(guestId)}`);
       this.success.set(
-        `Invitado dado de baja (${res.deleted_at}). Token revocado, ${res.jobs_cancelados} jobs cancelados, ${res.asientos_liberados} asientos liberados.`,
+        res.asientos_liberados > 0
+          ? 'Invitado eliminado. Su invitación ya no funciona y su lugar en la mesa quedó libre.'
+          : 'Invitado eliminado. Su invitación ya no funciona.',
       );
       await Promise.all([this.loadGuests(), this.loadPendingSummary()]);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error dando de baja.',
+        err instanceof OrquestaApiError ? err.message : 'Error dando de baja.',
       );
     }
   }
