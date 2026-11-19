@@ -39,9 +39,15 @@
     </div>
     <div class="gl-actions">
       @if ((pendingSummary()?.destinatarios ?? 0) > 0) {
-        <button type="button" class="oq-btn oq-btn-primary" (click)="prepareSend('pendiente_envio')">
-          Enviar invitaciones ({{ pendingSummary()?.destinatarios }})
-        </button>
+        @if (sinMesaPorEnviar().length > 0) {
+          <a class="oq-btn oq-btn-primary" [routerLink]="['/planner/events', eventId(), 'seating']">
+            Asignar mesas ({{ sinMesaPorEnviar().length }} sin mesa)
+          </a>
+        } @else {
+          <button type="button" class="oq-btn oq-btn-primary" (click)="prepareSend('pendiente_envio')">
+            Enviar invitaciones ({{ pendingSummary()?.destinatarios }})
+          </button>
+        }
       }
       @if (guests().length > 0) {
         <button type="button" class="oq-btn oq-btn-secondary" (click)="uploadOpen.set(!uploadOpen())">
@@ -80,6 +86,13 @@
       </div>
     }
 
+
+  @if (sinMesaPorEnviar().length > 0 && (pendingSummary()?.destinatarios ?? 0) > 0) {
+    <p class="oq-hint gl-rule">
+      Cada invitado necesita mesa antes de recibir su invitación, para que su pase diga dónde se
+      sienta. Faltan {{ sinMesaPorEnviar().length }}.
+    </p>
+  }
 
   @if (uploadOpen() || guests().length === 0) {
     <div class="gl-upload">

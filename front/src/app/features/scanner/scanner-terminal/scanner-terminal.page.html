@@ -90,8 +90,14 @@
       @if (v.guestName) {
         <p class="verdict-guest">
           {{ v.guestName }}
-          @if (v.mesa) { , mesa <strong>{{ v.mesa }}</strong> }
           @if (v.codigoCorto) { (código <strong class="mono">{{ v.codigoCorto }}</strong>) }
+        </p>
+        <p class="verdict-table">
+          @if (v.mesa) {
+            Mesa <strong>{{ v.mesa }}</strong>
+          } @else {
+            Sin mesa asignada
+          }
         </p>
       }
       <p>{{ v.subtitle }}</p>

@@ -2258,8 +2258,17 @@ export class InMemoryStore {
     );
     const qrToken = inv.qr_token_cifrado ? this._dec(inv.qr_token_cifrado) : null;
     const pngUrl = inv.qr_s3_key ? objectStorage.getPublicUrl({ key: inv.qr_s3_key }) : null;
+    const sa = [...this.seatAssignments.values()].find(
+      (x) => x.event_id === inv.event_id && x.guest_id === guest.id && (x.estado === "confirmado" || x.estado === "pendiente")
+    );
+    const table = sa ? this.eventTables.get(sa.table_id) : null;
 
     return {
+      // Solo el nombre y su mesa: el invitado ya tiene el enlace, no exponemos correo ni teléfono.
+      invitado: {
+        nombre: guest.nombre,
+        mesa: table && !table.deleted_at ? { numero: table.numero, nombre: table.nombre || null } : null,
+      },
       respuesta: activeRsvp ? activeRsvp.respuesta : null,
       respondido_en: activeRsvp ? activeRsvp.respondido_en : null,
       qr: { token: qrToken, png_url: pngUrl, codigo_corto: inv.codigo_corto },

@@ -440,6 +440,8 @@ export interface PublicQrInfo {
 }
 
 export interface PublicRsvpStateResponse {
+  /** Nombre del invitado y su mesa, si ya tiene. */
+  invitado?: { nombre: string; mesa: { numero: number; nombre: string | null } | null };
   respuesta: RsvpRespuesta | null;
   respondido_en: string | null;
   superseded_at?: string | null;

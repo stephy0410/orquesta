@@ -192,6 +192,7 @@ export class InvitationPage implements OnInit {
       );
       this.state.update((prev) => ({
         ...res,
+        invitado: res.invitado ?? prev?.invitado,
         evento: res.evento ?? prev?.evento,
       }));
       this.changing.set(false);

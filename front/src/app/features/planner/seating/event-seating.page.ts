@@ -52,17 +52,10 @@ export class EventSeatingPage implements OnInit {
   readonly success = signal<string | null>(null);
   readonly conflict = signal<string | null>(null);
 
-  readonly incluirPendientes = signal(false);
 
-  readonly porSentar = computed(() =>
-    this.unseated().filter(
-      (u) => u.estado_rsvp === 'confirma' || (this.incluirPendientes() && u.estado_rsvp !== 'declina'),
-    ),
-  );
+  /** Todos los que no declinaron necesitan mesa: la invitación se envía hasta tenerla. */
+  readonly porSentar = computed(() => this.unseated().filter((u) => u.estado_rsvp !== 'declina'));
   readonly noVienen = computed(() => this.unseated().filter((u) => u.estado_rsvp === 'declina').length);
-  readonly sinRespuesta = computed(
-    () => this.unseated().filter((u) => u.estado_rsvp !== 'confirma' && u.estado_rsvp !== 'declina').length,
-  );
 
   readonly seatedByTable = computed(() => {
     const byId: Record<string, GuestDto[]> = {};
@@ -97,7 +90,9 @@ export class EventSeatingPage implements OnInit {
   }
 
   tableLabel(t: TableDto): string {
-    return t.nombre || `Mesa ${t.numero ?? ''}`.trim();
+    // El número es lo que ve el escáner en la puerta, así que siempre va al frente.
+    const num = t.numero ? `Mesa ${t.numero}` : 'Mesa';
+    return t.nombre && !/^mesa\b/i.test(t.nombre.trim()) ? `${num} · ${t.nombre}` : t.nombre?.trim() || num;
   }
 
   async refreshAll(): Promise<void> {
