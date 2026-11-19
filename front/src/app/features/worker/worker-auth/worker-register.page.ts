@@ -182,7 +182,11 @@ export class WorkerRegisterPage {
 
   constructor() {
     // Enlace "Verificar mi correo": /…/register?codigo=vfy_… verifica en un clic.
-    const codigo = this.route.snapshot.queryParamMap.get('codigo');
+    const q = this.route.snapshot.queryParamMap;
+    // Desde el login ("Ingresar mi código"): paso de código con el correo ya lleno.
+    if (q.get('email')) this.email.set(q.get('email') ?? '');
+    if (q.get('verificar')) this.step.set('codigo');
+    const codigo = q.get('codigo');
     if (codigo) {
       this.verifyToken.set(codigo);
       this.step.set('codigo');

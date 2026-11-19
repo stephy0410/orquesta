@@ -36,6 +36,19 @@ import { AuthService } from '../../../core/auth/auth.service';
         @if (error()) {
           <div class="oq-alert oq-alert-error">{{ error() }}</div>
         }
+        @if (needsVerification()) {
+          <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem">
+            <button type="button" class="oq-btn oq-btn-secondary" [disabled]="loading()" (click)="resendVerification()">
+              Reenviar correo de verificación
+            </button>
+            <a class="oq-btn oq-btn-primary" routerLink="/worker/register" [queryParams]="{ verificar: 1, email: email().trim() }">
+              Ingresar mi código
+            </a>
+          </div>
+        }
+        @if (info()) {
+          <div class="oq-alert oq-alert-success">{{ info() }}</div>
+        }
 
         <form class="oq-form-grid" (ngSubmit)="submit()">
           <div class="oq-field">
@@ -92,11 +105,29 @@ export class WorkerLoginPage {
   readonly password = signal('');
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
+  readonly info = signal<string | null>(null);
+  readonly needsVerification = signal(false);
+
+  async resendVerification(): Promise<void> {
+    const email = this.email().trim();
+    if (!email || this.loading()) return;
+    this.loading.set(true);
+    try {
+      await this.auth.resendVerification(email);
+      this.error.set(null);
+      this.info.set(`Te mandamos un correo nuevo a ${email} con el botón «Verificar mi correo». Revisa también spam.`);
+    } catch (err) {
+      this.error.set(err instanceof OrquestaApiError ? err.message : 'No pudimos reenviar el correo.');
+    } finally {
+      this.loading.set(false);
+    }
+  }
 
   async submit(): Promise<void> {
     if (this.loading()) return;
     this.loading.set(true);
     this.error.set(null);
+    this.needsVerification.set(false);
     try {
       await this.auth.login(this.email().trim(), this.password(), 'worker');
       const redirect = this.route.snapshot.queryParamMap.get('redirect');
@@ -111,6 +142,9 @@ export class WorkerLoginPage {
         .catch(() => false);
       await this.router.navigateByUrl(tienePerfil ? '/worker/requests' : '/worker/profile');
     } catch (err) {
+      if (err instanceof OrquestaApiError && err.code === 'EMAIL_NOT_VERIFIED') {
+        this.needsVerification.set(true);
+      }
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Credenciales inválidas.',
       );
