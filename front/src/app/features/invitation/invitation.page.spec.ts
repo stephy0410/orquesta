@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { ORQUESTA_API_BASE_URL } from '../../core/api/api-config';
 import { apiInterceptor } from '../../core/api/api.interceptor';
+import { RETRY_BASE_MS } from '../../core/api/api.service';
 import {
   InvitationPage,
   extractRsvpTokenFromHash,
@@ -20,6 +21,10 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe('InvitationPage (RF-18, NFR-02)', () => {
+  const retryBase = RETRY_BASE_MS.value;
+  beforeAll(() => (RETRY_BASE_MS.value = 1));
+  afterAll(() => (RETRY_BASE_MS.value = retryBase));
+
   let httpMock: HttpTestingController;
 
   beforeEach(async () => {
@@ -209,9 +214,13 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    httpMock
-      .expectOne('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp')
-      .flush({ error: { code: 'ERR', message: 'fail' } }, { status: 503, statusText: 'Unavailable' });
+    // El cliente reintenta 3 veces un 503 (saturación momentánea) antes de rendirse.
+    for (let intento = 0; intento <= 3; intento++) {
+      if (intento > 0) await new Promise((r) => setTimeout(r, 15));
+      httpMock
+        .expectOne('https://api.orquesta.test/v1/public/invitations/rsvp_tok_xyz/rsvp')
+        .flush({ error: { code: 'ERR', message: 'fail' } }, { status: 503, statusText: 'Unavailable' });
+    }
 
     await new Promise((r) => setTimeout(r, 25));
     await fixture.whenStable();

@@ -41,7 +41,9 @@ resource "aws_lambda_function" "api" {
   filename         = data.archive_file.backend_bundle.output_path
   source_code_hash = data.archive_file.backend_bundle.output_base64sha256
   timeout          = 29
-  memory_size      = 512
+  # Más memoria = más CPU en Lambda: login (hash de contraseña) y arranque en frío más rápidos,
+  # así cada ejecución dura menos y la misma concurrencia atiende más peticiones en el pico.
+  memory_size = var.api_memory_mb
 
   depends_on = [
     aws_cloudwatch_log_group.lambdas,
