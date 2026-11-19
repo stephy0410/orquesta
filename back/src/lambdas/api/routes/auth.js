@@ -51,6 +51,7 @@ export const authRoutes = [
           user_id: user.id,
           to: normalized,
           token: rawToken,
+          cuenta: "planner",
         },
         "email"
       );
@@ -102,6 +103,7 @@ export const authRoutes = [
             to: normalized,
             token: rawToken,
             tipo,
+            cuenta: "worker",
           },
           "email"
         );
@@ -124,6 +126,39 @@ export const authRoutes = [
       }
       const res = await ctx.store.confirmEmailChallenge(token, ctx.now());
       return jsonResponse(200, { email_verificado: res.email_verificado });
+    },
+  },
+  {
+    // Reenvía el correo de verificación (si se perdió o cayó en spam). Responde igual exista o no
+    // la cuenta para no revelar qué correos están registrados; el WAF limita el abuso por IP.
+    method: "POST",
+    pattern: "/v1/auth/verify-email/resend",
+    async handler(req, ctx) {
+      const normalized = normalizeEmail(req.body?.email);
+      if (!normalized) throw validationError("email inválido", "email");
+      const user = await ctx.store.findUserByEmail(normalized);
+      if (user && !user.deleted_at && !user.email_verificado_en) {
+        const rawToken = generateOpaqueToken("vfy_", 24);
+        await ctx.store.createChallenge({
+          userId: user.id,
+          proposito: "verify_email",
+          canal: "email",
+          destino: normalized,
+          codigoRaw: rawToken,
+          expiraEn: new Date(ctx.now().getTime() + 72 * 60 * 60 * 1000),
+        });
+        await ctx.queueBus.publishNotification(
+          {
+            event_type: "verify_email",
+            user_id: user.id,
+            to: normalized,
+            token: rawToken,
+            cuenta: (user.roles || []).includes("worker") ? "worker" : "planner",
+          },
+          "email"
+        );
+      }
+      return jsonResponse(202, { enviado: true });
     },
   },
   {

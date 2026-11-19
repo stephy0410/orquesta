@@ -2887,3 +2887,37 @@ test("Pagos: Stripe Checkout sin doble sesión, confirma al volver o por webhook
   const gB2 = await h.request("GET", `/v1/reservations/${resB}/payments`, { headers: planner.headers });
   ledgerOk(gB2.body.items[0]);
 });
+
+test("Verificación de correo: enlace de un clic y reenvío sin revelar cuentas", async () => {
+  const h = await createTestHarness();
+  const email = "reenvio@orquesta.test";
+  const reg = await h.request("POST", "/v1/auth/register", { body: { email, password: "Password123!" } });
+  assert.equal(reg.status, 201);
+  await h.drainAll();
+  const primero = h.ctx.emailProvider.captured.filter((m) => m.to === email);
+  assert.equal(primero.length, 1);
+  assert.match(primero[0].html, /\/planner\/register\?codigo=vfy_/, "el correo trae enlace de un clic");
+
+  // Se perdió (spam): pide otro. Cuenta inexistente → misma respuesta y ningún correo.
+  const r1 = await h.request("POST", "/v1/auth/verify-email/resend", { body: { email } });
+  const r2 = await h.request("POST", "/v1/auth/verify-email/resend", { body: { email: "nadie@orquesta.test" } });
+  assert.equal(r1.status, 202);
+  assert.equal(r2.status, 202);
+  assert.deepEqual(r1.body, r2.body);
+  await h.drainAll();
+  const correos = h.ctx.emailProvider.captured.filter((m) => m.to === email);
+  assert.equal(correos.length, 2);
+  assert.equal(h.ctx.emailProvider.captured.filter((m) => m.to === "nadie@orquesta.test").length, 0);
+
+  const nuevo = correos[1].metadata.token;
+  const ok = await h.request("POST", "/v1/auth/verify-email", { body: { token: nuevo } });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.email_verificado, true);
+  const login = await h.request("POST", "/v1/auth/login", { body: { email, password: "Password123!" } });
+  assert.equal(login.status, 200);
+
+  // Ya verificada: reenviar no manda nada más.
+  await h.request("POST", "/v1/auth/verify-email/resend", { body: { email } });
+  await h.drainAll();
+  assert.equal(h.ctx.emailProvider.captured.filter((m) => m.to === email).length, 2);
+});

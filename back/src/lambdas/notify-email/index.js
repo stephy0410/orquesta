@@ -127,8 +127,16 @@ export function createNotifyEmailHandler(ctx) {
           let subject = "Notificación Orquesta";
           let html = "<p>Aviso de Orquesta</p>";
           if (msg.event_type === "verify_email") {
+            // Enlace de un clic (el front verifica con el código del query) y el código por si se copia a mano.
+            const base = (process.env.PUBLIC_BASE_URL || "https://orquesta.app").replace(/\/+$/, "");
+            const area = msg.cuenta === "worker" ? "worker" : "planner";
+            const link = `${base}/${area}/register?codigo=${encodeURIComponent(msg.token)}`;
             subject = "Verifica tu correo en Orquesta";
-            html = `<p>Token de verificación: ${msg.token}</p>`;
+            html =
+              `<p>Hola, gracias por registrarte en Orquesta.</p>` +
+              `<p><a href="${link}">Verificar mi correo</a></p>` +
+              `<p>O pega este código en la pantalla de registro: <strong>${escapeHtml(msg.token)}</strong></p>` +
+              `<p style="font-size:12px;color:#666">Vence en 72 horas. Si no creaste una cuenta, ignora este correo.</p>`;
           } else if (msg.event_type === "password_reset") {
             subject = "Recuperación de contraseña en Orquesta";
             html = `<p>Token de recuperación: ${msg.token}</p>`;
