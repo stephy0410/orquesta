@@ -67,10 +67,10 @@ import { ProductTriptychComponent } from '../../shared/ui/product-triptych.compo
         </article>
 
         <article class="home-role">
-          <h3>Staff en la puerta</h3>
+          <h3>El día del evento</h3>
           <p>
-            Escanea los QR desde el navegador del celular. Funciona sin señal y sincroniza solo
-            cuando vuelve la conexión; si la cámara falla, usa el código de 6 dígitos.
+            Escanea el QR de cada invitado desde el navegador del celular. Funciona sin señal y
+            sincroniza solo cuando vuelve la conexión; si la cámara falla, usa su código de 6 dígitos.
           </p>
           <a class="oq-link-cta" routerLink="/scan">Abrir el escáner</a>
         </article>

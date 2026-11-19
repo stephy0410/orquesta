@@ -98,7 +98,7 @@ export class EventCreatePage implements OnInit {
   }
 
   addRequirement(): void {
-    this.requerimientos.update((curr) => [...curr, { rol: 'staff_checkin', cantidad: 1 }]);
+    this.requerimientos.update((curr) => [...curr, { rol: 'mesero', cantidad: 1 }]);
   }
 
   removeRequirement(idx: number): void {

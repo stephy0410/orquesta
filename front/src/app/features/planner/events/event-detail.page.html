@@ -38,65 +38,19 @@
 
   <div class="ed-grid">
     <section class="oq-card" aria-labelledby="edDoorTitle">
-      <h2 id="edDoorTitle">Escáner de la puerta</h2>
+      <h2 id="edDoorTitle">Registro en la entrada</h2>
       <p class="oq-hint">
-        Comparte este acceso con quien recibirá a los invitados. Lo abre en su celular y escanea los
-        QR de las invitaciones, aunque no haya señal.
+        Cada invitado que confirma recibe su QR de entrada. El día del evento ábrelo aquí y escanea
+        los QR con la cámara; si se va la señal, las entradas se guardan y se envían al volver.
       </p>
-
-      @if (issuedAccessToken(); as tok) {
-        <div class="ed-share">
-          @if (accessQrDataUrl()) {
-            <img
-              class="ed-qr"
-              [src]="accessQrDataUrl()!"
-              alt="QR para abrir el escáner de este evento"
-              width="168"
-              height="168"
-            />
-          }
-          <div class="ed-share-body">
-            <p class="oq-hint">
-              Escanéalo con la cámara del celular o comparte el enlace. Vence el
-              {{ formatFecha(tok.expira_en) }}
-            </p>
-            <div class="ed-share-actions">
-              <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="copyAccessLink()">
-                {{ copied() ? 'Enlace copiado' : 'Copiar enlace' }}
-              </button>
-              <a class="oq-btn oq-btn-secondary oq-btn-sm" [href]="whatsappHref()" target="_blank" rel="noopener">
-                Enviar por WhatsApp
-              </a>
-              @if (canShare) {
-                <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="shareAccess()">
-                  Compartir
-                </button>
-              }
-              @if (accessQrPng()) {
-                <a
-                  class="oq-btn oq-btn-secondary oq-btn-sm"
-                  [href]="accessQrPng()!"
-                  [download]="'escaner-' + slug(ev.nombre) + '.png'"
-                >
-                  Descargar QR
-                </a>
-              }
-            </div>
-            <a class="ed-open" routerLink="/scan" [queryParams]="{ token: tok.qr_token }">
-              Abrir el escáner en este dispositivo
-            </a>
-          </div>
-        </div>
-      } @else {
-        <button
-          type="button"
-          class="oq-btn oq-btn-primary"
-          [disabled]="ev.estado === 'cerrado' || ev.estado === 'cancelado'"
-          (click)="issueAccessToken()"
-        >
-          Generar acceso
-        </button>
-      }
+      <button
+        type="button"
+        class="oq-btn oq-btn-primary"
+        [disabled]="opening() || ev.estado === 'cerrado' || ev.estado === 'cancelado'"
+        (click)="openScanner()"
+      >
+        {{ opening() ? 'Abriendo…' : 'Abrir el escáner' }}
+      </button>
     </section>
 
     <section class="oq-card" aria-labelledby="edCheckinsTitle">

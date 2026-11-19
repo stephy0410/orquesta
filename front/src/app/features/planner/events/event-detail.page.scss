@@ -40,41 +40,6 @@
   align-items: start;
 }
 
-.ed-share {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.25rem;
-  align-items: flex-start;
-}
-
-.ed-qr {
-  flex: none;
-  border: 1px solid var(--oq-border);
-  border-radius: var(--oq-radius-sm);
-  background: #ffffff;
-  padding: 0.4rem;
-}
-
-.ed-share-body {
-  flex: 1 1 200px;
-  display: grid;
-  gap: 0.75rem;
-
-  .oq-hint {
-    margin: 0;
-  }
-}
-
-.ed-share-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.ed-open {
-  font-size: 0.88rem;
-}
-
 .ed-list {
   list-style: none;
   margin: 0;
