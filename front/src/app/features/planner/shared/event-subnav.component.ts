@@ -15,7 +15,7 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
         ariaCurrentWhenActive="page"
         [routerLinkActiveOptions]="{ exact: true }"
       >
-        Resumen y accesos
+        Resumen
       </a>
       <a
         class="oq-tab"

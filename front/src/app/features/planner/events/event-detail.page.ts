@@ -1,8 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
-import * as QRCode from 'qrcode';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { humanize } from '../../../shared/labels';
@@ -29,6 +28,7 @@ import { EventSubnavComponent } from '../shared/event-subnav.component';
 })
 export class EventDetailPage implements OnInit {
   private readonly api = inject(ApiService);
+  private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
 
   readonly label = humanize;
@@ -40,30 +40,14 @@ export class EventDetailPage implements OnInit {
   readonly event = signal<EventDto | null>(null);
   readonly members = signal<EventMemberDto[]>([]);
   readonly checkins = signal<CheckinItemDto[]>([]);
-  readonly issuedAccessToken = signal<EventAccessTokenDto | null>(null);
-  readonly accessQrPng = signal<string | null>(null);
-  readonly copied = signal(false);
+  readonly opening = signal(false);
   readonly annulOpen = signal<string | null>(null);
-  readonly canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
-
-  /** Enlace que abre el escáner de este evento directamente (lo que codifica el QR). */
-  readonly accessLink = computed(() => {
-    const tok = this.issuedAccessToken();
-    return tok ? `${location.origin}/scan?token=${encodeURIComponent(tok.qr_token)}` : '';
-  });
-
-  readonly whatsappHref = computed(() => {
-    const nombre = this.event()?.nombre ?? 'el evento';
-    const texto = `Hola, abre este enlace en tu celular para registrar las entradas de ${nombre}: ${this.accessLink()}`;
-    return `https://wa.me/?text=${encodeURIComponent(texto)}`;
-  });
 
   readonly timezoneOptions = computed(() => {
     const current = this.editTimezone();
     const list: string[] = [...this.timezones];
     return current && !list.includes(current) ? [current, ...list] : list;
   });
-  readonly accessQrDataUrl = signal<string | null>(null);
 
   readonly loading = signal(false);
   readonly error = signal<string | null>(null);
@@ -88,7 +72,6 @@ export class EventDetailPage implements OnInit {
   readonly lastStaffAssignment = signal<StaffAssignmentDto | null>(null);
 
   // EventAccessToken form
-  readonly accessTokenRol = signal('scanner');
 
   // Annulment motivos
   readonly annulMotivos = signal<Record<string, string>>({});
@@ -293,57 +276,23 @@ export class EventDetailPage implements OnInit {
     }
   }
 
-  async issueAccessToken(): Promise<void> {
+  /** Abre el escáner de este evento en este dispositivo (sin pedir ningún código). */
+  async openScanner(): Promise<void> {
     this.error.set(null);
-    this.success.set(null);
+    this.opening.set(true);
     try {
       const tok = await this.api.post<EventAccessTokenDto>(
         `/v1/events/${encodeURIComponent(this.eventId())}/access-tokens`,
-        { rol: this.accessTokenRol() },
+        { rol: 'scanner' },
       );
-      this.issuedAccessToken.set(tok);
-      const link = this.accessLink();
-      const color = { dark: '#2b2e1b', light: '#ffffff' };
-      const svg = await QRCode.toString(link, { type: 'svg', width: 220, margin: 2, color });
-      this.accessQrDataUrl.set(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-      this.accessQrPng.set(await QRCode.toDataURL(link, { width: 800, margin: 2, color }));
-      this.copied.set(false);
+      await this.router.navigate(['/scan'], { queryParams: { token: tok.qr_token } });
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? err.message : 'Error emitiendo QR.',
+        err instanceof OrquestaApiError ? err.message : 'No pudimos abrir el escáner. Intenta de nuevo.',
       );
+    } finally {
+      this.opening.set(false);
     }
-  }
-
-  async copyAccessLink(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(this.accessLink());
-      this.copied.set(true);
-      setTimeout(() => this.copied.set(false), 2500);
-    } catch {
-      this.error.set('No pudimos copiar el enlace. Selecciónalo y cópialo a mano.');
-    }
-  }
-
-  async shareAccess(): Promise<void> {
-    try {
-      await navigator.share({
-        title: `Escáner de ${this.event()?.nombre ?? 'tu evento'}`,
-        text: 'Abre este enlace en tu celular para registrar las entradas.',
-        url: this.accessLink(),
-      });
-    } catch {
-      // La persona cerró el menú de compartir.
-    }
-  }
-
-  slug(nombre: string): string {
-    return nombre
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
   }
 
   /** Qué toca hacer según el estado: un título, una explicación y, si aplica, una acción. */

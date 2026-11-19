@@ -50,9 +50,7 @@ export const WORKER_CATEGORIES = [
 export type WorkerCategory = (typeof WORKER_CATEGORIES)[number];
 
 export const ROLES_CATALOGO = [
-  'staff',
   'hostess',
-  'scanner',
   'capitan_meseros',
   ...WORKER_CATEGORIES,
 ] as const;

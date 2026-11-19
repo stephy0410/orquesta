@@ -270,7 +270,7 @@ async function main() {
   await importGuests(planner, gala.id, listaGala);
   await invitarYResponder(planner, gala.id, listaGala, { confirman: 24, declinan: 3 });
   await call("POST", `/v1/events/${gala.id}/start`, { headers: planner });
-  const acceso = (await call("POST", `/v1/events/${gala.id}/access-tokens`, { headers: planner, body: { rol: "staff" } })).data;
+  const acceso = (await call("POST", `/v1/events/${gala.id}/access-tokens`, { headers: planner, body: { rol: "scanner" } })).data;
 
   for (const [d, n] of [["puerta-norte", 11], ["puerta-sur", 7]]) {
     const ses = (await call("POST", "/v1/auth/event-session", { body: { access_token: acceso.qr_token, device_id: d } })).data;
@@ -338,7 +338,7 @@ async function main() {
                         "XV años de Regina" (borrador, lista subida sin enviar)
   Proveedor    dj@orquesta.test / ${PASSWORD}  (y ${PROVEEDORES.length} más en el marketplace: proveedor1..${PROVEEDORES.length}@orquesta.test)
   Invitado     ${linkInvitado ? linkInvitado.replace(/^https?:\/\/[^/]+/, FRONT) : "(ver consola del backend)"}
-  Escáner      ${FRONT}/scan  →  código de acceso: ${acceso.qr_token}
+  Escáner      Entra a un evento y toca "Abrir el escáner"
 `);
 }
 
