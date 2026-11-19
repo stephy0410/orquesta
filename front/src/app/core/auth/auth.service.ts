@@ -79,6 +79,11 @@ export class AuthService {
     );
   }
 
+  /** Pide otro correo de verificación. Responde igual exista o no la cuenta. */
+  async resendVerification(email: string): Promise<void> {
+    await this.api.post('/v1/auth/verify-email/resend', { email }, { skipIdempotency: true });
+  }
+
   async requestPasswordReset(email: string): Promise<void> {
     await this.api.post('/v1/auth/password-reset', { email }, { skipIdempotency: true });
   }

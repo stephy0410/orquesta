@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
 import { AuthService } from '../../../core/auth/auth.service';
@@ -78,11 +78,19 @@ import { AuthService } from '../../../core/auth/auth.service';
         <p class="oq-hint" style="margin-top: 1rem">
           ¿Ya tienes cuenta? <a routerLink="/planner/login">Inicia sesión</a>
         </p>
+        <p class="oq-hint">
+          ¿Ya te registraste pero no verificaste tu correo?
+          <button type="button" class="oq-link-button" (click)="step.set('codigo')">Ingresa tu código</button>
+        </p>
         } @else {
         <h2>Revisa tu correo</h2>
         <p class="oq-hint">
-          Te enviamos un código a <strong>{{ email() }}</strong>. Pégalo aquí para activar tu cuenta;
-          vence en 72 horas.
+          @if (email()) {
+            Te enviamos un código a <strong>{{ email() }}</strong>. Pégalo aquí o usa el botón del correo;
+          } @else {
+            Pega el código que te llegó por correo o usa el botón «Verificar mi correo»;
+          }
+          vence en 72 horas. Revisa también spam.
         </p>
         <form class="oq-form-grid" (ngSubmit)="verifyEmail()">
           <input
@@ -101,6 +109,20 @@ import { AuthService } from '../../../core/auth/auth.service';
         <p class="oq-hint" style="margin-top: 1rem">
           ¿Te equivocaste de correo? <button type="button" class="oq-link-button" (click)="step.set('datos')">Cambiarlo</button>
         </p>
+        <form class="oq-form-grid" style="margin-top: 1rem" (ngSubmit)="resend()">
+          <input
+            name="resendEmail"
+            type="email"
+            class="oq-input"
+            aria-label="Correo para reenviar el código"
+            placeholder="Tu correo"
+            [ngModel]="email()"
+            (ngModelChange)="email.set($event)"
+          />
+          <button type="submit" class="oq-btn oq-btn-secondary" [disabled]="loading() || !email().trim()">
+            ¿No te llegó? Reenviar correo
+          </button>
+        </form>
         }
       </section>
       </div>
@@ -114,6 +136,7 @@ import { AuthService } from '../../../core/auth/auth.service';
 export class PlannerRegisterPage {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
 
   readonly step = signal<'datos' | 'codigo'>('datos');
 
@@ -141,6 +164,31 @@ export class PlannerRegisterPage {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
       );
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  constructor() {
+    // Enlace "Verificar mi correo": /…/register?codigo=vfy_… verifica en un clic.
+    const codigo = this.route.snapshot.queryParamMap.get('codigo');
+    if (codigo) {
+      this.verifyToken.set(codigo);
+      this.step.set('codigo');
+      void this.verifyEmail();
+    }
+  }
+
+  async resend(): Promise<void> {
+    const email = this.email().trim();
+    if (!email || this.loading()) return;
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      await this.auth.resendVerification(email);
+      this.success.set(`Si ${email} tiene una cuenta sin verificar, te mandamos un correo nuevo. Revisa también spam.`);
+    } catch (err) {
+      this.error.set(err instanceof OrquestaApiError ? err.message : 'No pudimos reenviar el correo.');
     } finally {
       this.loading.set(false);
     }
