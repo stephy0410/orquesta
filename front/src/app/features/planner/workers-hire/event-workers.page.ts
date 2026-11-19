@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
@@ -14,10 +14,7 @@ import {
   PlannerWorkerRequestsResponse,
   PublicWorkerDto,
   ROLES_CATALOGO,
-  TarifaUnidad,
   WORKER_CATEGORIES,
-  WORKER_ZONES,
-  WorkerAvailabilityOccupiedResponse,
   WorkerRequestItemDto,
 } from '../../../core/api/models';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
@@ -28,6 +25,7 @@ import { formatFecha, humanize, humanizeList, precio } from '../../../shared/lab
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, EventSubnavComponent],
   templateUrl: './event-workers.page.html',
+  styleUrl: './event-workers.page.scss',
 })
 export class EventWorkersPage implements OnInit {
   private readonly api = inject(ApiService);
@@ -36,7 +34,6 @@ export class EventWorkersPage implements OnInit {
   readonly labelList = humanizeList;
   readonly allCategories = WORKER_CATEGORIES;
   readonly allRoles = ROLES_CATALOGO;
-  readonly allZones = WORKER_ZONES;
 
   readonly eventId = signal('');
   readonly event = signal<EventDto | null>(null);
@@ -45,13 +42,6 @@ export class EventWorkersPage implements OnInit {
   readonly requests = signal<WorkerRequestItemDto[]>([]);
   readonly alerts = signal<PlannerAlertDto[]>([]);
 
-  // 3D search filters (RF-07)
-  readonly filterCategorias = signal<string[]>([]);
-  readonly filterZonas = signal<string[]>([]);
-  readonly filterRadioKm = signal<number | null>(null);
-  readonly filterTarifaMin = signal<number | null>(null);
-  readonly filterTarifaMax = signal<number | null>(null);
-  readonly filterUnidad = signal<TarifaUnidad | ''>('');
   readonly label = humanize;
   readonly formatFecha = formatFecha;
   readonly precio = precio;
@@ -60,16 +50,25 @@ export class EventWorkersPage implements OnInit {
     return this.workers().find((w) => w.worker_id === workerId)?.nombre_publico ?? 'Proveedor';
   }
 
+  /** Catálogo publicado, solo para mostrar el nombre del proveedor en cada contratación. */
   readonly workers = signal<PublicWorkerDto[]>([]);
-  readonly occupiedByWorker = signal<Record<string, WorkerAvailabilityOccupiedResponse>>({});
 
-  // Request creation form (RF-08, TR-20)
-  readonly selectedWorker = signal<PublicWorkerDto | null>(null);
-  readonly reqRol = signal('mesero');
-  readonly reqPlazas = signal(1);
-  readonly reqInicio = signal('');
-  readonly reqFin = signal('');
-  readonly reqHoraLlegada = signal('');
+  /** Puestos con gente pendiente por contratar, en palabras ("Mesero (6), DJ (1)"). */
+  readonly missingRoles = computed(() =>
+    this.coverage()
+      .filter((c) => (c.cubiertos ?? 0) + (c.pendientes ?? 0) < c.cantidad)
+      .map((c) => `${humanize(c.rol)} (${c.cantidad - (c.cubiertos ?? 0) - (c.pendientes ?? 0)})`)
+      .join(', '),
+  );
+
+  readonly firstMissingCategory = computed(() => {
+    const cats: readonly string[] = WORKER_CATEGORIES;
+    return (
+      this.coverage().find(
+        (c) => (c.cubiertos ?? 0) + (c.pendientes ?? 0) < c.cantidad && cats.includes(c.rol),
+      )?.rol ?? ''
+    );
+  });
 
   // Emergency replacement & payments
   readonly replacementForResId = signal<string | null>(null);
@@ -90,7 +89,7 @@ export class EventWorkersPage implements OnInit {
         this.loadRequests(),
         this.loadAlerts(),
       ]);
-      await this.searchWorkers();
+      await this.loadWorkerNames();
     }
   }
 
@@ -98,16 +97,6 @@ export class EventWorkersPage implements OnInit {
     try {
       const ev = await this.api.get<EventDto>(`/v1/events/${encodeURIComponent(this.eventId())}`);
       this.event.set(ev);
-      if (ev.ventana?.inicio && !this.reqInicio()) {
-        this.reqInicio.set(toLocalDatetime(ev.ventana.inicio));
-        this.reqHoraLlegada.set(toLocalDatetime(ev.ventana.inicio));
-      }
-      if (ev.ventana?.fin && !this.reqFin()) {
-        this.reqFin.set(toLocalDatetime(ev.ventana.fin));
-      }
-      if (ev.venue?.zona && this.filterZonas().length === 0) {
-        this.filterZonas.set([ev.venue.zona]);
-      }
     } catch {
       // Handled elsewhere
     }
@@ -188,107 +177,20 @@ export class EventWorkersPage implements OnInit {
     }
   }
 
-  toggleFilterCategory(cat: string): void {
-    this.filterCategorias.update((curr) =>
-      curr.includes(cat) ? curr.filter((c) => c !== cat) : [...curr, cat],
-    );
-  }
 
-  toggleFilterZone(z: string): void {
-    this.filterZonas.update((curr) =>
-      curr.includes(z) ? curr.filter((x) => x !== z) : [...curr, z],
-    );
-  }
 
-  async searchWorkers(): Promise<void> {
-    this.error.set(null);
-    const ev = this.event();
+
+
+
+
+  async loadWorkerNames(): Promise<void> {
     try {
       const res = await this.api.get<PaginatedResponse<PublicWorkerDto>>('/v1/workers', {
-        params: {
-          categorias: this.filterCategorias(),
-          zonas: this.filterZonas(),
-          radio_km: this.filterRadioKm() ?? undefined,
-          tarifa_min: this.filterTarifaMin() ?? undefined,
-          tarifa_max: this.filterTarifaMax() ?? undefined,
-          unidad: this.filterUnidad() || undefined,
-          desde: ev?.ventana?.inicio,
-          hasta: ev?.ventana?.fin,
-          limit: 25,
-        },
+        params: { limit: 50 },
       });
       this.workers.set(res.items ?? []);
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? err.message : 'Error buscando personal.',
-      );
-    }
-  }
-
-  async checkWorkerAvailability(workerId: string): Promise<void> {
-    const ev = this.event();
-    try {
-      const res = await this.api.get<WorkerAvailabilityOccupiedResponse>(
-        `/v1/workers/${encodeURIComponent(workerId)}/availability`,
-        {
-          params: {
-            desde: ev?.ventana?.inicio,
-            hasta: ev?.ventana?.fin,
-          },
-        },
-      );
-      this.occupiedByWorker.update((curr) => ({ ...curr, [workerId]: res }));
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError
-          ? err.message
-          : 'Error consultando disponibilidad.',
-      );
-    }
-  }
-
-  selectWorkerForRequest(w: PublicWorkerDto): void {
-    this.selectedWorker.set(w);
-    if (w.categorias.length > 0) {
-      this.reqRol.set(w.categorias[0]);
-    }
-    this.reqPlazas.set(1);
-  }
-
-  async sendWorkerRequest(): Promise<void> {
-    const worker = this.selectedWorker();
-    if (!worker) return;
-
-    const inicio = toIso(this.reqInicio());
-    const fin = toIso(this.reqFin());
-    const horaLlegada = toIso(this.reqHoraLlegada());
-    if (!inicio || !fin || !horaLlegada) {
-      this.error.set('Revisa el horario: la llegada debe estar entre el inicio y el término.');
-      return;
-    }
-
-    this.error.set(null);
-    this.success.set(null);
-    try {
-      const res = await this.api.post<WorkerRequestItemDto>(
-        `/v1/events/${encodeURIComponent(this.eventId())}/worker-requests`,
-        {
-          worker_id: worker.worker_id,
-          rol: this.reqRol(),
-          plazas: Math.max(1, Number(this.reqPlazas()) || 1),
-          ventana: { inicio, fin },
-          hora_llegada: horaLlegada,
-        },
-      );
-      this.success.set(
-        `Solicitud enviada. Precio fijo: ${precio(res.costo_congelado)}.`,
-      );
-      this.selectedWorker.set(null);
-      await this.loadRequests();
-    } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? err.message : 'Error enviando solicitud.',
-      );
+    } catch {
+      // Solo enriquece los nombres; las contrataciones se muestran igual.
     }
   }
 
@@ -411,17 +313,4 @@ export class EventWorkersPage implements OnInit {
       );
     }
   }
-}
-
-function toIso(localVal: string): string | null {
-  if (!localVal) return null;
-  const d = new Date(localVal);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-function toLocalDatetime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }

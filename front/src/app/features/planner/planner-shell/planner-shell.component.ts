@@ -20,6 +20,9 @@ import { ConnectivityService } from '../../../core/connectivity/connectivity.ser
           <a class="oq-nav-link" routerLink="/planner/dashboard" routerLinkActive="active" ariaCurrentWhenActive="page">
             Tablero en vivo
           </a>
+          <a class="oq-nav-link" routerLink="/planner/proveedores" routerLinkActive="active" ariaCurrentWhenActive="page">
+            Proveedores
+          </a>
           <a class="oq-nav-link" routerLink="/planner/events/new" routerLinkActive="active" ariaCurrentWhenActive="page">
             Nuevo evento
           </a>

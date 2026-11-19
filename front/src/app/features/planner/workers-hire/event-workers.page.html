@@ -94,236 +94,31 @@
   }
 </section>
 
-<div class="oq-grid-2">
-  <section class="oq-card">
-    <h2>2. Busca proveedores</h2>
-    <p class="oq-hint">Solo aparecen perfiles verificados y disponibles en el horario de tu evento.</p>
-
-    <div class="oq-form-grid" style="margin-bottom: 1rem">
-      <div class="oq-field">
-        <span class="oq-label">Qué saben hacer (todas las que elijas)</span>
-        <div class="oq-chips">
-          @for (cat of allCategories; track cat) {
-            <button
-              type="button"
-              class="oq-chip-btn"
-              [class.active]="filterCategorias().includes(cat)"
-              (click)="toggleFilterCategory(cat)"
-            >
-              {{ label(cat) }}
-            </button>
-          }
-        </div>
-      </div>
-
-      <div class="oq-field">
-        <span class="oq-label">Zonas</span>
-        <div class="oq-chips">
-          @for (z of allZones; track z) {
-            <button
-              type="button"
-              class="oq-chip-btn"
-              [class.active]="filterZonas().includes(z)"
-              (click)="toggleFilterZone(z)"
-            >
-              {{ label(z) }}
-            </button>
-          }
-        </div>
-      </div>
-
-      <div class="oq-grid-3">
-        <div class="oq-field">
-          <label class="oq-label" for="fMin">Tarifa mínima (MXN)</label>
-          <input
-            id="fMin"
-            class="oq-input"
-            type="number"
-            [ngModel]="filterTarifaMin()"
-            (ngModelChange)="filterTarifaMin.set($event)"
-          />
-        </div>
-        <div class="oq-field">
-          <label class="oq-label" for="fMax">Tarifa máxima (MXN)</label>
-          <input
-            id="fMax"
-            class="oq-input"
-            type="number"
-            [ngModel]="filterTarifaMax()"
-            (ngModelChange)="filterTarifaMax.set($event)"
-          />
-        </div>
-        <div class="oq-field">
-          <label class="oq-label" for="fUnidad">Cobra</label>
-          <select
-            id="fUnidad"
-            class="oq-select"
-            [ngModel]="filterUnidad()"
-            (ngModelChange)="filterUnidad.set($event)"
-          >
-            <option value="">Cualquiera</option>
-            <option value="hora">Por hora</option>
-            <option value="persona_hora">Por persona y hora</option>
-            <option value="evento">Por evento</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="oq-row">
-        <input
-          class="oq-input"
-          style="width: 140px"
-          type="number"
-          aria-label="Distancia máxima en km"
-          placeholder="Distancia (km)"
-          [ngModel]="filterRadioKm()"
-          (ngModelChange)="filterRadioKm.set($event)"
-        />
-        <button type="button" class="oq-btn oq-btn-primary" (click)="searchWorkers()">
-          Buscar
-        </button>
-      </div>
-    </div>
-
-    <div class="oq-grid">
-      @for (w of workers(); track w.worker_id) {
-        <div class="oq-stat">
-          <div class="oq-between">
-            <div>
-              <strong>{{ w.nombre_publico }}</strong>
-            </div>
-            <strong>{{ precio(w.tarifa) }}</strong>
-          </div>
-          <div class="oq-hint">
-            {{ labelList(w.categorias) }}. Trabaja en {{ labelList(w.zonas) }}.
-            {{ w.eventos_completados }} eventos completados.
-          </div>
-          <div class="oq-row" style="margin-top: 0.5rem">
-            <button
-              type="button"
-              class="oq-btn oq-btn-accent oq-btn-sm"
-              (click)="selectWorkerForRequest(w)"
-            >
-              Contratar
-            </button>
-            <button
-              type="button"
-              class="oq-btn oq-btn-secondary oq-btn-sm"
-              (click)="checkWorkerAvailability(w.worker_id)"
-            >
-              Ver su agenda
-            </button>
-          </div>
-          @if (occupiedByWorker()[w.worker_id]; as occ) {
-            <div class="oq-hint" style="margin-top: 0.35rem">
-              @if (occ.ventana_ocupada.length === 0) {
-                Libre en las fechas de tu evento.
-              } @else {
-                Ocupado:
-                @for (v of occ.ventana_ocupada; track $index) {
-                  <span>{{ formatFecha(v.inicio) }} a {{ formatFecha(v.fin) }}{{ $last ? '.' : ';' }} </span>
-                }
-              }
-            </div>
-          }
-        </div>
-      } @empty {
-        <p class="oq-hint">No encontramos proveedores con esos filtros. Prueba quitando alguno.</p>
-      }
+<div class="oq-grid-2 hire-layout">
+  <section class="oq-card hire-cta" aria-labelledby="hireCtaTitle">
+    <h2 id="hireCtaTitle">2. Encuentra proveedores</h2>
+    <p class="oq-hint">
+      Explora meseros, fotografía, música, catering y más. Te mostramos quién está libre en la fecha
+      de este evento y puedes contratar desde su perfil.
+    </p>
+    @if (missingRoles().length > 0) {
+      <p class="hire-missing">Te falta: {{ missingRoles() }}</p>
+    }
+    <div class="oq-row">
+      <a
+        class="oq-btn oq-btn-primary oq-btn-lg"
+        routerLink="/planner/proveedores"
+        [queryParams]="{ evento: eventId(), categoria: firstMissingCategory() || null }"
+      >
+        Buscar proveedores
+      </a>
     </div>
   </section>
 
   <section class="oq-grid">
-    @if (selectedWorker(); as sw) {
-      <div class="oq-card" style="border-color: var(--oq-primary)">
-        <h2>Contratar a {{ sw.nombre_publico }}</h2>
-        <p class="oq-hint">
-          Precio: <strong>{{ precio(sw.tarifa) }}</strong>. Se respeta aunque después cambie su tarifa.
-        </p>
-        <form class="oq-form-grid" (ngSubmit)="sendWorkerRequest()">
-          <div class="oq-grid-2">
-            <div class="oq-field">
-              <label class="oq-label" for="reqRol">Puesto</label>
-              <select
-                id="reqRol"
-                name="reqRol"
-                class="oq-select"
-                [ngModel]="reqRol()"
-                (ngModelChange)="reqRol.set($event)"
-              >
-                @for (r of allRoles; track r) {
-                  <option [value]="r">{{ label(r) }}</option>
-                }
-              </select>
-            </div>
-            <div class="oq-field">
-              <label class="oq-label" for="reqPlazas">Personas</label>
-              <input
-                id="reqPlazas"
-                name="reqPlazas"
-                class="oq-input"
-                type="number"
-                min="1"
-                max="50"
-                [ngModel]="reqPlazas()"
-                (ngModelChange)="reqPlazas.set($event)"
-              />
-            </div>
-          </div>
-
-          <div class="oq-field">
-            <label class="oq-label" for="reqIni">Empieza</label>
-            <input
-              id="reqIni"
-              name="reqIni"
-              class="oq-input"
-              type="datetime-local"
-              [ngModel]="reqInicio()"
-              (ngModelChange)="reqInicio.set($event)"
-            />
-          </div>
-          <div class="oq-field">
-            <label class="oq-label" for="reqFin">Termina</label>
-            <input
-              id="reqFin"
-              name="reqFin"
-              class="oq-input"
-              type="datetime-local"
-              [ngModel]="reqFin()"
-              (ngModelChange)="reqFin.set($event)"
-            />
-          </div>
-          <div class="oq-field">
-            <label class="oq-label" for="reqLlegada">Hora de llegada</label>
-            <input
-              id="reqLlegada"
-              name="reqLlegada"
-              class="oq-input"
-              type="datetime-local"
-              aria-describedby="reqLlegadaHint"
-              [ngModel]="reqHoraLlegada()"
-              (ngModelChange)="reqHoraLlegada.set($event)"
-            />
-            <span class="oq-hint" id="reqLlegadaHint">Entre la hora de inicio y la de término.</span>
-          </div>
-
-          <div class="oq-row">
-            <button type="submit" class="oq-btn oq-btn-primary">Enviar solicitud</button>
-            <button
-              type="button"
-              class="oq-btn oq-btn-secondary"
-              (click)="selectedWorker.set(null)"
-            >
-              Cancelar
-            </button>
-          </div>
-        </form>
-      </div>
-    }
-
     <div class="oq-card">
       <div class="oq-card-header">
-        <h2>3. Solicitudes y reservas</h2>
+        <h2>3. Tus contrataciones</h2>
         <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadRequests()">
           Recargar
         </button>
@@ -435,3 +230,4 @@
     </div>
   </section>
 </div>
+

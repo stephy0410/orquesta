@@ -1,0 +1,390 @@
+<header class="mk-head">
+  <div>
+    <h1>Proveedores</h1>
+    <p class="oq-page-subtitle">
+      Meseros, fotografía, música, catering y más. Todos los perfiles están verificados y el precio
+      que ves es el que se respeta al contratar.
+    </p>
+  </div>
+
+  <div class="mk-toolbar">
+    <div class="mk-search">
+      <label class="oq-sr-only" for="mkQuery">Buscar proveedores</label>
+      <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18" focusable="false">
+        <circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+        <path d="M13 13l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+      <input
+        id="mkQuery"
+        type="search"
+        class="oq-input"
+        placeholder="Busca por nombre, servicio o zona"
+        autocomplete="off"
+        [ngModel]="query()"
+        (ngModelChange)="query.set($event)"
+      />
+    </div>
+
+    <div class="oq-field mk-event">
+      <label class="oq-label" for="mkEvento">Para el evento</label>
+      <select
+        id="mkEvento"
+        class="oq-select"
+        [ngModel]="eventoId()"
+        (ngModelChange)="eventoId.set($event)"
+      >
+        <option value="">Cualquier fecha</option>
+        @for (e of events(); track e.id) {
+          <option [value]="e.id">{{ e.nombre }} ({{ formatFecha(e.ventana.inicio) }})</option>
+        }
+      </select>
+    </div>
+  </div>
+</header>
+
+<nav class="mk-cats" aria-label="Categorías">
+  <button
+    type="button"
+    class="mk-cat"
+    [class.active]="!categoria()"
+    [attr.aria-pressed]="!categoria()"
+    (click)="categoria.set('')"
+  >
+    Todos
+  </button>
+  @for (c of categories; track c) {
+    <button
+      type="button"
+      class="mk-cat"
+      [class.active]="categoria() === c"
+      [attr.aria-pressed]="categoria() === c"
+      (click)="setCategoria(c)"
+    >
+      {{ label(c) }}
+    </button>
+  }
+</nav>
+
+<div class="mk-layout">
+  <aside class="mk-filters" [class.is-open]="filtersOpen()" aria-labelledby="mkFiltersTitle">
+    <div class="oq-between">
+      <h2 id="mkFiltersTitle">Filtros</h2>
+      @if (activeFilterCount() > 0 || query() || categoria()) {
+        <button type="button" class="mk-clear" (click)="clearFilters()">Limpiar</button>
+      }
+    </div>
+
+    @if (eventoSel()) {
+      <label class="mk-check">
+        <input
+          type="checkbox"
+          [ngModel]="soloDisponibles()"
+          (ngModelChange)="soloDisponibles.set($event)"
+        />
+        Solo disponibles en la fecha del evento
+      </label>
+    }
+
+    <fieldset class="mk-group">
+      <legend>Precio (MXN)</legend>
+      <div class="mk-price">
+        <label class="oq-sr-only" for="mkMin">Precio mínimo</label>
+        <input
+          id="mkMin"
+          class="oq-input"
+          type="number"
+          min="0"
+          inputmode="numeric"
+          placeholder="Mín."
+          [ngModel]="tarifaMin()"
+          (ngModelChange)="tarifaMin.set(numOrNull($event))"
+        />
+        <span aria-hidden="true">a</span>
+        <label class="oq-sr-only" for="mkMax">Precio máximo</label>
+        <input
+          id="mkMax"
+          class="oq-input"
+          type="number"
+          min="0"
+          inputmode="numeric"
+          placeholder="Máx."
+          [ngModel]="tarifaMax()"
+          (ngModelChange)="tarifaMax.set(numOrNull($event))"
+        />
+      </div>
+      <label class="oq-sr-only" for="mkUnidad">Forma de cobro</label>
+      <select id="mkUnidad" class="oq-select" [ngModel]="unidad()" (ngModelChange)="unidad.set($event)">
+        <option value="">Cualquier forma de cobro</option>
+        <option value="evento">Por evento</option>
+        <option value="hora">Por hora</option>
+        <option value="persona_hora">Por persona y hora</option>
+      </select>
+    </fieldset>
+
+    <fieldset class="mk-group">
+      <legend>Zona</legend>
+      <div class="mk-zones">
+        @for (z of zones; track z) {
+          <label class="mk-check">
+            <input type="checkbox" [checked]="zonasSel().includes(z)" (change)="toggleZona(z)" />
+            {{ label(z) }}
+          </label>
+        }
+      </div>
+    </fieldset>
+  </aside>
+
+  <section class="mk-results" aria-labelledby="mkResultsTitle">
+    <div class="mk-results-bar">
+      <p id="mkResultsTitle" class="mk-count" role="status">
+        @if (loading()) {
+          Buscando…
+        } @else {
+          {{ visible().length }} {{ visible().length === 1 ? 'proveedor' : 'proveedores' }}
+          @if (eventoSel() && soloDisponibles()) {
+            disponibles el {{ formatFecha(eventoSel()!.ventana.inicio) }}
+          }
+        }
+      </p>
+      <div class="oq-row">
+        <button
+          type="button"
+          class="oq-btn oq-btn-secondary oq-btn-sm mk-filters-toggle"
+          [attr.aria-expanded]="filtersOpen()"
+          (click)="filtersOpen.set(!filtersOpen())"
+        >
+          Filtros @if (activeFilterCount() > 0) { ({{ activeFilterCount() }}) }
+        </button>
+        <label class="oq-sr-only" for="mkOrden">Ordenar</label>
+        <select id="mkOrden" class="oq-select mk-sort" [ngModel]="orden()" (ngModelChange)="orden.set($event)">
+          <option value="relevancia">Más relevantes</option>
+          <option value="precio_asc">Precio: menor a mayor</option>
+          <option value="precio_desc">Precio: mayor a menor</option>
+          <option value="experiencia">Más experiencia</option>
+        </select>
+      </div>
+    </div>
+
+    @if (error()) {
+      <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
+    }
+
+    <ul class="mk-grid" role="list" [attr.aria-busy]="loading()">
+      @for (w of visible(); track w.worker_id) {
+        <li>
+          <button type="button" class="mk-card" (click)="open(w, $event)">
+            <span class="mk-cover" [attr.data-tone]="tone(w)" aria-hidden="true">
+              <span class="mk-initials">{{ initials(w.nombre_publico) }}</span>
+              <span class="mk-cover-cat">{{ label(w.categorias[0]) }}</span>
+            </span>
+            <span class="mk-body">
+              <span class="mk-price-tag">{{ precio(w.tarifa) }}</span>
+              <span class="mk-name">{{ w.nombre_publico }}</span>
+              <span class="mk-meta">{{ labelList(w.zonas.slice(0, 2)) }}@if (w.zonas.length > 2) { y {{ w.zonas.length - 2 }} más }</span>
+              <span class="mk-meta">{{ trackRecord(w) }}</span>
+              @if (eventoSel() && soloDisponibles()) {
+                <span class="mk-avail">Disponible para tu evento</span>
+              }
+            </span>
+          </button>
+        </li>
+      }
+    </ul>
+
+    @if (!loading() && visible().length === 0 && !error()) {
+      <div class="mk-empty">
+        <h2>No encontramos proveedores</h2>
+        <p class="oq-hint">
+          @if (eventoSel() && soloDisponibles()) {
+            Puede que estén ocupados en la fecha de tu evento. Prueba quitando “Solo disponibles” o
+            algún filtro.
+          } @else {
+            Prueba con otra categoría o quita algún filtro.
+          }
+        </p>
+        <button type="button" class="oq-btn oq-btn-secondary" (click)="clearFilters()">
+          Quitar filtros
+        </button>
+      </div>
+    }
+  </section>
+</div>
+
+@if (selected(); as w) {
+  <div class="mk-scrim" (click)="close()" aria-hidden="true"></div>
+  <aside
+    #drawer
+    class="mk-drawer"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="mkDrawerTitle"
+    tabindex="-1"
+    (keydown)="onDrawerKey($event)"
+  >
+    <button type="button" class="mk-close" aria-label="Cerrar" (click)="close()">
+      <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false">
+        <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+    </button>
+
+    <div class="mk-cover mk-cover-lg" [attr.data-tone]="tone(w)" aria-hidden="true">
+      <span class="mk-initials">{{ initials(w.nombre_publico) }}</span>
+    </div>
+
+    <div class="mk-drawer-body">
+      <p class="mk-price-tag">{{ precio(w.tarifa) }}</p>
+      <h2 id="mkDrawerTitle">{{ w.nombre_publico }}</h2>
+      <p class="oq-hint">
+        {{ w.tipo === 'empresa' ? 'Empresa, hasta ' + (w.plazas_ofrecidas ?? 1) + ' personas por evento' : 'Persona' }}.
+        {{ trackRecord(w) }}.
+      </p>
+
+      <dl class="mk-facts">
+        <div>
+          <dt>Qué hace</dt>
+          <dd>{{ labelList(w.categorias) }}</dd>
+        </div>
+        @if ((w.servicios ?? []).length > 0) {
+          <div>
+            <dt>Servicios</dt>
+            <dd>{{ labelList(w.servicios) }}</dd>
+          </div>
+        }
+        <div>
+          <dt>Zonas</dt>
+          <dd>{{ labelList(w.zonas) }}@if (w.radio_km) { (hasta {{ w.radio_km }} km) }</dd>
+        </div>
+        @if (w.idiomas.length > 0) {
+          <div>
+            <dt>Idiomas</dt>
+            <dd>{{ labelList(w.idiomas) }}</dd>
+          </div>
+        }
+      </dl>
+
+      <section class="mk-hire" aria-labelledby="mkHireTitle">
+        <h3 id="mkHireTitle">Contratar</h3>
+
+        @if (hireDone(); as done) {
+          <div class="oq-alert oq-alert-success" role="status">{{ done.texto }}</div>
+          <div class="oq-row">
+            <a class="oq-btn oq-btn-primary" [routerLink]="['/planner/events', done.eventId, 'workers']">
+              Ver mis contrataciones
+            </a>
+            <button type="button" class="oq-btn oq-btn-secondary" (click)="close()">Seguir buscando</button>
+          </div>
+        } @else if (events().length === 0) {
+          <p class="oq-hint">
+            Para contratar necesitas un evento publicado o en borrador.
+            <a routerLink="/planner/events/new">Crea uno aquí</a>.
+          </p>
+        } @else {
+          <form class="oq-form-grid" (ngSubmit)="hire()">
+            <div class="oq-field">
+              <label class="oq-label" for="hireEvento">Evento</label>
+              <select
+                id="hireEvento"
+                name="hireEvento"
+                class="oq-select"
+                [ngModel]="hireEvento()"
+                (ngModelChange)="setHireEvento($event)"
+              >
+                @for (e of events(); track e.id) {
+                  <option [value]="e.id">{{ e.nombre }}</option>
+                }
+              </select>
+              @if (busy(); as b) {
+                @if (b.ventana_ocupada.length === 0) {
+                  <span class="mk-avail">Libre en el horario de este evento</span>
+                } @else {
+                  <span class="mk-busy">
+                    Tiene otro compromiso de {{ formatFecha(b.ventana_ocupada[0].inicio) }} a
+                    {{ formatFecha(b.ventana_ocupada[0].fin) }}.
+                  </span>
+                }
+              }
+            </div>
+
+            <div class="mk-hire-row">
+              <div class="oq-field">
+                <label class="oq-label" for="hireRol">Puesto</label>
+                <select
+                  id="hireRol"
+                  name="hireRol"
+                  class="oq-select"
+                  [ngModel]="hireRol()"
+                  (ngModelChange)="hireRol.set($event)"
+                >
+                  @for (c of w.categorias; track c) {
+                    <option [value]="c">{{ label(c) }}</option>
+                  }
+                </select>
+              </div>
+              <div class="oq-field">
+                <label class="oq-label" for="hirePlazas">Personas</label>
+                <input
+                  id="hirePlazas"
+                  name="hirePlazas"
+                  class="oq-input"
+                  type="number"
+                  min="1"
+                  [max]="w.plazas_ofrecidas ?? 1"
+                  [disabled]="(w.plazas_ofrecidas ?? 1) === 1"
+                  [ngModel]="hirePlazas()"
+                  (ngModelChange)="hirePlazas.set($event)"
+                />
+              </div>
+            </div>
+
+            <div class="mk-hire-row">
+              <div class="oq-field">
+                <label class="oq-label" for="hireInicio">Empieza</label>
+                <input
+                  id="hireInicio"
+                  name="hireInicio"
+                  class="oq-input"
+                  type="datetime-local"
+                  [ngModel]="hireInicio()"
+                  (ngModelChange)="hireInicio.set($event)"
+                />
+              </div>
+              <div class="oq-field">
+                <label class="oq-label" for="hireFin">Termina</label>
+                <input
+                  id="hireFin"
+                  name="hireFin"
+                  class="oq-input"
+                  type="datetime-local"
+                  [ngModel]="hireFin()"
+                  (ngModelChange)="hireFin.set($event)"
+                />
+              </div>
+            </div>
+            <div class="oq-field">
+              <label class="oq-label" for="hireLlegada">Hora de llegada</label>
+              <input
+                id="hireLlegada"
+                name="hireLlegada"
+                class="oq-input"
+                type="datetime-local"
+                [ngModel]="hireLlegada()"
+                (ngModelChange)="hireLlegada.set($event)"
+              />
+            </div>
+
+            @if (hireError()) {
+              <div class="oq-alert oq-alert-error" role="alert">{{ hireError() }}</div>
+            }
+
+            <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="hiring()">
+              {{ hiring() ? 'Enviando…' : 'Enviar solicitud' }}
+            </button>
+            <p class="oq-hint">
+              No se cobra nada hasta que el proveedor acepte. Tiene 24 horas para responder.
+            </p>
+          </form>
+        }
+      </section>
+    </div>
+  </aside>
+}
