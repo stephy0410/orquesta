@@ -1,6 +1,6 @@
 import { HttpClient, HttpContext, HttpErrorResponse, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable, catchError, firstValueFrom, map, of, throwError } from 'rxjs';
+import { Observable, catchError, firstValueFrom, map, of, retry, throwError, timer } from 'rxjs';
 import { IS_PUBLIC_INVITATION, IS_SCAN_REQUEST, SKIP_IDEMPOTENCY, generateUuidV4 } from './api.interceptor';
 
 export interface RequestOptions {
@@ -18,6 +18,34 @@ export interface ConditionalResult<T> {
   body: T | null;
 }
 
+/**
+ * Reintentos ante saturación momentánea (pico de tráfico, límite de concurrencia de Lambda).
+ * Lecturas: 429/502/503/504. Escrituras: solo con llave de idempotencia propia y solo 429/503,
+ * que garantizan que el servidor no ejecutó la petición; así un reintento nunca duplica nada.
+ */
+const READ_RETRY_STATUS = new Set([429, 502, 503, 504]);
+const WRITE_RETRY_STATUS = new Set([429, 503]);
+const MAX_RETRIES = 3;
+export const RETRY_BASE_MS = { value: 400 };
+
+function statusOf(err: unknown): number {
+  return typeof (err as { status?: unknown })?.status === 'number' ? (err as { status: number }).status : -1;
+}
+
+function withRetry<T>(source: Observable<T>, retryable: ReadonlySet<number>): Observable<T> {
+  return source.pipe(
+    retry({
+      count: MAX_RETRIES,
+      delay: (err: unknown, attempt: number) => {
+        if (!retryable.has(statusOf(err))) return throwError(() => err);
+        // Backoff exponencial con jitter: los clientes no vuelven todos al mismo tiempo.
+        const base = RETRY_BASE_MS.value * 2 ** (attempt - 1);
+        return timer(base + Math.random() * RETRY_BASE_MS.value);
+      },
+    }),
+  );
+}
+
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private readonly http = inject(HttpClient);
@@ -28,7 +56,7 @@ export class ApiService {
 
   get<T>(path: string, options?: RequestOptions): Promise<T> {
     return firstValueFrom(
-      this.http.get<T>(path, this.buildAngularOptions(options)),
+      withRetry(this.http.get<T>(path, this.buildAngularOptions(options)), READ_RETRY_STATUS),
     );
   }
 
@@ -40,8 +68,7 @@ export class ApiService {
     const angularOpts = this.buildAngularOptions({ ...options, headers: mergedHeaders });
 
     return firstValueFrom(
-      this.http
-        .get<T>(path, { ...angularOpts, observe: 'response' })
+      withRetry(this.http.get<T>(path, { ...angularOpts, observe: 'response' }), READ_RETRY_STATUS)
         .pipe(
           map((res) => ({
             notModified: false,
@@ -64,7 +91,7 @@ export class ApiService {
 
   post<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
     return firstValueFrom(
-      this.http.post<T>(path, body, this.buildAngularOptions(options)),
+      this.writeRetry(this.http.post<T>(path, body, this.buildAngularOptions(options)), options),
     );
   }
 
@@ -76,20 +103,24 @@ export class ApiService {
 
   put<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
     return firstValueFrom(
-      this.http.put<T>(path, body, this.buildAngularOptions(options)),
+      this.writeRetry(this.http.put<T>(path, body, this.buildAngularOptions(options)), options),
     );
   }
 
   patch<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
     return firstValueFrom(
-      this.http.patch<T>(path, body, this.buildAngularOptions(options)),
+      this.writeRetry(this.http.patch<T>(path, body, this.buildAngularOptions(options)), options),
     );
   }
 
   delete<T>(path: string, options?: RequestOptions): Promise<T> {
     return firstValueFrom(
-      this.http.delete<T>(path, this.buildAngularOptions(options)),
+      this.writeRetry(this.http.delete<T>(path, this.buildAngularOptions(options)), options),
     );
+  }
+
+  private writeRetry<T>(source: Observable<T>, options?: RequestOptions): Observable<T> {
+    return options?.idempotencyKey ? withRetry(source, WRITE_RETRY_STATUS) : source;
   }
 
   private buildAngularOptions(options?: RequestOptions): {

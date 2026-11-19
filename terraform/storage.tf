@@ -142,6 +142,31 @@ resource "aws_cloudfront_origin_access_control" "assets" {
   signing_protocol                  = "sigv4"
 }
 
+# Rutas del SPA (/invitacion/, /planner/…) no existen como archivos en S3: sin esto CloudFront
+# devuelve 403 y el enlace de la invitación no abre. Solo aplica al origen S3, nunca a /v1/*.
+resource "aws_cloudfront_function" "spa_rewrite" {
+  count   = var.enable_cloudfront ? 1 : 0
+  name    = "${local.name_prefix}-spa-${random_id.suffix.hex}"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOT
+    function handler(event) {
+      var req = event.request;
+      // Archivos con extensión (.js, .css, .png, .webmanifest) pasan tal cual; lo demás es una ruta de Angular.
+      if (!/\.[a-zA-Z0-9]+$/.test(req.uri)) {
+        req.uri = '/index.html';
+      }
+      return req;
+    }
+  EOT
+}
+
+# Política administrada de AWS: HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy.
+data "aws_cloudfront_response_headers_policy" "security" {
+  count = var.enable_cloudfront ? 1 : 0
+  name  = "Managed-SecurityHeadersPolicy"
+}
+
 resource "aws_cloudfront_distribution" "edge" {
   count               = var.enable_cloudfront ? 1 : 0
   enabled             = true
@@ -168,11 +193,17 @@ resource "aws_cloudfront_distribution" "edge" {
   }
 
   default_cache_behavior {
-    target_origin_id       = "s3-assets"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
+    target_origin_id           = "s3-assets"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security[0].id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa_rewrite[0].arn
+    }
 
     forwarded_values {
       query_string = false
@@ -187,12 +218,13 @@ resource "aws_cloudfront_distribution" "edge" {
   }
 
   ordered_cache_behavior {
-    path_pattern           = "/v1/*"
-    target_origin_id       = "apigw-v1"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
+    path_pattern               = "/v1/*"
+    target_origin_id           = "apigw-v1"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security[0].id
 
     forwarded_values {
       query_string = true
@@ -205,6 +237,16 @@ resource "aws_cloudfront_distribution" "edge" {
     min_ttl     = 0
     default_ttl = 0
     max_ttl     = 0
+  }
+
+  # CloudFront guarda los errores 10 s por defecto: un 503 por un pico se repetiría a todos los
+  # usuarios y un 404 ocultaría un recurso recién creado. Errores sin caché.
+  dynamic "custom_error_response" {
+    for_each = [404, 500, 502, 503, 504]
+    content {
+      error_code            = custom_error_response.value
+      error_caching_min_ttl = 0
+    }
   }
 
   restrictions {

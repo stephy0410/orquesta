@@ -141,6 +141,12 @@ variable "route53_zone_id" {
   default     = ""
 }
 
+variable "api_memory_mb" {
+  description = "Memoria (y CPU proporcional) de la Lambda api."
+  type        = number
+  default     = 1024
+}
+
 variable "sqs_consumer_max_concurrency" {
   description = "Máximo de Lambdas simultáneas por cola (proyección, SMS, email). En cuentas nuevas con límite de 10 ejecuciones se baja a 2 para que la API siempre tenga capacidad en el pico del check-in."
   type        = number
