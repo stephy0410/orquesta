@@ -13,18 +13,12 @@ import { OliveSprigComponent } from '../../shared/ui/olive-sprig.component';
 export interface InvitationHashParams {
   token: string | null;
   eventId: string | null;
-  codigoCorto: string | null;
-  qrToken: string | null;
-  pngUrl: string | null;
 }
 
 export function extractInvitationParamsFromHash(hash: string): InvitationHashParams {
   const empty: InvitationHashParams = {
     token: null,
     eventId: null,
-    codigoCorto: null,
-    qrToken: null,
-    pngUrl: null,
   };
   if (!hash) return empty;
   const trimmed = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -40,17 +34,12 @@ export function extractInvitationParamsFromHash(hash: string): InvitationHashPar
     }
   }
 
-  const getClean = (k: string): string | null => {
-    const v = params.get(k);
-    return v && v.trim().length > 0 ? v.trim() : null;
-  };
+  const rawEventId = params.get('e');
+  const eventId = rawEventId && rawEventId.trim().length > 0 ? rawEventId.trim() : null;
 
   return {
     token,
-    eventId: getClean('e'),
-    codigoCorto: getClean('c'),
-    qrToken: getClean('q'),
-    pngUrl: getClean('p'),
+    eventId,
   };
 }
 
@@ -113,6 +102,7 @@ export class InvitationPage implements OnInit {
   readonly lastActionBanner = signal<string | null>(null);
   readonly unsubscribing = signal<boolean>(false);
   readonly bajaBanner = signal<string | null>(null);
+  private stateVersion = 0;
 
   readonly fechaLabel = computed(() => formatEventDate(this.state()?.evento.fecha));
   readonly horarioLabel = computed(() => {
@@ -162,14 +152,12 @@ export class InvitationPage implements OnInit {
     if (parsed.token && parsed.token === this.token() && (this.loading() || this.state() !== null)) {
       return;
     }
+    this.stateVersion++;
     this.token.set(parsed.token);
     if (parsed.token && parsed.eventId) {
       void this.loadFromCachedSummary({
         rsvpToken: parsed.token,
         eventId: parsed.eventId,
-        qrToken: parsed.qrToken,
-        codigoCorto: parsed.codigoCorto,
-        pngUrl: parsed.pngUrl,
       });
     } else if (parsed.token) {
       void this.loadRsvpState(parsed.token);
@@ -190,13 +178,8 @@ export class InvitationPage implements OnInit {
     }
   }
 
-  async loadFromCachedSummary(opts: {
-    rsvpToken: string;
-    eventId: string;
-    qrToken?: string | null;
-    codigoCorto?: string | null;
-    pngUrl?: string | null;
-  }): Promise<void> {
+  async loadFromCachedSummary(opts: { rsvpToken: string; eventId: string }): Promise<void> {
+    const version = ++this.stateVersion;
     this.loading.set(true);
     this.error.set(null);
     try {
@@ -204,23 +187,18 @@ export class InvitationPage implements OnInit {
         `/v1/public/events/${encodeURIComponent(opts.eventId)}/summary`,
         { publicNoCookies: true },
       );
+      if (this.token() !== opts.rsvpToken || version !== this.stateVersion) return;
       this.state.set({
         respuesta: null,
         respondido_en: null,
-        qr: {
-          token: opts.qrToken ?? '',
-          codigo_corto: opts.codigoCorto ?? undefined,
-          png_url: opts.pngUrl ?? undefined,
-        },
+        qr: { token: '' },
         evento: summary,
       });
       this.loading.set(false);
-      if (opts.qrToken) {
-        void this.renderQr(opts.qrToken);
-      }
       // Hidratar estado real (respuesta, bajas y QR vigente) en segundo plano sin bloquear el primer render.
-      void this.hydrateRsvpState(opts.rsvpToken);
+      void this.hydrateRsvpState(opts.rsvpToken, version);
     } catch (err) {
+      if (this.token() !== opts.rsvpToken || version !== this.stateVersion) return;
       if (err instanceof OrquestaApiError && err.status === 404) {
         await this.loadRsvpState(opts.rsvpToken);
         return;
@@ -236,24 +214,38 @@ export class InvitationPage implements OnInit {
     }
   }
 
-  private async hydrateRsvpState(rsvpToken: string): Promise<void> {
+  private async hydrateRsvpState(rsvpToken: string, version: number): Promise<void> {
     try {
       const res = await this.api.get<PublicRsvpStateResponse>(
         `/v1/public/invitations/${encodeURIComponent(rsvpToken)}/rsvp`,
         { publicNoCookies: true },
       );
-      if (this.token() !== rsvpToken) return;
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.state.update((prev) => ({
         ...res,
         evento: res.evento ?? prev?.evento,
       }));
       await this.renderQr(res.qr?.token ?? null);
-    } catch {
-      // Si falla la hidratación en segundo plano, se conserva la vista cacheada del resumen.
+    } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
+      if (
+        err instanceof OrquestaApiError &&
+        (err.code === 'INVITACION_REVOCADA' ||
+          err.code === 'TOKEN_INVALIDO' ||
+          err.code === 'TOKEN_TIPO_INCORRECTO' ||
+          err.status === 404 ||
+          err.status === 410)
+      ) {
+        this.state.set(null);
+        this.qrDataUrl.set(null);
+        this.error.set(err);
+      }
+      // Para otros errores (red, 5xx) se conserva la vista cacheada del resumen.
     }
   }
 
   async loadRsvpState(rsvpToken: string): Promise<void> {
+    const version = ++this.stateVersion;
     this.loading.set(true);
     this.error.set(null);
     try {
@@ -261,9 +253,11 @@ export class InvitationPage implements OnInit {
         `/v1/public/invitations/${encodeURIComponent(rsvpToken)}/rsvp`,
         { publicNoCookies: true },
       );
+      if (version !== this.stateVersion) return;
       this.state.set(res);
       await this.renderQr(res.qr?.token ?? null);
     } catch (err) {
+      if (version !== this.stateVersion) return;
       this.state.set(null);
       this.qrDataUrl.set(null);
       this.error.set(
@@ -272,7 +266,9 @@ export class InvitationPage implements OnInit {
           : new OrquestaApiError(500, 'UNKNOWN_ERROR', 'No se pudo cargar tu invitación.'),
       );
     } finally {
-      this.loading.set(false);
+      if (version === this.stateVersion) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -280,6 +276,7 @@ export class InvitationPage implements OnInit {
     const rsvpToken = this.token();
     if (!rsvpToken || this.submitting()) return;
 
+    const version = ++this.stateVersion;
     this.submitting.set(true);
     this.error.set(null);
     this.lastActionBanner.set(null);
@@ -290,6 +287,7 @@ export class InvitationPage implements OnInit {
         { respuesta },
         { publicNoCookies: true },
       );
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.state.update((prev) => ({
         ...res,
         evento: res.evento ?? prev?.evento,
@@ -301,6 +299,7 @@ export class InvitationPage implements OnInit {
           : 'Registramos que no podrás asistir. Puedes cambiar tu respuesta en cualquier momento.',
       );
     } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.error.set(
         err instanceof OrquestaApiError
           ? err
@@ -318,6 +317,7 @@ export class InvitationPage implements OnInit {
   async unsubscribe(canal: CanalBaja): Promise<void> {
     const rsvpToken = this.token();
     if (!rsvpToken || this.unsubscribing()) return;
+    const version = ++this.stateVersion;
     this.unsubscribing.set(true);
     this.error.set(null);
     this.bajaBanner.set(null);
@@ -327,6 +327,7 @@ export class InvitationPage implements OnInit {
         { canal },
         { publicNoCookies: true },
       );
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.state.update((prev) => (prev ? { ...prev, bajas: res.bajas } : prev));
       this.bajaBanner.set(
         canal === 'sms'
@@ -336,6 +337,7 @@ export class InvitationPage implements OnInit {
             : 'Listo: ya no te enviaremos mensajes sobre este evento.',
       );
     } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.error.set(
         err instanceof OrquestaApiError
           ? err

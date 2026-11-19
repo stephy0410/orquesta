@@ -667,6 +667,18 @@ test("Ciclo completo del invitado: evento, import CSV, envíos SMS+Email, RSVP s
   const rsvpToken = rsvpHashParams.get("t");
   assert.ok(rsvpToken);
   assert.equal(rsvpHashParams.get("e"), eventId);
+  assert.equal(rsvpHashParams.get("q"), null);
+  assert.equal(rsvpHashParams.get("c"), null);
+
+  const smsInvMsg = h.ctx.smsProvider.captured.find(
+    (m) => m.metadata?.plantilla === "invitacion" && m.message.includes("#")
+  );
+  assert.ok(smsInvMsg);
+  const smsHashParams = new URLSearchParams(smsInvMsg.message.split("#")[1] || "");
+  assert.ok(smsHashParams.get("t"));
+  assert.equal(smsHashParams.get("e"), eventId);
+  assert.equal(smsHashParams.get("q"), null);
+  assert.equal(smsHashParams.get("c"), null);
 
   const pubSummary = await h.request("GET", `/v1/public/events/${eventId}/summary`);
   assert.equal(pubSummary.status, 200);
