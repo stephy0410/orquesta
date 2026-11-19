@@ -105,6 +105,16 @@
         <div>
           <span class="oq-stat-label">Pago</span>
           <strong>{{ precio(item.costo_congelado) }}</strong>
+          @if (item.estado === 'aceptada' || item.estado === 'completada') {
+            @let pay = paymentByRes()[reqId];
+            <div class="oq-hint req-pay">
+              @if (pay && (pay.estado === 'confirmado' || pay.estado === 'pagado')) {
+                <span class="oq-badge oq-badge-success">Pagado</span>
+              } @else {
+                Pendiente: la planner te paga desde Orquesta.
+              }
+            </div>
+          }
         </div>
       </div>
 
@@ -125,56 +135,53 @@
             </label>
           }
 
-          <button type="button" class="oq-btn oq-btn-accent" (click)="acceptRequest(item)">
+          <button type="button" class="oq-btn oq-btn-primary" (click)="acceptRequest(item)">
             Aceptar
           </button>
 
-          <input
-            class="oq-input"
-            style="max-width: 240px"
-            aria-label="Motivo del rechazo (opcional)"
-            placeholder="Motivo (opcional)"
-            [ngModel]="actionMotivo()[reqId] || ''"
-            (ngModelChange)="setMotivo(reqId, $event)"
-          />
-          <button type="button" class="oq-btn oq-btn-secondary" (click)="rejectRequest(item)">
-            Rechazar
-          </button>
+          @if (motivoOpen() === reqId) {
+            <input
+              class="oq-input"
+              style="max-width: 240px"
+              aria-label="Motivo del rechazo (opcional)"
+              placeholder="Motivo (opcional)"
+              [ngModel]="actionMotivo()[reqId] || ''"
+              (ngModelChange)="setMotivo(reqId, $event)"
+            />
+            <button type="button" class="oq-btn oq-btn-secondary" (click)="rejectRequest(item)">
+              Confirmar rechazo
+            </button>
+            <button type="button" class="req-link" (click)="motivoOpen.set(null)">No</button>
+          } @else {
+            <button type="button" class="oq-btn oq-btn-secondary" (click)="motivoOpen.set(reqId)">
+              Rechazar
+            </button>
+          }
         </div>
       }
 
-      @if (item.estado === 'aceptada' || item.estado === 'completada' || item.estado === 'cancelada_pagada') {
+      @if (item.estado === 'aceptada') {
         <div class="oq-row req-actions">
-          @if (item.estado === 'aceptada') {
-            <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="registerArrival(item)">
-              Registrar llegada
-            </button>
-
+          <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="registerArrival(item)">
+            Registrar llegada
+          </button>
+          @if (motivoOpen() === reqId) {
             <input
               class="oq-input"
               style="max-width: 240px"
               aria-label="Motivo de la cancelación"
-              placeholder="Motivo si cancelas"
+              placeholder="¿Por qué cancelas?"
               [ngModel]="actionMotivo()[reqId] || ''"
               (ngModelChange)="setMotivo(reqId, $event)"
             />
             <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="cancelReservation(item)">
               Cancelar reserva
             </button>
+            <button type="button" class="req-link" (click)="motivoOpen.set(null)">No</button>
+          } @else {
+            <button type="button" class="req-link" (click)="motivoOpen.set(reqId)">Cancelar reserva</button>
           }
-
-          <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="checkPaymentStatus(item)">
-            Ver estado del pago
-          </button>
         </div>
-
-        @if (paymentByRes()[reqId]; as pay) {
-          <div class="oq-alert oq-alert-info req-pay-box">
-            Pago: <span class="oq-badge oq-badge-neutral">{{ label(pay.estado) }}</span>
-            ({{ pay.monto }} {{ pay.moneda || item.costo_congelado.moneda }})
-            @if (pay.reverso_de) { . Es una devolución de un pago anterior. }
-          </div>
-        }
       }
     </article>
   } @empty {
