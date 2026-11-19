@@ -1,6 +1,6 @@
 <div class="oq-page-header">
   <div>
-    <h1 data-requisitos="RF-06, NFR-03, NFR-10">Tablero en vivo</h1>
+    <h1>Tablero en vivo</h1>
     <p class="oq-page-subtitle">
       Llegadas, confirmaciones y alertas de todos tus eventos. Se actualiza cada 3 segundos
       mientras esta pestaña está abierta.
@@ -76,7 +76,13 @@
         <div class="dash-arrivals">
           <p class="dash-arrivals-figure">
             <span class="dash-big">{{ ev.contadores.asistentes }}</span>
-            <span class="dash-of">de {{ ev.contadores.confirmados }} confirmados ya llegaron</span>
+            <span class="dash-of">
+              @if (ev.contadores.confirmados > 0) {
+                de {{ ev.contadores.confirmados }} confirmados ya llegaron
+              } @else {
+                {{ ev.contadores.asistentes === 1 ? 'persona llegó' : 'personas llegaron' }}
+              }
+            </span>
           </p>
           <div
             class="dash-meter"

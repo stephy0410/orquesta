@@ -20,6 +20,7 @@ import {
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './event-create.page.html',
+  styleUrl: './event-create.page.scss',
 })
 export class EventCreatePage implements OnInit {
   private readonly api = inject(ApiService);
@@ -36,9 +37,7 @@ export class EventCreatePage implements OnInit {
 
   // Event fields
   readonly nombre = signal('');
-  readonly fecha = signal('');
   readonly timezone = signal('America/Mexico_City');
-  readonly customTimezone = signal('');
   readonly ventanaInicio = signal('');
   readonly ventanaFin = signal('');
   readonly venueId = signal('');
@@ -119,16 +118,32 @@ export class EventCreatePage implements OnInit {
     );
   }
 
+  /** Al elegir el inicio, si no hay fin (o quedó antes), proponemos 5 horas después. */
+  setInicio(value: string): void {
+    this.ventanaInicio.set(value);
+    const ini = new Date(value);
+    if (!value || Number.isNaN(ini.getTime())) return;
+    const fin = new Date(this.ventanaFin());
+    if (!this.ventanaFin() || Number.isNaN(fin.getTime()) || fin <= ini) {
+      const p = new Date(ini.getTime() + 5 * 3600_000);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      this.ventanaFin.set(
+        `${p.getFullYear()}-${pad(p.getMonth() + 1)}-${pad(p.getDate())}T${pad(p.getHours())}:${pad(p.getMinutes())}`,
+      );
+    }
+  }
+
   async createEvent(): Promise<void> {
     if (this.loading()) return;
     this.error.set(null);
 
-    const tz = (this.customTimezone().trim() || this.timezone()).trim();
+    const tz = this.timezone();
+    const fecha = this.ventanaInicio().slice(0, 10);
     const inicioIso = toIso(this.ventanaInicio());
     const finIso = toIso(this.ventanaFin());
 
-    if (!this.nombre().trim() || !this.fecha() || !tz || !this.venueId() || !inicioIso || !finIso) {
-      this.error.set('Completa el nombre, la fecha, la zona horaria, el lugar y el horario.');
+    if (!this.nombre().trim() || !fecha || !tz || !this.venueId() || !inicioIso || !finIso) {
+      this.error.set('Completa el nombre, el horario y el lugar.');
       return;
     }
 
@@ -136,7 +151,7 @@ export class EventCreatePage implements OnInit {
     try {
       const created = await this.api.post<EventDto>('/v1/events', {
         nombre: this.nombre().trim(),
-        fecha: this.fecha(),
+        fecha,
         timezone: tz,
         ventana: { inicio: inicioIso, fin: finIso },
         venue_id: this.venueId(),
