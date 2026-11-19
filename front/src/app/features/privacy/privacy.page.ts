@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { environment } from '../../../environments/environment';
 
 /**
@@ -12,15 +13,27 @@ import { environment } from '../../../environments/environment';
   selector: 'app-privacy-page',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [RouterLink],
   template: `
-    <main class="oq-container-narrow privacy" id="contenido" tabindex="-1">
-      <p><a href="/">← Volver a Orquesta</a></p>
-      <h1>Aviso de privacidad integral</h1>
-      <p class="oq-hint">Última actualización: {{ privacy.actualizado }}</p>
+    <a class="oq-skip-link" href="#contenido">Saltar al contenido</a>
+    <header class="oq-topbar">
+      <div class="oq-topbar-inner">
+        <a class="oq-brand" routerLink="/">Orquesta <small>event planning</small></a>
+        <nav class="oq-nav-links oq-topbar-end" aria-label="Accesos">
+          <a class="oq-nav-link" routerLink="/invitacion">Mi invitación</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="privacy" id="contenido" tabindex="-1">
+      <header class="privacy-head">
+        <h1>Aviso de privacidad integral</h1>
+        <p class="privacy-updated">Última actualización: {{ privacy.actualizado }}</p>
+      </header>
 
       <h2>1. Responsable</h2>
       <p>
-        {{ privacy.responsable }}, con domicilio en {{ privacy.domicilio }}, es responsable del
+        {{ privacy.responsable }}{{ privacy.domicilio ? ', con domicilio en ' + privacy.domicilio + ',' : '' }} es responsable del
         tratamiento de los datos personales que se recaban a través de Orquesta, conforme a la Ley
         Federal de Protección de Datos Personales en Posesión de los Particulares (LFPDPPP).
       </p>
@@ -93,19 +106,57 @@ import { environment } from '../../../environments/environment';
       <h2>9. Cambios a este aviso</h2>
       <p>Cualquier cambio se publicará en esta misma página con su fecha de actualización.</p>
     </main>
+
+    <footer class="privacy-footer">
+      <a class="oq-link-cta" routerLink="/">Volver a Orquesta</a>
+    </footer>
   `,
-  styles: [
-    `
-      .privacy {
-        padding-block: 2rem 4rem;
-        line-height: 1.6;
-      }
-      .privacy h2 {
-        font-size: 1.1rem;
-        margin-top: 1.75rem;
-      }
-    `,
-  ],
+  styles: `
+    .privacy {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 0 1.5rem 3rem;
+      line-height: 1.7;
+    }
+    .privacy:focus {
+      outline: none;
+    }
+    .privacy-head {
+      text-align: center;
+      padding: 4rem 0 2.5rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid var(--oq-border);
+    }
+    .privacy-head h1 {
+      font-size: clamp(2.2rem, 1.5rem + 3vw, 3.6rem);
+      max-width: 14ch;
+      margin: 0 auto 1rem;
+    }
+    .privacy-updated {
+      color: var(--oq-ink-muted);
+      font-size: 0.85rem;
+      margin: 0;
+    }
+    .privacy h2 {
+      font-size: 1.35rem;
+      margin: 2.5rem 0 0.75rem;
+    }
+    .privacy ul {
+      padding-left: 1.25rem;
+      margin: 0 0 1rem;
+    }
+    .privacy li {
+      margin-bottom: 0.4rem;
+    }
+    .privacy li::marker {
+      color: var(--oq-olive);
+    }
+    .privacy-footer {
+      border-top: 1px solid var(--oq-border);
+      padding: 2.5rem 1.5rem 3.5rem;
+      text-align: center;
+    }
+  `,
 })
 export class PrivacyPage {
   readonly privacy = environment.privacy;

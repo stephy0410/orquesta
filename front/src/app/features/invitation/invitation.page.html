@@ -154,11 +154,11 @@
             <p class="oq-hint">
               Puedes dejar de recibir recordatorios y avisos. Tu invitación y tu pase siguen siendo válidos.
             </p>
-            <div class="inv-actions">
+            <div class="inv-unsub">
               @if (!inv.bajas?.sms) {
                 <button
                   type="button"
-                  class="oq-btn oq-btn-secondary"
+                  class="inv-unsub-btn"
                   [disabled]="unsubscribing()"
                   (click)="unsubscribe('sms')"
                 >
@@ -168,7 +168,7 @@
               @if (!inv.bajas?.email) {
                 <button
                   type="button"
-                  class="oq-btn oq-btn-secondary"
+                  class="inv-unsub-btn"
                   [disabled]="unsubscribing()"
                   (click)="unsubscribe('email')"
                 >
