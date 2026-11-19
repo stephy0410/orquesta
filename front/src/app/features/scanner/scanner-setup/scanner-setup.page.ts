@@ -40,7 +40,10 @@ export class ScannerSetupPage implements OnInit {
     const switchMode = this.route.snapshot.queryParamMap.get('switch');
     const tokenParam = this.route.snapshot.queryParamMap.get('token');
     if (tokenParam) {
+      // Llegó por el enlace que compartió la planner: abrimos el escáner sin pedir nada más.
       this.accessTokenInput.set(tokenParam);
+      await this.activateWithAccessToken();
+      return;
     }
 
     if (existing && !switchMode && !tokenParam) {
