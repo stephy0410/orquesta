@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import * as QRCode from 'qrcode';
@@ -25,6 +25,7 @@ import { EventSubnavComponent } from '../shared/event-subnav.component';
   standalone: true,
   imports: [CommonModule, FormsModule, RouterLink, EventSubnavComponent],
   templateUrl: './event-detail.page.html',
+  styleUrl: './event-detail.page.scss',
 })
 export class EventDetailPage implements OnInit {
   private readonly api = inject(ApiService);
@@ -40,6 +41,28 @@ export class EventDetailPage implements OnInit {
   readonly members = signal<EventMemberDto[]>([]);
   readonly checkins = signal<CheckinItemDto[]>([]);
   readonly issuedAccessToken = signal<EventAccessTokenDto | null>(null);
+  readonly accessQrPng = signal<string | null>(null);
+  readonly copied = signal(false);
+  readonly annulOpen = signal<string | null>(null);
+  readonly canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+
+  /** Enlace que abre el escáner de este evento directamente (lo que codifica el QR). */
+  readonly accessLink = computed(() => {
+    const tok = this.issuedAccessToken();
+    return tok ? `${location.origin}/scan?token=${encodeURIComponent(tok.qr_token)}` : '';
+  });
+
+  readonly whatsappHref = computed(() => {
+    const nombre = this.event()?.nombre ?? 'el evento';
+    const texto = `Hola, abre este enlace en tu celular para registrar las entradas de ${nombre}: ${this.accessLink()}`;
+    return `https://wa.me/?text=${encodeURIComponent(texto)}`;
+  });
+
+  readonly timezoneOptions = computed(() => {
+    const current = this.editTimezone();
+    const list: string[] = [...this.timezones];
+    return current && !list.includes(current) ? [current, ...list] : list;
+  });
   readonly accessQrDataUrl = signal<string | null>(null);
 
   readonly loading = signal(false);
@@ -279,13 +302,82 @@ export class EventDetailPage implements OnInit {
         { rol: this.accessTokenRol() },
       );
       this.issuedAccessToken.set(tok);
-      const svg = await QRCode.toString(tok.qr_token, { type: 'svg', width: 220, margin: 2 });
+      const link = this.accessLink();
+      const color = { dark: '#2b2e1b', light: '#ffffff' };
+      const svg = await QRCode.toString(link, { type: 'svg', width: 220, margin: 2, color });
       this.accessQrDataUrl.set(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-      this.success.set(`QR generado para ${humanize(tok.rol).toLowerCase()}. Vence cuando termine el evento.`);
+      this.accessQrPng.set(await QRCode.toDataURL(link, { width: 800, margin: 2, color }));
+      this.copied.set(false);
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Error emitiendo QR.',
       );
+    }
+  }
+
+  async copyAccessLink(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.accessLink());
+      this.copied.set(true);
+      setTimeout(() => this.copied.set(false), 2500);
+    } catch {
+      this.error.set('No pudimos copiar el enlace. Selecciónalo y cópialo a mano.');
+    }
+  }
+
+  async shareAccess(): Promise<void> {
+    try {
+      await navigator.share({
+        title: `Escáner de ${this.event()?.nombre ?? 'tu evento'}`,
+        text: 'Abre este enlace en tu celular para registrar las entradas.',
+        url: this.accessLink(),
+      });
+    } catch {
+      // La persona cerró el menú de compartir.
+    }
+  }
+
+  slug(nombre: string): string {
+    return nombre
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  /** Qué toca hacer según el estado: un título, una explicación y, si aplica, una acción. */
+  nextStep(estado: string): {
+    titulo: string;
+    texto: string;
+    accion?: { action: 'publish' | 'start' | 'close'; label: string };
+  } {
+    switch (estado) {
+      case 'borrador':
+        return {
+          titulo: 'Tu evento está en borrador',
+          texto: 'Publícalo cuando tengas lista la información para poder enviar invitaciones.',
+          accion: { action: 'publish', label: 'Publicar evento' },
+        };
+      case 'publicado':
+        return {
+          titulo: 'Listo para recibir invitados',
+          texto: 'El día del evento, inícialo para empezar a registrar entradas en la puerta.',
+          accion: { action: 'start', label: 'Iniciar evento' },
+        };
+      case 'en_curso':
+        return {
+          titulo: 'El evento está en curso',
+          texto: 'Las entradas se registran en vivo. Ciérralo al terminar para ver el resumen final.',
+          accion: { action: 'close', label: 'Cerrar evento' },
+        };
+      case 'cerrado':
+        return {
+          titulo: 'Evento cerrado',
+          texto: 'Ya no se puede editar. Consulta las llegadas y quién no asistió en el tablero.',
+        };
+      default:
+        return { titulo: 'Evento cancelado', texto: 'Este evento ya no está activo.' };
     }
   }
 
@@ -306,6 +398,7 @@ export class EventDetailPage implements OnInit {
         `/v1/events/${encodeURIComponent(this.eventId())}/checkins/${encodeURIComponent(checkinId)}/annulments`,
         { motivo, annuls_checkin_id: checkinId },
       );
+      this.annulOpen.set(null);
       this.success.set('Entrada anulada.');
       await this.loadCheckins();
     } catch (err) {
