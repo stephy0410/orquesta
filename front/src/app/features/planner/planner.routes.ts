@@ -25,6 +25,12 @@ export const PLANNER_ROUTES: Routes = [
           import('./dashboard/planner-dashboard.page').then((m) => m.PlannerDashboardPage),
       },
       {
+        path: 'proveedores',
+        title: 'Proveedores · Orquesta',
+        loadComponent: () =>
+          import('./marketplace/marketplace.page').then((m) => m.MarketplacePage),
+      },
+      {
         path: 'events/new',
         loadComponent: () =>
           import('./events/event-create.page').then((m) => m.EventCreatePage),

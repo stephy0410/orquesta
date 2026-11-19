@@ -1,0 +1,32 @@
+.hire-layout {
+  align-items: start;
+}
+
+.hire-cta {
+  background: var(--oq-olive);
+  border-color: var(--oq-olive);
+  color: var(--oq-bg);
+
+  h2 {
+    color: var(--oq-bg);
+  }
+
+  .oq-hint {
+    color: rgba(245, 242, 232, 0.85);
+    margin-bottom: 1rem;
+  }
+
+  .oq-btn-primary {
+    background: var(--oq-bg);
+    color: var(--oq-olive-deep);
+  }
+
+  .oq-btn-primary:hover {
+    background: var(--oq-sage-soft);
+  }
+}
+
+.hire-missing {
+  font-weight: 600;
+  margin-bottom: 1.25rem;
+}

@@ -9,6 +9,8 @@
  *     mesas con asientos, un DJ contratado y pagado.
  *   - "Gala Orquesta" (en curso ahora): 30 invitados, check-ins de dos puertas, acceso de staff.
  *   - Proveedor dj@orquesta.test / Demo12345! (verificado y publicado).
+ *   - 12 proveedores más para el marketplace (meseros, foto, catering, bartender, seguridad…),
+ *     verificados, publicados y con disponibilidad los próximos 60 días.
  *
  * Uso: npm run dev (otra terminal)  →  npm run seed        [API_URL=http://localhost:3001]
  */
@@ -64,6 +66,59 @@ async function account({ email, worker = false }) {
 }
 
 const iso = (d) => new Date(d).toISOString();
+
+/** Catálogo del marketplace: perfiles variados para que la búsqueda tenga resultados reales. */
+const PROVEEDORES = [
+  { nombre: "Banquetes La Hacienda", tipo: "empresa", plazas: 20, categorias: ["catering", "mesero"], servicios: ["banquete", "mesa_dulces", "servicio_mesa"], tarifa: [1200, "persona_hora"], zonas: ["sur", "coyoacan"], idiomas: ["es"], exp: 12 },
+  { nombre: "Lucía Herrera Fotografía", tipo: "persona", categorias: ["fotografo", "video"], servicios: ["fotografia_evento", "cabina_fotos"], tarifa: [14000, "evento"], zonas: ["centro", "roma_condesa", "polanco"], idiomas: ["es", "en"], exp: 8 },
+  { nombre: "Meseros Pro CDMX", tipo: "empresa", plazas: 30, categorias: ["mesero"], servicios: ["servicio_mesa", "capitan_meseros", "cocteleria"], tarifa: [280, "persona_hora"], zonas: ["cdmx_centro", "cdmx_sur", "santa_fe"], idiomas: ["es"], exp: 9 },
+  { nombre: "Barra Mezcal & Co.", tipo: "empresa", plazas: 6, categorias: ["bartender"], servicios: ["barra_libre"], tarifa: [9500, "evento"], zonas: ["roma_condesa", "polanco", "centro"], idiomas: ["es", "en"], exp: 6 },
+  { nombre: "Valeria Glam Studio", tipo: "persona", categorias: ["maquillista"], servicios: ["maquillaje_social", "peinado"], tarifa: [3800, "evento"], zonas: ["polanco", "santa_fe"], idiomas: ["es"], exp: 7 },
+  { nombre: "Seguridad Escudo", tipo: "empresa", plazas: 15, categorias: ["seguridad"], servicios: ["control_acceso"], tarifa: [320, "persona_hora"], zonas: ["norte", "centro", "cdmx_norte"], idiomas: ["es"], exp: 15 },
+  { nombre: "Decoración Flor de Lis", tipo: "empresa", plazas: 8, categorias: ["decoracion"], servicios: ["decoracion"], tarifa: [18000, "evento"], zonas: ["sur", "coyoacan", "metropolitana"], idiomas: ["es"], exp: 10 },
+  { nombre: "Audio Total Iluminación", tipo: "empresa", plazas: 5, categorias: ["iluminacion_sonido", "dj"], servicios: ["iluminacion_sonido", "audio_iluminacion", "mezcla_en_vivo"], tarifa: [12500, "evento"], zonas: ["oriente", "centro", "cdmx_oriente"], idiomas: ["es"], exp: 11 },
+  { nombre: "Coordina Eventos Sofía", tipo: "persona", categorias: ["coordinacion"], servicios: ["coordinacion"], tarifa: [650, "hora"], zonas: ["centro", "polanco", "roma_condesa"], idiomas: ["es", "en", "fr"], exp: 5 },
+  { nombre: "Animación Chispa", tipo: "empresa", plazas: 4, categorias: ["animacion"], servicios: ["animacion"], tarifa: [7000, "evento"], zonas: ["norte", "poniente"], idiomas: ["es"], exp: 4 },
+  { nombre: "Mesa Dulce Mía", tipo: "persona", categorias: ["catering"], servicios: ["mesa_dulces"], tarifa: [5500, "evento"], zonas: ["sur", "coyoacan"], idiomas: ["es"], exp: 3 },
+  { nombre: "Cinema Bodas Video", tipo: "persona", categorias: ["video", "fotografo"], servicios: ["fotografia_evento"], tarifa: [16500, "evento"], zonas: ["guadalajara", "metropolitana"], idiomas: ["es", "en"], exp: 9 },
+];
+
+/** Registra, verifica, publica y abre 60 días de disponibilidad para un proveedor del catálogo. */
+async function proveedor(spec, i) {
+  const email = `proveedor${i + 1}@orquesta.test`;
+  const h = await account({ email, worker: true });
+  const tel = `+52551900${String(1000 + i).slice(-4)}`;
+  try {
+    await call("POST", "/v1/worker/profile", {
+      headers: h,
+      body: {
+        tipo: spec.tipo,
+        plazas_ofrecidas: spec.plazas ?? 1,
+        nombre_publico: spec.nombre,
+        categorias: spec.categorias,
+        servicios: spec.servicios,
+        tarifa: { monto: spec.tarifa[0], moneda: "MXN", unidad: spec.tarifa[1] },
+        zonas: spec.zonas,
+        idiomas: spec.idiomas,
+        anios_experiencia: spec.exp,
+        telefono_e164: tel,
+      },
+    });
+    const ch = (await call("POST", "/v1/worker/profile/verifications", { headers: h, body: { canal: "telefono" } })).data;
+    const otp = await waitMessage("sms", (m) => m.to === tel && m.metadata?.codigo_otp, `OTP de ${spec.nombre}`);
+    await call("POST", `/v1/worker/profile/verifications/${ch.desafio_id}/confirm`, { headers: h, body: { codigo_otp: otp.metadata.codigo_otp } });
+    await call("POST", "/v1/worker/profile/publish", { headers: h });
+  } catch (err) {
+    if (!/EMAIL_YA_REGISTRADA|ya posee|ya existe/i.test(String(err.message))) throw err;
+  }
+  const desde = Date.now() - 2 * 86400_000;
+  for (const rol of spec.categorias) {
+    await call("POST", "/v1/worker/availability", {
+      headers: h,
+      body: { inicio: iso(desde), fin: iso(desde + 60 * 86400_000), zona: spec.zonas[0], rol },
+    }).catch(() => {});
+  }
+}
 const NOMBRES = ["Ana", "Luis", "Sofía", "Diego", "Valeria", "Mateo", "Camila", "Emiliano", "Regina", "Santiago", "Ximena", "Leonardo", "Renata", "Sebastián", "Daniela", "Andrés", "Fernanda", "Rodrigo", "Mariana", "Pablo"];
 const APELLIDOS = ["García", "Hernández", "López", "Martínez", "González", "Pérez", "Ramírez", "Torres", "Flores", "Rivera"];
 
@@ -116,6 +171,9 @@ async function main() {
     if (!/EMAIL_YA_REGISTRADA|ya posee/.test(String(err.message))) throw err;
     djProfile = (await call("GET", "/v1/worker/profile", { headers: dj })).data.perfil;
   }
+
+  // --- Marketplace: proveedores variados ---------------------------------------------
+  for (const [i, spec] of PROVEEDORES.entries()) await proveedor(spec, i);
 
   // --- Evento 1: boda en 10 días -------------------------------------------------------
   const bodaInicio = new Date(Date.now() + 10 * 86400_000);
@@ -221,7 +279,7 @@ async function main() {
   Planner      demo@orquesta.test / ${PASSWORD}
                Eventos: "Boda de Ana y Luis" (40 invitados, 25 confirmados, mesas, DJ pagado)
                         "Gala Orquesta" (en curso, 18 asistentes por 2 puertas)
-  Proveedor    dj@orquesta.test / ${PASSWORD}
+  Proveedor    dj@orquesta.test / ${PASSWORD}  (y ${PROVEEDORES.length} más en el marketplace: proveedor1..${PROVEEDORES.length}@orquesta.test)
   Invitado     ${linkInvitado ? linkInvitado.replace(/^https?:\/\/[^/]+/, FRONT) : "(ver consola del backend)"}
   Escáner      ${FRONT}/scan  →  código de acceso: ${acceso.qr_token}
 `);
