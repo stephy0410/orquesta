@@ -11,7 +11,9 @@ locals {
   use_domain      = var.custom_domain != "" && var.enable_cloudfront
   use_ses_domain  = local.use_domain && var.email_provider_mode == "ses"
   public_base_url = local.use_domain ? "https://${var.custom_domain}" : (var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}")
-  email_from      = local.use_domain ? "Orquesta <${var.email_from_local_part}@${var.custom_domain}>" : "Orquesta <no-reply@orquesta.local>"
+  email_from = (local.use_domain ? "Orquesta <${var.email_from_local_part}@${var.custom_domain}>"
+  : var.ses_sender_email != "" ? "Orquesta <${var.ses_sender_email}>" : "Orquesta <no-reply@orquesta.local>")
+  use_ses_sender = !local.use_domain && var.email_provider_mode == "ses" && var.ses_sender_email != ""
 }
 
 resource "aws_acm_certificate" "site" {
@@ -116,4 +118,10 @@ resource "aws_ses_domain_identity_verification" "mail" {
   count      = local.use_ses_domain ? 1 : 0
   domain     = aws_ses_domain_identity.mail[0].id
   depends_on = [aws_route53_record.ses_verification]
+}
+
+# Sin dominio propio: SES envía desde un correo verificado (le llega un enlace de confirmación).
+resource "aws_sesv2_email_identity" "sender" {
+  count          = local.use_ses_sender ? 1 : 0
+  email_identity = var.ses_sender_email
 }

@@ -2,13 +2,16 @@ data "archive_file" "backend_bundle" {
   type        = "zip"
   source_dir  = "${path.module}/../back"
   output_path = "${path.module}/build/orquesta-back.zip"
-  excludes    = ["test", "coverage", ".git"]
+  # Nunca empaquetar secretos locales (.env con la llave de Stripe) ni herramientas de desarrollo.
+  excludes = [
+    "test", "coverage", ".git", ".env", ".env.local", "dev", "load", "docker-compose.yml",
+  ]
 }
 
 locals {
   common_lambda_env = {
     ENVIRONMENT              = var.environment
-    DB_MODE                  = var.db_mode
+    DB_MODE                  = local.db_mode
     DB_HOST                  = local.db_endpoint
     DB_PORT                  = tostring(local.db_port)
     DB_NAME                  = var.db_name
@@ -32,7 +35,7 @@ locals {
 # 1. API HTTP Handler (consolas planner/trabajador, página RSVP, check-in batch ingest + immediate outbox flush)
 resource "aws_lambda_function" "api" {
   function_name    = local.lambda_names["api"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/api/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -65,7 +68,7 @@ resource "aws_lambda_function" "api" {
 # 2. Import Worker (procesamiento asíncrono <= 20 000 filas en páginas de 500; almacenamiento efímero 1 GB)
 resource "aws_lambda_function" "import_worker" {
   function_name    = local.lambda_names["import_worker"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/import-worker/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -100,6 +103,9 @@ resource "aws_lambda_function" "import_worker" {
 }
 
 resource "aws_lambda_event_source_mapping" "import_jobs" {
+  # En cuenta propia, el rol necesita sus permisos de SQS antes de crear el mapeo.
+  depends_on = [aws_iam_role_policy.lambda_app]
+
   event_source_arn        = aws_sqs_queue.import_jobs.arn
   function_name           = aws_lambda_function.import_worker.arn
   batch_size              = 1
@@ -113,7 +119,7 @@ resource "aws_lambda_event_source_mapping" "import_jobs" {
 # 3. Outbox Poller & Maintenance Sweep (EventBridge rate(1 min): outbox rezagado, ReminderJob, expiración 48h/15m, indeterminado 15m, retención NFR-08)
 resource "aws_lambda_function" "outbox_poller" {
   function_name    = local.lambda_names["outbox_poller"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/outbox-poller/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -146,7 +152,7 @@ resource "aws_lambda_function" "outbox_poller" {
 # 4. Projector (coalescing de 1 s y concurrencia máxima de 5 para proteger pool PostgreSQL, TR-05 / NFR-03)
 resource "aws_lambda_function" "projector" {
   function_name    = local.lambda_names["projector"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/projector/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -177,6 +183,9 @@ resource "aws_lambda_function" "projector" {
 }
 
 resource "aws_lambda_event_source_mapping" "projection" {
+  # En cuenta propia, el rol necesita sus permisos de SQS antes de crear el mapeo.
+  depends_on = [aws_iam_role_policy.lambda_app]
+
   event_source_arn                   = aws_sqs_queue.projection.arn
   function_name                      = aws_lambda_function.projector.arn
   batch_size                         = 100
@@ -191,7 +200,7 @@ resource "aws_lambda_event_source_mapping" "projection" {
 # 5. Worker SMS (SNS Transactional SMS / captura, estado en InvitationDelivery)
 resource "aws_lambda_function" "notify_sms" {
   function_name    = local.lambda_names["notify_sms"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/notify-sms/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -222,6 +231,9 @@ resource "aws_lambda_function" "notify_sms" {
 }
 
 resource "aws_lambda_event_source_mapping" "notify_sms" {
+  # En cuenta propia, el rol necesita sus permisos de SQS antes de crear el mapeo.
+  depends_on = [aws_iam_role_policy.lambda_app]
+
   event_source_arn        = aws_sqs_queue.notify_sms.arn
   function_name           = aws_lambda_function.notify_sms.arn
   batch_size              = 10
@@ -235,7 +247,7 @@ resource "aws_lambda_event_source_mapping" "notify_sms" {
 # 6. Worker Email (SES / adaptador captura en Learner Lab, estado en InvitationDelivery)
 resource "aws_lambda_function" "notify_email" {
   function_name    = local.lambda_names["notify_email"]
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lambda_role_arn
   runtime          = "nodejs20.x"
   handler          = "src/lambdas/notify-email/index.handler"
   filename         = data.archive_file.backend_bundle.output_path
@@ -266,6 +278,9 @@ resource "aws_lambda_function" "notify_email" {
 }
 
 resource "aws_lambda_event_source_mapping" "notify_email" {
+  # En cuenta propia, el rol necesita sus permisos de SQS antes de crear el mapeo.
+  depends_on = [aws_iam_role_policy.lambda_app]
+
   event_source_arn        = aws_sqs_queue.notify_email.arn
   function_name           = aws_lambda_function.notify_email.arn
   batch_size              = 10
