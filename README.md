@@ -23,6 +23,7 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 10. [Estructura del repositorio](#10-estructura-del-repositorio)
 11. [Equipo y responsables](#11-equipo-y-responsables)
 12. [Riesgos y trabajo pendiente](#12-riesgos-y-trabajo-pendiente)
+13. [Lista de verificación de producción](#13-lista-de-verificación-de-producción)
 
 ---
 
@@ -39,9 +40,10 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | FR7 | Acomodo de mesas (con control de versión optimista) | ✅ | *Seating: 50 asignaciones concurrentes…*, *Seating: control de versión optimista* |
 | FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
 
-- **14/14 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
-- **Prueba de carga del check-in (local, PostgreSQL 16):** 31 000 escaneos a **517/s** durante 60 s en 50 eventos → **0 perdidos, 0 dobles admisiones**; ráfaga offline de 1 000 escaneos sincronizada en **1.4 s**; tablero convergió en 1.2 s. Ver [§7.4](#74-pruebas-de-carga).
-- **82 endpoints HTTP**, **6 Lambdas**, **6 migraciones versionadas**.
+- **16/16 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
+- **Pruebas de carga (local, PostgreSQL 16):** check-in a **517/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s. Import de **1 000 invitados en 6.3 s** con latencia de AWS simulada (meta 30 s). Ver [§7.4](#74-pruebas-de-carga).
+- **Listo para producción** salvo la decisión del dominio: ver [§13](#13-lista-de-verificación-de-producción).
+- **83 endpoints HTTP**, **6 Lambdas**, **7 migraciones versionadas**.
 - Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
 
 ---
@@ -68,15 +70,15 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 | Área | Objetivo | Cómo se cumple hoy |
 | --- | --- | --- |
 | **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
-| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados ([§7.4](#74-pruebas-de-carga)). |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados, p99 221 ms ([§7.4](#74-pruebas-de-carga)). |
 | **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
-| **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; emergencia con expiración de 15 min. |
+| **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; **tope por requerimiento** con lock `(evento, rol)` → `409 REQUERIMIENTO_CUBIERTO` o aceptación parcial; **aviso al proveedor por SMS + email vía outbox** (flush inmediato, segundos; en emergencia «URGENTE» y 15 min para responder). |
 | **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
 | **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **reintento automático** de pagos `pendiente`/`desconocido` por llave de idempotencia y **conciliación diaria** ledger ↔ procesador (`payment_reconciliation`, alarma ante diferencias). |
 | **Mesas** (FR7) | Nadie en dos mesas; ninguna mesa sobre capacidad; edición concurrente rechazada con aviso (versión optimista); guardar < 1 s con 500 invitados / 50 mesas. | Lock por evento + conteo transaccional (AC-14); **`plan_version` + `If-Match`** → `409 SEATING_VERSION_CONFLICT`. |
-| **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`. |
+| **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`; **baja del invitado por canal** desde su invitación (`POST /public/invitations/{token}/unsubscribe`), respetada en envíos, reenvíos y recordatorios; SPF/DKIM/DMARC en Terraform al activar dominio propio (`domain.tf`). |
 
-**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, LFPDPPP y borrado de teléfonos de invitados; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
+**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, [Aviso de privacidad LFPDPPP](front/src/app/features/privacy/privacy.page.ts) y **borrado de teléfonos de invitados a los 90 días** del evento; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
 
 ### 1.3 Estimación de capacidad (lo que sí cambia el diseño)
 
@@ -218,7 +220,7 @@ flowchart TB
   end
 
   subgraph SG3["AWS Lambda · Node.js 20"]
-    LAPI["api<br/>82 endpoints"]
+    LAPI["api<br/>83 endpoints"]
     LIMP["import-worker"]
     LPRO["projector"]
     LSMS["notify-sms"]
@@ -378,6 +380,10 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 | Errores 500 sin log | Alarma de 5xx sin causa raíz | Log estructurado (sin PII) en `errorResponse` |
 | Import con KMS + S3 en serie dentro de la transacción | 1 000 invitados en 65 s; 20 000 superaban el timeout de la Lambda | Inserción en lote, firma en paralelo, PNG post-commit (§7.4) |
 | Aforo excedido en el worker hacía ROLLBACK del `fallido` | Job colgado en `en_proceso` | Se confirma `fallido` y se lanza después del commit |
+| En PostgreSQL no se avisaba al proveedor de solicitudes | Ninguna solicitud ni emergencia le llegaba | `worker_request_created` por outbox con dirección cifrada |
+| Arreglos `text[]` contra columnas `char(26)` | Seq scans en check-in e import | Arreglos `char(26)[]` (§7.4) |
+| Nombres de invitado/evento sin escapar en el HTML del correo | Inyección de HTML/enlaces en correos | `escapeHtml` en la plantilla |
+| `EMAIL_FROM` no definido en Terraform | SES rechazaría todos los correos en `prod` | `EMAIL_FROM` desde `domain.tf` |
 
 ---
 
@@ -387,17 +393,28 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 
 Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cómo correrlo en AWS: [`back/load/README.md`](back/load/README.md)). Perfil *open loop*: 50 eventos × 2 dispositivos enviando lotes cada segundo, 2 % de escaneos repetidos en otra puerta y, a la mitad, un dispositivo que vuelve de estar offline con 1 000 escaneos.
 
-| Métrica (local, 2026-11-18) | Objetivo | Resultado |
-| --- | --- | --- |
-| Tasa sostenida 60 s | 500 check-ins/s (AC-01) | **517/s** · 31 000 escaneos · 6 002 lotes · 0 errores |
-| Check-ins perdidos | 0 | **0** |
-| Invitaciones admitidas 2 veces | 0 | **0** (verificado también en la BD) |
-| Duplicados cross-dispositivo | 1 admisión + `ya_registrado` | 607 `ya_registrado`, 30 393 admitidos = invitaciones únicas |
-| Ráfaga offline (1 000 en 2 lotes de 500) | < 30 s (AC-04) | **1.4 s** |
-| Convergencia del tablero tras la carga | ≤ 5 s (NFR-03) | **1.2 s** |
-| Latencia por lote (5 escaneos) | p99 < 300 ms en línea | p50 179 ms · p95 358 ms · **p99 481 ms** |
+| Métrica (local, 2026-11-18) | Objetivo | Primera medición | Tras optimizar |
+| --- | --- | --- | --- |
+| Tasa sostenida 60 s | 500 check-ins/s (AC-01) | 517/s | **517/s** · 31 000 escaneos · 6 002 lotes · 0 errores |
+| Check-ins perdidos | 0 | 0 | **0** |
+| Invitaciones admitidas 2 veces | 0 | 0 | **0** (verificado también en la BD) |
+| Ráfaga offline (1 000 en 2 lotes de 500) | < 30 s (AC-04) | 1.4 s | **0.5 s** |
+| Convergencia del tablero tras la carga | ≤ 5 s (NFR-03) | 1.2 s | **1.2 s** |
+| Latencia por lote (5 escaneos) | p99 < 300 ms en línea | p50 179 · p95 358 · p99 **481 ms** ❌ | p50 122 · p95 193 · p99 **221 ms** ✅ |
 
-**Lectura honesta:** la correctitud bajo carga (AC-01, AC-04) está demostrada. La latencia p99 por lote **no** cumple todavía los 300 ms en esta corrida: el modo local ejecuta los 100 dispositivos en **un solo proceso Node** (en AWS cada lote corre en su propia Lambda) y el ingest hace ~4 consultas por escaneo dentro de la transacción. La medición que cuenta es la de AWS (fase 2); si no cumple, la optimización es insertar el lote con un solo `INSERT … SELECT FROM unnest(...) ON CONFLICT` en lugar de consultas por escaneo. Para el staff, el veredicto en la puerta no depende de esta latencia: se calcula **en el dispositivo** (< 100 ms) y el lote se sincroniza en segundo plano.
+**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`. Falta confirmar la cifra en AWS (fase 2); el veredicto en la puerta, de todos modos, se calcula en el dispositivo (< 100 ms).
+
+#### Import de invitados
+
+Script: [`back/load/import-load.js`](back/load/import-load.js). Archivos con 2 % de duplicados y 1 % de filas inválidas; se verifica que aceptadas = válidas únicas, que no se envía nada y que reimportar no crea nada. Latencia de AWS simulada: 15 ms por firma en KMS y 30 ms por PUT a S3.
+
+| Filas | Antes | Después | Meta |
+| --- | --- | --- | --- |
+| 1 000 | 64.9 s ❌ | **6.3 s** ✅ | < 30 s |
+| 5 000 | — | 31 s | — |
+| 20 000 | ~21 min (supera el timeout) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
+
+Cambios: inserción en lote (`unnest`), firma de QR en paralelo con concurrencia acotada (cuota de KMS), PNG del QR después del COMMIT y con filtro PNG fijo (2× más rápido, mismo tamaño).
 
 ---
 
@@ -412,6 +429,7 @@ Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cóm
 1. *Settings → Branches → main*: exigir PR y los 4 checks de `CI` en verde.
 2. *Settings → Environments*: crear `lab` (y `prod` con revisores obligatorios).
 3. En cada environment: secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (en Learner Lab se renuevan cada sesión) y variable `TF_STATE_BUCKET` con un bucket S3 existente para el estado de Terraform.
+4. En `prod` (opcional): `ALARM_EMAIL` para recibir las alarmas, y `CUSTOM_DOMAIN` + `ROUTE53_ZONE_ID` para el dominio propio. El workflow aplica el perfil de producción solo: Aurora con réplica en otra zona, CloudFront + WAF, SES, SMS real y firma con KMS.
 
 Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con advisory lock; son **inmutables**: un cambio de esquema es un archivo `NNN_*.sql` nuevo.
 
@@ -492,9 +510,35 @@ Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El 
 
 | Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
 | --- | --- | --- |
-| Carga del check-in medida solo en local; p99 por lote 481 ms > 300 ms | NFR de latencia no demostrado en AWS | Correr `checkin-load.js --target=http` en `lab`; si no cumple, ingest con `INSERT … unnest` (§7.4) |
+| Cargas medidas en local (con latencia de AWS simulada en el import) | Falta la cifra en AWS | Correr `checkin-load.js` e `import-load.js` con `--target=http` en `lab` (issue #10) |
 | Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
-| Front aún no envía `If-Match` en mesas | El aviso de conflicto no se ve en la UI | Issue para el front; luego activar `SEATING_REQUIRE_IF_MATCH=true` |
 | Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |
-| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN en `lab` | Activar en `prod` (`email_provider_mode=ses`, `enable_cloudfront=true`) |
+| SES y CloudFront bloqueados en Learner Lab | Email en modo *capture*; sin CDN ni WAF en `lab` | Ya automático en `prod` (workflow Deploy) |
+| ¿Dominio propio? (por confirmar con el profesor) | Sin él no hay SPF/DKIM/DMARC ni URL propia con HTTPS | Listo en Terraform: definir `CUSTOM_DOMAIN` y `ROUTE53_ZONE_ID` y desplegar |
+| Datos del responsable en el Aviso de privacidad | El aviso necesita razón social, domicilio y correo ARCO reales | Completar `environment.privacy` en el front (revisión legal recomendada) |
 | PSP simulado (`MockStripeTestAdapter`) | Sin integración real | Adaptador Stripe en modo test detrás del puerto `PaymentProvider` (el contract test ya existe) |
+
+---
+
+## 13. Lista de verificación de producción
+
+Cada requisito transversal del README contra lo que lo cumple. **Lo único pendiente de decidir es el dominio propio**; todo lo demás se activa con el despliegue a `prod`.
+
+| Requisito | Cómo se cumple | Dónde |
+| --- | --- | --- |
+| TLS en todo el tráfico | CloudFront `redirect-to-https` (TLS 1.2+ con dominio propio); API Gateway solo HTTPS; RDS con TLS | `storage.tf`, `db.js` |
+| Cifrado en reposo con KMS | RDS/Aurora `storage_encrypted`; S3 SSE; PII cifrada con AES-256-GCM en la app; QR firmado con KMS | `database.tf`, `storage.tf`, `crypto.js` |
+| Cada organización solo ve sus datos | Autorización por membresía en cada endpoint (`404` si nunca hubo relación) | `http.js`, `authorizeEventAccess` |
+| QR sin datos personales | JWS con `{invitation_id, event_id, token_version}` | `pg-store-methods.js` |
+| Aviso de privacidad LFPDPPP | Página `/privacidad`, enlazada en invitación, registros y correos | `front/…/privacy.page.ts` |
+| Teléfonos de invitados se borran a los 90 días | Barrido diario en `outbox-poller` | `sweepGuestPhones` |
+| Baja del invitado respetada | Baja por canal sin cuenta; envíos, reenvíos y recordatorios la respetan | `unsubscribeGuest`, migración `007` |
+| SPF, DKIM y DMARC | Registros en Route 53 + identidad SES verificada | `domain.tf` (requiere dominio) |
+| WAF | Reglas administradas + límite por IP en CloudFront | `waf.tf` |
+| Si cae una zona no se pierde nada | Aurora: almacenamiento en 6 copias / 3 AZ + réplica para failover | `database.tf` |
+| PITR 7 días, RPO ≤ 5 min, RTO < 1 h | `backup_retention_period = 7` en `prod`; Aurora PITR | `database.tf` |
+| Alarmas de p99, 5xx y colas atascadas en < 5 min | API 5xx, latencia p99, errores por Lambda, edad del mensaje más viejo por cola, DLQ, frescura, PSP; todas notifican a SNS (+ email) | `observability.tf` |
+| Aislamiento de fallas | Colas independientes por canal; PSP y notificaciones nunca bloquean check-in ni contratación | `notify-*`, `payment-reconciliation.js` |
+| Congelamiento de despliegues en sábado | El workflow rechaza `apply` a `prod` en sábado | `deploy.yml` |
+| Accesibilidad WCAG 2.2 AA y LCP < 2.5 s | Auditoría axe + recorrido con teclado; LCP p75 2.35 s | PRs #14 y #15 (front) |
+

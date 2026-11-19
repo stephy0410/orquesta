@@ -140,6 +140,47 @@
             </div>
           }
         </div>
+
+        <hr class="inv-divider" />
+
+        <section class="inv-messages" aria-labelledby="inv-messages-title">
+          <h2 id="inv-messages-title">Mensajes sobre este evento</h2>
+          @if (bajaBanner()) {
+            <div class="oq-alert oq-alert-success" role="status">{{ bajaBanner() }}</div>
+          }
+          @if (inv.bajas?.sms && inv.bajas?.email) {
+            <p class="oq-hint">Ya no recibirás mensajes por SMS ni por correo. Tu pase sigue siendo válido.</p>
+          } @else {
+            <p class="oq-hint">
+              Puedes dejar de recibir recordatorios y avisos. Tu invitación y tu pase siguen siendo válidos.
+            </p>
+            <div class="inv-actions">
+              @if (!inv.bajas?.sms) {
+                <button
+                  type="button"
+                  class="oq-btn oq-btn-secondary"
+                  [disabled]="unsubscribing()"
+                  (click)="unsubscribe('sms')"
+                >
+                  Dejar de recibir SMS
+                </button>
+              }
+              @if (!inv.bajas?.email) {
+                <button
+                  type="button"
+                  class="oq-btn oq-btn-secondary"
+                  [disabled]="unsubscribing()"
+                  (click)="unsubscribe('email')"
+                >
+                  Dejar de recibir correos
+                </button>
+              }
+            </div>
+          }
+          <p class="oq-hint">
+            Consulta cómo usamos tus datos en el <a href="/privacidad">Aviso de privacidad</a>.
+          </p>
+        </section>
       </section>
     }
   </div>

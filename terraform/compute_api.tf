@@ -22,7 +22,8 @@ locals {
     PROJECTION_QUEUE_URL     = aws_sqs_queue.projection.url
     NOTIFICATIONS_SNS_ARN    = aws_sns_topic.notifications.arn
     IMPORT_QUEUE_URL         = aws_sqs_queue.import_jobs.url
-    PUBLIC_BASE_URL          = var.enable_cloudfront ? "https://${aws_cloudfront_distribution.edge[0].domain_name}" : "http://${aws_s3_bucket_website_configuration.assets.website_endpoint}"
+    PUBLIC_BASE_URL          = local.public_base_url
+    EMAIL_FROM               = local.email_from
     AUTO_MIGRATE             = "true"
     SEATING_REQUIRE_IF_MATCH = "true" # FR7: el plano de mesas exige If-Match (issue #5)
   }

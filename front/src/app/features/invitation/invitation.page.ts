@@ -1,7 +1,12 @@
 import { Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { ApiService } from '../../core/api/api.service';
 import { OrquestaApiError } from '../../core/api/api-config';
-import { PublicRsvpStateResponse, RsvpRespuesta } from '../../core/api/models';
+import {
+  CanalBaja,
+  PublicRsvpStateResponse,
+  PublicUnsubscribeResponse,
+  RsvpRespuesta,
+} from '../../core/api/models';
 import { OliveSprigComponent } from '../../shared/ui/olive-sprig.component';
 
 export function extractRsvpTokenFromHash(hash: string): string | null {
@@ -76,6 +81,8 @@ export class InvitationPage implements OnInit {
   readonly state = signal<PublicRsvpStateResponse | null>(null);
   readonly qrDataUrl = signal<string | null>(null);
   readonly lastActionBanner = signal<string | null>(null);
+  readonly unsubscribing = signal<boolean>(false);
+  readonly bajaBanner = signal<string | null>(null);
 
   readonly fechaLabel = computed(() => formatEventDate(this.state()?.evento.fecha));
   readonly horarioLabel = computed(() => {
@@ -200,6 +207,41 @@ export class InvitationPage implements OnInit {
       );
     } finally {
       this.submitting.set(false);
+    }
+  }
+
+  /**
+   * Baja de mensajes por canal (README FR8: "se respeta la baja del invitado"). No afecta la
+   * invitación: el QR sigue siendo válido y el invitado puede seguir confirmando.
+   */
+  async unsubscribe(canal: CanalBaja): Promise<void> {
+    const rsvpToken = this.token();
+    if (!rsvpToken || this.unsubscribing()) return;
+    this.unsubscribing.set(true);
+    this.error.set(null);
+    this.bajaBanner.set(null);
+    try {
+      const res = await this.api.post<PublicUnsubscribeResponse>(
+        `/v1/public/invitations/${encodeURIComponent(rsvpToken)}/unsubscribe`,
+        { canal },
+        { publicNoCookies: true },
+      );
+      this.state.update((prev) => (prev ? { ...prev, bajas: res.bajas } : prev));
+      this.bajaBanner.set(
+        canal === 'sms'
+          ? 'Listo: ya no te enviaremos mensajes SMS sobre este evento.'
+          : canal === 'email'
+            ? 'Listo: ya no te enviaremos correos sobre este evento.'
+            : 'Listo: ya no te enviaremos mensajes sobre este evento.',
+      );
+    } catch (err) {
+      this.error.set(
+        err instanceof OrquestaApiError
+          ? err
+          : new OrquestaApiError(500, 'UNKNOWN_ERROR', 'No se pudo registrar tu baja.'),
+      );
+    } finally {
+      this.unsubscribing.set(false);
     }
   }
 

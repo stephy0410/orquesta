@@ -1,6 +1,11 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
 import { decryptPii } from "../../shared/crypto.js";
 
+/** Escapa texto controlado por usuarios (nombres de invitado/evento del CSV) antes de meterlo en HTML. */
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 let defaultCtxPromise = null;
 async function getDefaultContext() {
   if (!defaultCtxPromise) defaultCtxPromise = createAppContext();
@@ -53,13 +58,20 @@ export function createNotifyEmailHandler(ctx) {
             : dCtx.delivery.plantilla === "recordatorio_rsvp"
               ? `Recordatorio RSVP — ${eventName}`
               : `Invitación a ${eventName}`;
+        const safeEvent = escapeHtml(eventName);
+        const footer = rsvpUrl
+          ? `<hr /><p style="font-size:12px;color:#666">¿No quieres recibir más mensajes de este evento? Abre
+               <a href="${rsvpUrl}">tu invitación</a> y elige «Dejar de recibir correos». Consulta el
+               <a href="${baseUrl}/privacidad">Aviso de privacidad</a>.</p>`
+          : "";
         const html =
           dCtx.delivery.plantilla === "recordatorio_llegada"
-            ? `<p>Recordatorio de hora de llegada (${msg.hora_llegada || ""}) para <strong>${eventName}</strong>.</p>`
-            : `<p>Hola ${dCtx.guest?.nombre || ""}, estás invitado a <strong>${eventName}</strong>.</p>
+            ? `<p>Recordatorio de hora de llegada (${escapeHtml(msg.hora_llegada || "")}) para <strong>${safeEvent}</strong>.</p>`
+            : `<p>Hola ${escapeHtml(dCtx.guest?.nombre || "")}, estás invitado a <strong>${safeEvent}</strong>.</p>
                <p><a href="${rsvpUrl}">Confirmar o declinar asistencia</a></p>
-               <p>Código corto: ${dCtx.invitation?.codigo_corto || ""}</p>
-               ${qrUrl ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>` : ""}`;
+               <p>Código corto: ${escapeHtml(dCtx.invitation?.codigo_corto || "")}</p>
+               ${qrUrl ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>` : ""}
+               ${footer}`;
 
         try {
           await ctx.emailProvider.send({

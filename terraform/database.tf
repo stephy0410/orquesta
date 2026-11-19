@@ -63,3 +63,18 @@ resource "aws_rds_cluster_instance" "aurora_writer" {
   engine_version      = aws_rds_cluster.aurora[0].engine_version
   publicly_accessible = !var.lambda_in_vpc
 }
+
+# Réplica en otra zona de disponibilidad para failover automático (README: "si cae una zona no se
+# pierde ningún pago ni check-in confirmado"). El almacenamiento de Aurora ya replica cada escritura
+# confirmada en 6 copias sobre 3 AZ; la réplica de lectura aporta el failover del cómputo (RTO).
+resource "aws_rds_cluster_instance" "aurora_reader" {
+  count = var.db_mode == "aurora" && !local.is_lab ? var.aurora_reader_instances : 0
+
+  identifier          = "${local.name_prefix}-aurora-r${count.index + 1}-${random_id.suffix.hex}"
+  cluster_identifier  = aws_rds_cluster.aurora[0].id
+  instance_class      = "db.serverless"
+  engine              = aws_rds_cluster.aurora[0].engine
+  engine_version      = aws_rds_cluster.aurora[0].engine_version
+  publicly_accessible = !var.lambda_in_vpc
+  promotion_tier      = 1
+}

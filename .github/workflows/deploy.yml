@@ -9,6 +9,8 @@
 #   * Environment `lab` (y opcionalmente `prod` con revisores obligatorios).
 #   * Secrets del environment: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN.
 #   * Variable del environment: TF_STATE_BUCKET (bucket S3 existente para el estado de Terraform).
+#   * Opcionales: CUSTOM_DOMAIN + ROUTE53_ZONE_ID (dominio propio con HTTPS, SPF/DKIM/DMARC) y
+#     ALARM_EMAIL (destino de las alarmas de CloudWatch).
 name: Deploy
 
 on:
@@ -45,6 +47,16 @@ jobs:
     env:
       AWS_REGION: us-east-1
       TF_IN_AUTOMATION: "true"
+      # Perfil por entorno. En `lab` todo lo bloqueado por Learner Lab queda apagado.
+      TF_VAR_db_mode: ${{ inputs.environment == 'prod' && 'aurora' || 'rds_lab' }}
+      TF_VAR_enable_cloudfront: ${{ inputs.environment == 'prod' && 'true' || 'false' }}
+      TF_VAR_enable_waf: ${{ inputs.environment == 'prod' && 'true' || 'false' }}
+      TF_VAR_email_provider_mode: ${{ inputs.environment == 'prod' && 'ses' || 'capture' }}
+      TF_VAR_sms_provider_mode: ${{ inputs.environment == 'prod' && 'sns' || 'capture' }}
+      # Variables del environment de GitHub (vacías = sin dominio propio / sin email de alarmas).
+      TF_VAR_custom_domain: ${{ vars.CUSTOM_DOMAIN }}
+      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
     steps:
       - uses: actions/checkout@v4
 

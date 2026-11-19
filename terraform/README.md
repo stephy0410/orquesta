@@ -13,6 +13,15 @@ Infraestructura como código alineada con [`docs/delivery/05-high-level-design.m
 - `scheduler.tf`: Regla EventBridge `rate(1 minute)` hacia `outbox_poller` para *sweep* de outbox rezagado (`NFR-06`), recordatorios (`RF-10`), expiraciones (`RF-17`), `indeterminado` a 15 min (`RF-04`) y retención PII (`NFR-08`).
 - `observability.tf`: Log groups con retención controlada y alarmas CloudWatch de `NFR-09` (`lag_frescura` p95 > 5 000 ms, `offline_queue_depth` > 500, `psp_error` > 0 y DLQs > 0).
 
+## Producción (`prod`)
+
+El workflow **Deploy** aplica solo el perfil de producción: Aurora con réplica en otra zona, CloudFront + WAF, SES, SMS real y firma con KMS. Archivos nuevos:
+
+- `domain.tf`: dominio propio opcional (`custom_domain` + `route53_zone_id`). Crea el certificado ACM, el alias de CloudFront, los registros A/AAAA y, con SES, la verificación del dominio, DKIM, SPF y DMARC. También fija `PUBLIC_BASE_URL` y `EMAIL_FROM` de las Lambdas.
+- `waf.tf`: Web ACL en CloudFront (reglas administradas de AWS + límite por IP; `SizeRestrictions_BODY` en modo *count* para no romper el import de CSV ni los lotes de check-in).
+- `observability.tf`: tópico SNS de alarmas (`alarm_email` opcional) y alarmas de 5xx, latencia p99, errores por Lambda y colas atascadas, además de las de negocio.
+- `database.tf`: `aurora_reader_instances` (default 1) para failover entre zonas en `prod`.
+
 ## Modos disponibles (`db_mode` y `environment`)
 
 | Variable | Default (`lab`) | Producción (`prod`) | Propósito |

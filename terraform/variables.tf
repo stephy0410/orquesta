@@ -125,3 +125,48 @@ variable "cors_allow_origins" {
   type        = list(string)
   default     = ["http://localhost:3000", "http://localhost:4200", "http://localhost:5173"]
 }
+
+# ----------------------------------------------------------------------------
+# Producción: dominio propio, WAF, alarmas y alta disponibilidad
+# ----------------------------------------------------------------------------
+variable "custom_domain" {
+  description = "Dominio propio (p. ej. 'orquesta.mx'). Vacío = usar los dominios de AWS. Requiere enable_cloudfront = true y route53_zone_id."
+  type        = string
+  default     = ""
+}
+
+variable "route53_zone_id" {
+  description = "Hosted zone de Route 53 del custom_domain (para validar el certificado y crear los registros DNS, SPF, DKIM y DMARC)."
+  type        = string
+  default     = ""
+}
+
+variable "email_from_local_part" {
+  description = "Parte local del remitente de los emails cuando hay custom_domain (no-reply@<custom_domain>)."
+  type        = string
+  default     = "no-reply"
+}
+
+variable "enable_waf" {
+  description = "Adjunta AWS WAF a CloudFront (reglas administradas + límite por IP). Requiere enable_cloudfront = true."
+  type        = bool
+  default     = false
+}
+
+variable "waf_rate_limit_per_5min" {
+  description = "Peticiones máximas por IP en 5 minutos antes de bloquear. Un venue con 10 escáneres detrás de una sola IP hace ~600."
+  type        = number
+  default     = 3000
+}
+
+variable "alarm_email" {
+  description = "Email que recibe las alarmas de CloudWatch (vacío = solo se publican en el tópico SNS de alarmas)."
+  type        = string
+  default     = ""
+}
+
+variable "aurora_reader_instances" {
+  description = "Réplicas de lectura de Aurora en otras zonas para failover automático (prod >= 1; en lab no aplica)."
+  type        = number
+  default     = 1
+}
