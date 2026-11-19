@@ -25,6 +25,7 @@ import {
   validateCheckinBatchPayload,
   windowContains,
   windowsOverlap,
+  sendBlockedMessage,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
 import { renderQrPng } from "./qr-png.js";
@@ -1738,10 +1739,7 @@ export class InMemoryStore {
       const ev = this.events.get(eventId);
       if (!ev || ev.deleted_at) throw new AppError("NOT_FOUND", "Evento no encontrado");
       if (ev.estado !== "publicado" && ev.estado !== "en_curso") {
-        throw new AppError(
-          "EVENT_STATE_INVALID",
-          "Solo eventos publicado o en_curso aceptan envíos"
-        );
+        throw new AppError("EVENT_STATE_INVALID", sendBlockedMessage(ev.estado));
       }
 
       const targets = [];
