@@ -410,3 +410,10 @@ export function validateRolParam(rol) {
     throw validationError(`Rol inválido: ${rol}`, "rol");
   }
 }
+
+/** Mensaje para la planner cuando el estado del evento no permite enviar invitaciones. */
+export function sendBlockedMessage(estado) {
+  return estado === "borrador"
+    ? "Publica el evento antes de enviar las invitaciones."
+    : "Este evento ya terminó o fue cancelado; ya no se pueden enviar invitaciones.";
+}

@@ -21,6 +21,7 @@ import {
   validateCheckinBatchPayload,
   windowContains,
   windowsOverlap,
+  sendBlockedMessage,
 } from "./domain-helpers.js";
 import { AppError, IMPORT_ROW_ERRORS, validationError } from "./errors.js";
 import { renderQrPng } from "./qr-png.js";
@@ -332,7 +333,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       if (evRes.rowCount === 0) throw new AppError("NOT_FOUND", "Evento no encontrado");
       const ev = evRes.rows[0];
       if (ev.estado !== "publicado" && ev.estado !== "en_curso") {
-        throw new AppError("EVENT_STATE_INVALID", "Solo eventos publicado o en_curso aceptan envíos");
+        throw new AppError("EVENT_STATE_INVALID", sendBlockedMessage(ev.estado));
       }
 
       const gRes = await client.query(
