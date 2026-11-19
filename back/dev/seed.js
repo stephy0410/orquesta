@@ -6,8 +6,9 @@
  * Crea:
  *   - Planner demo@orquesta.test / Demo12345!
  *   - "Boda de Ana y Luis" (publicada, en 10 días): 40 invitados, invitaciones enviadas, RSVPs,
- *     mesas con asientos, un DJ contratado y pagado.
+ *     mesas con asientos, un DJ contratado con el pago pendiente.
  *   - "Gala Orquesta" (en curso ahora): 30 invitados, check-ins de dos puertas, acceso de staff.
+ *   - "Cena de fin de año Grupo Lumbre" (publicada) y "XV años de Regina" (borrador).
  *   - Proveedor dj@orquesta.test / Demo12345! (verificado y publicado).
  *   - 12 proveedores más para el marketplace (meseros, foto, catering, bartender, seguridad…),
  *     verificados, publicados y con disponibilidad los próximos 60 días.
@@ -119,17 +120,41 @@ async function proveedor(spec, i) {
     }).catch(() => {});
   }
 }
-const NOMBRES = ["Ana", "Luis", "Sofía", "Diego", "Valeria", "Mateo", "Camila", "Emiliano", "Regina", "Santiago", "Ximena", "Leonardo", "Renata", "Sebastián", "Daniela", "Andrés", "Fernanda", "Rodrigo", "Mariana", "Pablo"];
-const APELLIDOS = ["García", "Hernández", "López", "Martínez", "González", "Pérez", "Ramírez", "Torres", "Flores", "Rivera"];
+const NOMBRES = ["Ana", "Luis", "Sofía", "Diego", "Valeria", "Mateo", "Camila", "Emiliano", "Regina", "Santiago", "Ximena", "Leonardo", "Renata", "Sebastián", "Daniela", "Andrés", "Fernanda", "Rodrigo", "Mariana", "Pablo", "Lucía", "Jorge", "Paola", "Ricardo", "Isabel", "Héctor", "Carmen", "Javier", "Natalia", "Gerardo", "Elena", "Tomás", "Alejandra", "Arturo", "Mónica", "Bruno", "Gabriela", "Iván", "Teresa", "Óscar"];
+const APELLIDOS = ["García", "Hernández", "López", "Martínez", "González", "Pérez", "Ramírez", "Torres", "Flores", "Rivera", "Morales", "Cruz", "Ortiz", "Reyes", "Mendoza", "Castillo", "Vargas", "Romero", "Navarro", "Aguilar"];
+const sinAcentos = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+let telefono = 1000000;
 
-function csv(n, tag) {
+/** Lista de invitados con nombres y correos realistas y sin repetir. `desde` desplaza los nombres por evento. */
+function csv(n, desde = 0) {
   const rows = ["nombre,email,telefono"];
+  const usados = new Set();
   for (let i = 0; i < n; i++) {
-    const nombre = `${NOMBRES[i % NOMBRES.length]} ${APELLIDOS[(i * 7) % APELLIDOS.length]}`;
-    const tel = i % 3 === 0 ? `+52551${String(1000000 + i + (tag === "gala" ? 500 : 0)).slice(-7)}` : "";
-    rows.push(`${nombre},${tag}-${i}@invitados.test,${tel}`);
+    const k = i + desde;
+    const nombre = NOMBRES[k % NOMBRES.length];
+    const ap1 = APELLIDOS[(k * 7 + Math.floor(k / NOMBRES.length)) % APELLIDOS.length];
+    const ap2 = APELLIDOS[(k * 3 + 5) % APELLIDOS.length];
+    let email = `${sinAcentos(nombre)}.${sinAcentos(ap1)}${sinAcentos(ap2)[0]}@correo.test`;
+    for (let m = 2; usados.has(email); m++) email = email.replace(/(\d*)@/, `${m}@`);
+    usados.add(email);
+    const tel = i % 3 === 0 ? `+52553${String(telefono++).slice(-7)}` : "";
+    rows.push(`${nombre} ${ap1} ${ap2},${email},${tel}`);
   }
   return rows.join("\n");
+}
+
+/** Envía las invitaciones de un evento y responde con los enlaces que "llegaron" por correo. */
+async function invitarYResponder(planner, eventId, lista, { confirman = 0, declinan = 0 }) {
+  const total = lista.split("\n").length - 1;
+  await call("POST", `/v1/events/${eventId}/invitations/send`, { headers: planner, body: { alcance: "pendiente_envio", destinatarios_confirmados: total } });
+  await wait(1500);
+  const invitaciones = (await messages()).emails.filter((m) => m.metadata?.rsvp_url && lista.includes(`,${m.to},`));
+  const tokens = [...new Map(invitaciones.map((m) => [m.to, new URL(m.metadata.rsvp_url.replace("#", "?")).searchParams.get("t")])).values()];
+  for (const [i, token] of tokens.entries()) {
+    if (i < confirman) await call("POST", `/v1/public/invitations/${token}/rsvp`, { body: { respuesta: "confirma" } });
+    else if (i < confirman + declinan) await call("POST", `/v1/public/invitations/${token}/rsvp`, { body: { respuesta: "declina" } });
+  }
+  return invitaciones;
 }
 
 async function importGuests(planner, eventId, text) {
@@ -196,18 +221,10 @@ async function main() {
     },
   })).data;
   await call("POST", `/v1/events/${boda.id}/publish`, { headers: planner });
-  await importGuests(planner, boda.id, csv(40, "boda"));
-  await call("POST", `/v1/events/${boda.id}/invitations/send`, { headers: planner, body: { alcance: "pendiente_envio", destinatarios_confirmados: 40 } });
-  await wait(1500);
-
-  // RSVPs: 25 confirman, 5 declinan (usando el link que "llegó" por correo).
-  const invitaciones = (await messages()).emails.filter((m) => m.metadata?.rsvp_url && /^boda-/.test(m.to));
-  const tokens = [...new Map(invitaciones.map((m) => [m.to, new URL(m.metadata.rsvp_url.replace("#", "?")).searchParams.get("t")])).entries()];
-  for (const [i, [, token]] of tokens.entries()) {
-    if (i < 25) await call("POST", `/v1/public/invitations/${token}/rsvp`, { body: { respuesta: "confirma" } });
-    else if (i < 30) await call("POST", `/v1/public/invitations/${token}/rsvp`, { body: { respuesta: "declina" } });
-  }
-  const linkInvitado = invitaciones.find((m) => m.to === "boda-35@invitados.test")?.metadata.rsvp_url;
+  const listaBoda = csv(40);
+  await importGuests(planner, boda.id, listaBoda);
+  const invitacionesBoda = await invitarYResponder(planner, boda.id, listaBoda, { confirman: 28, declinan: 5 });
+  const linkInvitado = invitacionesBoda.at(-1)?.metadata.rsvp_url;
 
   // Mesas: 4 mesas de 8 y 20 invitados confirmados sentados (con If-Match).
   const guests = (await call("GET", `/v1/events/${boda.id}/guests?limit=100`, { headers: planner })).data.items;
@@ -218,7 +235,7 @@ async function main() {
     version = t.plan_version;
     mesas.push(t);
   }
-  const confirmados = guests.slice(0, 20);
+  const confirmados = guests.filter((g) => g.estado_rsvp === "confirma").slice(0, 20);
   for (const [i, g] of confirmados.entries()) {
     const r = await call("POST", `/v1/events/${boda.id}/seat-assignments`, {
       headers: { ...planner, "if-match": `"${version}"` },
@@ -227,13 +244,12 @@ async function main() {
     if (r) version = r.data.plan_version;
   }
 
-  // Contratación: DJ solicitado, aceptado y pagado.
+  // Contratación: DJ solicitado y aceptado; el pago queda pendiente para mostrarlo en la demo.
   const solicitud = (await call("POST", `/v1/events/${boda.id}/worker-requests`, {
     headers: planner,
     body: { worker_id: djProfile.worker_id, rol: "dj", plazas: 1, ventana: { inicio: iso(bodaInicio), fin: iso(bodaFin) }, hora_llegada: iso(bodaInicio) },
   })).data;
   await call("POST", `/v1/worker/requests/${solicitud.id}/accept`, { headers: dj, body: {} });
-  await call("POST", `/v1/reservations/${solicitud.id}/payments`, { headers: planner, body: {} });
 
   // --- Evento 2: gala en curso con check-ins -------------------------------------------
   const galaInicio = new Date(Date.now() - 60 * 60_000);
@@ -250,8 +266,10 @@ async function main() {
     },
   })).data;
   await call("POST", `/v1/events/${gala.id}/publish`, { headers: planner });
+  const listaGala = csv(30, 13);
+  await importGuests(planner, gala.id, listaGala);
+  await invitarYResponder(planner, gala.id, listaGala, { confirman: 24, declinan: 3 });
   await call("POST", `/v1/events/${gala.id}/start`, { headers: planner });
-  await importGuests(planner, gala.id, csv(30, "gala"));
   const acceso = (await call("POST", `/v1/events/${gala.id}/access-tokens`, { headers: planner, body: { rol: "staff" } })).data;
 
   for (const [d, n] of [["puerta-norte", 11], ["puerta-sur", 7]]) {
@@ -273,12 +291,51 @@ async function main() {
   }
   await wait(1500);
 
+  // --- Evento 3: cena corporativa publicada, invitaciones recién enviadas -------------------
+  const cenaInicio = new Date(Date.now() + 24 * 86400_000);
+  cenaInicio.setUTCHours(2, 0, 0, 0); // 20:00 CDMX
+  const cena = (await call("POST", "/v1/events", {
+    headers: planner,
+    body: {
+      nombre: "Cena de fin de año Grupo Lumbre",
+      fecha: iso(cenaInicio).slice(0, 10),
+      timezone: "America/Mexico_City",
+      ventana: { inicio: iso(cenaInicio), fin: iso(cenaInicio.getTime() + 5 * 3600_000) },
+      venue_id: venue.id,
+      aforo: 80,
+      requerimientos: [{ rol: "mesero", cantidad: 4 }, { rol: "bartender", cantidad: 2 }],
+    },
+  })).data;
+  await call("POST", `/v1/events/${cena.id}/publish`, { headers: planner });
+  const listaCena = csv(50, 21);
+  await importGuests(planner, cena.id, listaCena);
+  await invitarYResponder(planner, cena.id, listaCena, { confirman: 12, declinan: 2 });
+
+  // --- Evento 4: XV años en borrador, con la lista subida pero sin enviar ------------------
+  const xvInicio = new Date(Date.now() + 45 * 86400_000);
+  xvInicio.setUTCHours(1, 0, 0, 0);
+  const xv = (await call("POST", "/v1/events", {
+    headers: planner,
+    body: {
+      nombre: "XV años de Regina",
+      fecha: iso(xvInicio).slice(0, 10),
+      timezone: "America/Mexico_City",
+      ventana: { inicio: iso(xvInicio), fin: iso(xvInicio.getTime() + 6 * 3600_000) },
+      venue_id: venue.id,
+      aforo: 150,
+      requerimientos: [{ rol: "fotografo", cantidad: 1 }, { rol: "dj", cantidad: 1 }],
+    },
+  })).data;
+  await importGuests(planner, xv.id, csv(18, 7));
+
   console.log(`
 ✅ Datos de demostración listos. Abre ${FRONT}
 
   Planner      demo@orquesta.test / ${PASSWORD}
-               Eventos: "Boda de Ana y Luis" (40 invitados, 25 confirmados, mesas, DJ pagado)
-                        "Gala Orquesta" (en curso, 18 asistentes por 2 puertas)
+               Eventos: "Gala Orquesta" (en curso, 18 de 24 confirmados ya llegaron por 2 puertas)
+                        "Boda de Ana y Luis" (40 invitados, 28 confirmados, mesas, DJ con pago pendiente)
+                        "Cena de fin de año Grupo Lumbre" (50 invitados, invitaciones enviadas)
+                        "XV años de Regina" (borrador, lista subida sin enviar)
   Proveedor    dj@orquesta.test / ${PASSWORD}  (y ${PROVEEDORES.length} más en el marketplace: proveedor1..${PROVEEDORES.length}@orquesta.test)
   Invitado     ${linkInvitado ? linkInvitado.replace(/^https?:\/\/[^/]+/, FRONT) : "(ver consola del backend)"}
   Escáner      ${FRONT}/scan  →  código de acceso: ${acceso.qr_token}

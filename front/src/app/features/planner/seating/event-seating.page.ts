@@ -52,6 +52,30 @@ export class EventSeatingPage implements OnInit {
   readonly success = signal<string | null>(null);
   readonly conflict = signal<string | null>(null);
 
+  readonly incluirPendientes = signal(false);
+
+  readonly porSentar = computed(() =>
+    this.unseated().filter(
+      (u) => u.estado_rsvp === 'confirma' || (this.incluirPendientes() && u.estado_rsvp !== 'declina'),
+    ),
+  );
+  readonly noVienen = computed(() => this.unseated().filter((u) => u.estado_rsvp === 'declina').length);
+  readonly sinRespuesta = computed(
+    () => this.unseated().filter((u) => u.estado_rsvp !== 'confirma' && u.estado_rsvp !== 'declina').length,
+  );
+
+  readonly seatedByTable = computed(() => {
+    const byId: Record<string, GuestDto[]> = {};
+    const byName: Record<string, string> = {};
+    for (const t of this.tables()) byName[this.tableLabel(t)] = t.id;
+    for (const g of this.seatedGuests()) {
+      const tid = g.table_id ?? byName[String(g.mesa ?? '')] ?? '';
+      if (!tid) continue;
+      (byId[tid] ??= []).push(g);
+    }
+    return byId;
+  });
+
   readonly tableNameById = computed(() => {
     const map: Record<string, string> = {};
     for (const t of this.tables()) map[t.id] = this.tableLabel(t);

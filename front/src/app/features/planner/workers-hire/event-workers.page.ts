@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import {
@@ -18,7 +18,7 @@ import {
   WorkerRequestItemDto,
 } from '../../../core/api/models';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
-import { formatFecha, humanize, humanizeList, precio } from '../../../shared/labels';
+import { formatFecha, humanize, humanizeList, precio, total } from '../../../shared/labels';
 
 @Component({
   selector: 'app-event-workers-page',
@@ -30,6 +30,7 @@ import { formatFecha, humanize, humanizeList, precio } from '../../../shared/lab
 export class EventWorkersPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
 
   readonly labelList = humanizeList;
   readonly allCategories = WORKER_CATEGORIES;
@@ -45,6 +46,7 @@ export class EventWorkersPage implements OnInit {
   readonly label = humanize;
   readonly formatFecha = formatFecha;
   readonly precio = precio;
+  readonly total = total;
 
   workerName(workerId: string | null | undefined): string {
     return this.workers().find((w) => w.worker_id === workerId)?.nombre_publico ?? 'Proveedor';
@@ -75,6 +77,21 @@ export class EventWorkersPage implements OnInit {
   readonly replacementWorkerId = signal('');
   readonly cancelMotivos = signal<Record<string, string>>({});
   readonly paymentsByRes = signal<Record<string, PaymentDto>>({});
+  readonly cancelOpen = signal<string | null>(null);
+
+  // Pago con Stripe
+  private readonly checkoutDialog = viewChild<ElementRef<HTMLDialogElement>>('checkout');
+  readonly checkoutFor = signal<WorkerRequestItemDto | null>(null);
+  readonly paying = signal(false);
+  readonly payError = signal<string | null>(null);
+
+  /** Proveedores del mismo puesto que la contratación que se va a reemplazar. */
+  readonly replacementOptions = computed(() => {
+    const req = this.requests().find((r) => this.getResId(r) === this.replacementForResId());
+    return this.workers().filter(
+      (w) => w.worker_id !== req?.worker_id && (!req || (w.categorias ?? []).includes(req.rol)),
+    );
+  });
 
   readonly error = signal<string | null>(null);
   readonly success = signal<string | null>(null);
@@ -89,8 +106,50 @@ export class EventWorkersPage implements OnInit {
         this.loadRequests(),
         this.loadAlerts(),
       ]);
-      await this.loadWorkerNames();
+      await Promise.all([this.loadWorkerNames(), this.loadPayments()]);
+      this.handleCheckoutReturn();
     }
+  }
+
+  /** Stripe Checkout regresa con ?pago=exito o ?pago=cancelado. */
+  private handleCheckoutReturn(): void {
+    const pago = this.route.snapshot.queryParamMap.get('pago');
+    if (!pago) return;
+    if (pago === 'exito') this.success.set('Pago recibido. Puede tardar unos segundos en aparecer como pagado.');
+    if (pago === 'cancelado') this.error.set('No se hizo ningún cargo. Puedes intentar pagar de nuevo.');
+    void this.router.navigate([], { queryParams: { pago: null }, queryParamsHandling: 'merge', replaceUrl: true });
+  }
+
+  isPaid(pay: PaymentDto | undefined): boolean {
+    return !!pay && (pay.estado === 'confirmado' || pay.estado === 'pagado');
+  }
+
+  requestStateLabel(estado: string): string {
+    const map: Record<string, string> = {
+      solicitada: 'Esperando respuesta',
+      aceptada: 'Pago pendiente',
+      rechazada: 'Rechazó',
+      cancelada: 'Cancelada',
+      sin_cubrir: 'Sin cubrir',
+      completada: 'Completada',
+    };
+    return map[estado] ?? humanize(estado);
+  }
+
+  /** Estado de pago de cada contratación aceptada, para mostrar "Pagado" al entrar. */
+  async loadPayments(): Promise<void> {
+    const aceptadas = this.requests().filter((r) => r.estado === 'aceptada' || r.estado === 'completada');
+    await Promise.all(aceptadas.map((r) => this.queryPaymentStatus(this.getResId(r), true)));
+  }
+
+  openCheckout(r: WorkerRequestItemDto): void {
+    this.payError.set(null);
+    this.checkoutFor.set(r);
+    this.checkoutDialog()?.nativeElement.showModal();
+  }
+
+  closeCheckout(): void {
+    this.checkoutDialog()?.nativeElement.close();
   }
 
   async loadEvent(): Promise<void> {
@@ -224,9 +283,8 @@ export class EventWorkersPage implements OnInit {
         `/v1/events/${encodeURIComponent(this.eventId())}/worker-requests/${encodeURIComponent(reservationId)}/cancel`,
         { motivo },
       );
-      this.success.set(
-        `Reserva ${humanize(res.estado).toLowerCase()}.`,
-      );
+      this.cancelOpen.set(null);
+      this.success.set(res.estado === 'cancelada' ? 'Contratación cancelada.' : `Contratación: ${humanize(res.estado).toLowerCase()}.`);
       await Promise.all([this.loadRequests(), this.loadAlerts()]);
     } catch (err) {
       this.error.set(
@@ -272,33 +330,40 @@ export class EventWorkersPage implements OnInit {
   }
 
   /**
-   * TR-09: Reusa siempre la misma idempotency key `pay:${reservationId}` sin incrementarla.
+   * Cobra la contratación. Siempre usa la misma clave `pay:<reserva>` para que reintentar no cobre
+   * dos veces. Si el backend responde con `checkout_url` (Stripe Checkout), mandamos a la planner a
+   * esa página; al terminar Stripe regresa a esta misma pantalla con ?pago=exito|cancelado.
    */
-  async payReservationTestMode(reservationId: string): Promise<void> {
-    const key = `pay:${reservationId}`;
-    this.error.set(null);
-    this.success.set(null);
+  async confirmPayment(r: WorkerRequestItemDto): Promise<void> {
+    const reservationId = this.getResId(r);
+    this.paying.set(true);
+    this.payError.set(null);
     try {
-      const pay = await this.api.post<PaymentDto>(
+      const back = `${location.origin}/planner/events/${encodeURIComponent(this.eventId())}/workers`;
+      const res = await this.api.post<PaymentDto & { checkout_url?: string }>(
         `/v1/reservations/${encodeURIComponent(reservationId)}/payments`,
-        {},
-        { idempotencyKey: key },
+        { success_url: `${back}?pago=exito`, cancel_url: `${back}?pago=cancelado` },
+        { idempotencyKey: `pay:${reservationId}` },
       );
-      this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: pay }));
-      this.success.set(
-        pay.estado === 'desconocido'
-          ? 'No sabemos todavía si el pago pasó. Revisa su estado antes de intentarlo otra vez.'
-          : `Pago de prueba: ${humanize(pay.estado).toLowerCase()} (${pay.monto}).`,
-      );
+      if (res.checkout_url) {
+        location.assign(res.checkout_url);
+        return;
+      }
+      this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: res }));
+      if (res.estado === 'desconocido') {
+        this.payError.set('No pudimos confirmar el pago con el banco. Revisa en unos minutos antes de reintentar.');
+      } else if (!this.isPaid(res)) {
+        this.payError.set('El pago quedó pendiente. Te avisaremos cuando se confirme.');
+      }
     } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? err.message : 'Error ejecutando pago.',
-      );
+      this.payError.set(err instanceof OrquestaApiError ? err.message : 'No pudimos procesar el pago. Intenta de nuevo.');
+    } finally {
+      this.paying.set(false);
     }
   }
 
-  async queryPaymentStatus(reservationId: string): Promise<void> {
-    this.error.set(null);
+  async queryPaymentStatus(reservationId: string, silent = false): Promise<void> {
+    if (!silent) this.error.set(null);
     try {
       const res = await this.api.get<PaginatedResponse<PaymentDto>>(
         `/v1/reservations/${encodeURIComponent(reservationId)}/payments`,
@@ -308,9 +373,9 @@ export class EventWorkersPage implements OnInit {
         this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: latest }));
       }
     } catch (err) {
-      this.error.set(
-        err instanceof OrquestaApiError ? err.message : 'Sin cobros registrados.',
-      );
+      if (!silent) {
+        this.error.set(err instanceof OrquestaApiError ? err.message : 'Sin cobros registrados.');
+      }
     }
   }
 }

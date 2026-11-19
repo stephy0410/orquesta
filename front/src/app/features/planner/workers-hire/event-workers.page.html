@@ -1,9 +1,9 @@
 <div class="oq-page-header">
   <div>
-    <h1 data-requisitos="RF-07..09, RF-11, RF-22">Personal y pagos</h1>
+    <h1>Personal y pagos</h1>
     <p class="oq-page-subtitle">
-      Define cuánta gente necesitas, encuentra proveedores disponibles y paga sus reservas. El precio
-      de cada reserva queda fijo desde que envías la solicitud.
+      Define cuánta gente necesitas, contrata proveedores y págales aquí mismo. El precio queda fijo
+      desde que envías la solicitud.
     </p>
   </div>
   <a class="oq-btn oq-btn-secondary" [routerLink]="['/planner/events', eventId()]">
@@ -63,11 +63,11 @@
         />
         <button
           type="button"
-          class="oq-btn oq-btn-danger oq-btn-sm"
+          class="hire-remove"
           [attr.aria-label]="'Quitar ' + label(req.rol)"
           (click)="removeReqRow($index)"
         >
-          Quitar
+          ×
         </button>
       </div>
     }
@@ -124,78 +124,76 @@
         </button>
       </div>
 
-      <div class="oq-grid">
+      <ul class="hire-list">
         @for (r of requests(); track getResId(r)) {
           @let rid = getResId(r);
-          <div class="oq-stat">
-            <div class="oq-between">
+          @let pay = paymentsByRes()[rid];
+          @let pagado = isPaid(pay);
+          <li class="hire-item">
+            <div class="hire-item-head">
               <div>
-                <strong>{{ label(r.rol) }}</strong> ({{ r.plazas }} {{ r.plazas === 1 ? 'persona' : 'personas' }})
-                <div class="oq-hint">{{ workerName(r.worker_id) }}</div>
+                <strong class="hire-name">{{ workerName(r.worker_id) }}</strong>
+                <span class="oq-hint">
+                  {{ label(r.rol) }} · {{ r.plazas }} {{ r.plazas === 1 ? 'persona' : 'personas' }}
+                </span>
               </div>
-              <span class="oq-badge oq-badge-info">{{ label(r.estado) }}</span>
-            </div>
-            <div class="oq-hint" style="margin: 0.35rem 0">
-              {{ precio(r.costo_congelado) }}. Llega el {{ formatFecha(r.hora_llegada) }}.
-            </div>
-
-            <div class="oq-row">
-              @if (r.estado === 'aceptada') {
-                <button
-                  type="button"
-                  class="oq-btn oq-btn-accent oq-btn-sm"
-                  (click)="payReservationTestMode(rid)"
-                >
-                  Pagar (modo de prueba)
-                </button>
-                <button
-                  type="button"
-                  class="oq-btn oq-btn-secondary oq-btn-sm"
-                  (click)="queryPaymentStatus(rid)"
-                >
-                  Ver estado del pago
-                </button>
-              }
-
-              @if (r.estado === 'solicitada' || r.estado === 'aceptada') {
-                <input
-                  class="oq-input"
-                  style="max-width: 160px; min-height: 32px"
-                  aria-label="Motivo de la cancelación"
-                  placeholder="Motivo"
-                  [ngModel]="cancelMotivos()[rid] || ''"
-                  (ngModelChange)="setCancelMotivo(rid, $event)"
-                />
-                <button
-                  type="button"
-                  class="oq-btn oq-btn-danger oq-btn-sm"
-                  (click)="cancelRequest(rid)"
-                >
-                  Cancelar
-                </button>
-              }
-
-              @if (r.estado === 'cancelada' || r.estado === 'sin_cubrir' || r.estado === 'rechazada') {
-                <button
-                  type="button"
-                  class="oq-btn oq-btn-secondary oq-btn-sm"
-                  (click)="replacementForResId.set(rid)"
-                >
-                  Buscar reemplazo urgente
-                </button>
+              @if (pagado) {
+                <span class="oq-badge oq-badge-success">Pagado</span>
+              } @else {
+                <span class="oq-badge" [class.oq-badge-info]="r.estado === 'aceptada'">
+                  {{ requestStateLabel(r.estado) }}
+                </span>
               }
             </div>
+            <p class="hire-meta">
+              {{ precio(r.costo_congelado) }}. Llega el {{ formatFecha(r.hora_llegada) }}
+            </p>
 
-            @if (paymentsByRes()[rid]; as pay) {
-              <div class="oq-hint" style="margin-top: 0.45rem">
-                Pago: <strong>{{ label(pay.estado) }}</strong> ({{ pay.monto }})
-              </div>
+            @if (r.estado === 'aceptada' && !pagado) {
+              <button type="button" class="oq-btn oq-btn-primary" (click)="openCheckout(r)">
+                Pagar {{ total(r.costo_congelado) }}
+              </button>
             }
-          </div>
+            @if (r.estado === 'solicitada') {
+              <p class="oq-hint">Esperando a que el proveedor acepte. Podrás pagar en cuanto confirme.</p>
+            }
+
+            @if ((r.estado === 'solicitada' || r.estado === 'aceptada') && !pagado) {
+              @if (cancelOpen() === rid) {
+                <div class="hire-cancel">
+                  <input
+                    class="oq-input"
+                    aria-label="Motivo de la cancelación"
+                    placeholder="Motivo (opcional)"
+                    [ngModel]="cancelMotivos()[rid] || ''"
+                    (ngModelChange)="setCancelMotivo(rid, $event)"
+                  />
+                  <button type="button" class="oq-btn oq-btn-danger oq-btn-sm" (click)="cancelRequest(rid)">
+                    Cancelar contratación
+                  </button>
+                  <button type="button" class="hire-link" (click)="cancelOpen.set(null)">No, mantener</button>
+                </div>
+              } @else {
+                <button type="button" class="hire-link" (click)="cancelOpen.set(rid)">
+                  Cancelar contratación
+                </button>
+              }
+            }
+
+            @if (r.estado === 'cancelada' || r.estado === 'sin_cubrir' || r.estado === 'rechazada') {
+              <button
+                type="button"
+                class="oq-btn oq-btn-secondary oq-btn-sm"
+                (click)="replacementForResId.set(rid)"
+              >
+                Buscar reemplazo urgente
+              </button>
+            }
+          </li>
         } @empty {
-          <p class="oq-hint">Todavía no contratas a nadie para este evento.</p>
+          <li class="oq-hint">Todavía no contratas a nadie para este evento.</li>
         }
-      </div>
+      </ul>
 
       @if (replacementForResId()) {
         <div class="oq-alert oq-alert-warning" style="margin-top: 1rem">
@@ -206,14 +204,18 @@
             avisaremos.
           </p>
           <div class="oq-row">
-            <input
-              class="oq-input mono"
-              style="flex: 1 1 180px"
-              aria-label="ID del proveedor de reemplazo"
-              placeholder="ID del proveedor (opcional)"
+            <select
+              class="oq-select"
+              style="flex: 1 1 220px"
+              aria-label="Proveedor de reemplazo"
               [ngModel]="replacementWorkerId()"
               (ngModelChange)="replacementWorkerId.set($event)"
-            />
+            >
+              <option value="">Nadie por ahora</option>
+              @for (w of replacementOptions(); track w.worker_id) {
+                <option [value]="w.worker_id">{{ w.nombre_publico }} · {{ precio(w.tarifa) }}</option>
+              }
+            </select>
             <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="sendEmergencyReplacement()">
               {{ replacementWorkerId().trim() ? 'Enviar solicitud' : 'Marcar sin cubrir' }}
             </button>
@@ -231,3 +233,43 @@
   </section>
 </div>
 
+
+<dialog #checkout class="pay-dialog" aria-labelledby="payTitle" (close)="checkoutFor.set(null)">
+  @if (checkoutFor(); as r) {
+    @let pay = paymentsByRes()[getResId(r)];
+    @if (isPaid(pay)) {
+      <div class="pay-done">
+        <h2 id="payTitle">Pago confirmado</h2>
+        <p>
+          Pagaste {{ total(r.costo_congelado) }} a {{ workerName(r.worker_id) }}. El comprobante queda
+          en tus contrataciones.
+        </p>
+        <button type="button" class="oq-btn oq-btn-primary" (click)="closeCheckout()">Listo</button>
+      </div>
+    } @else {
+      <h2 id="payTitle">Confirma el pago</h2>
+      <dl class="pay-summary">
+        <div><dt>Proveedor</dt><dd>{{ workerName(r.worker_id) }}</dd></div>
+        <div><dt>Servicio</dt><dd>{{ label(r.rol) }}, {{ r.plazas }} {{ r.plazas === 1 ? 'persona' : 'personas' }}</dd></div>
+        <div><dt>Evento</dt><dd>{{ event()?.nombre }}</dd></div>
+        <div><dt>Llega</dt><dd>{{ formatFecha(r.hora_llegada) }}</dd></div>
+        <div class="pay-total"><dt>Total</dt><dd>{{ total(r.costo_congelado) }}</dd></div>
+      </dl>
+      <p class="pay-secure">
+        <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14">
+          <path fill="currentColor" d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6H4a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-.5V4.5A3.5 3.5 0 0 0 8 1Zm-2 3.5a2 2 0 1 1 4 0V6H6V4.5Z"/>
+        </svg>
+        Pago seguro con Stripe. Orquesta no guarda los datos de tu tarjeta.
+      </p>
+      @if (payError()) {
+        <div class="oq-alert oq-alert-error" role="alert">{{ payError() }}</div>
+      }
+      <div class="pay-actions">
+        <button type="button" class="oq-btn oq-btn-secondary" (click)="closeCheckout()">Volver</button>
+        <button type="button" class="oq-btn oq-btn-primary" [disabled]="paying()" (click)="confirmPayment(r)">
+          {{ paying() ? 'Procesando…' : 'Pagar ' + total(r.costo_congelado) }}
+        </button>
+      </div>
+    }
+  }
+</dialog>

@@ -173,3 +173,8 @@ export function precio(
   const unidad = t.unidad ? ` ${UNIDADES[t.unidad] ?? t.unidad.replace(/_/g, ' ')}` : '';
   return `${monto} ${t.moneda}${unidad}`;
 }
+
+/** Solo el importe a cobrar, sin la unidad de la tarifa ("$8,500 MXN"). */
+export function total(t: { monto: number; moneda: string } | null | undefined): string {
+  return t ? precio({ monto: t.monto, moneda: t.moneda }) : '';
+}

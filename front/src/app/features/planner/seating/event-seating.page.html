@@ -1,9 +1,9 @@
 <div class="oq-page-header">
   <div>
-    <h1 data-requisitos="RF-12, TR-10">Acomodo de mesas</h1>
+    <h1>Acomodo de mesas</h1>
     <p class="oq-page-subtitle">
-      Asigna a cada invitado una mesa con lugar disponible. Si alguien declina la invitación, su
-      lugar se libera solo.
+      Elige una mesa para cada invitado que confirmó. Si alguien cancela su asistencia, su lugar se
+      libera solo.
     </p>
   </div>
   <a class="oq-btn oq-btn-secondary" [routerLink]="['/planner/events', eventId()]">
@@ -29,17 +29,97 @@
   }
 </div>
 
-<div class="seat-layout">
-  <section class="oq-card" aria-labelledby="mesas-title">
-    <div class="oq-card-header">
-      <h2 id="mesas-title">Mesas</h2>
-      <span class="oq-hint">{{ tables().length }} en el plano</span>
+<section class="oq-card seat-todo" aria-labelledby="por-sentar-title">
+  <div class="oq-card-header">
+    <div>
+      <h2 id="por-sentar-title">Por sentar ({{ porSentar().length }})</h2>
+      <p class="oq-hint">
+        @if (noVienen() > 0) {
+          {{ noVienen() }} {{ noVienen() === 1 ? 'invitado no viene' : 'invitados no vienen' }} y no
+          necesitan lugar.
+        }
+      </p>
     </div>
+    @if (sinRespuesta() > 0) {
+      <label class="seat-toggle">
+        <input type="checkbox" [ngModel]="incluirPendientes()" (ngModelChange)="incluirPendientes.set($event)" />
+        Incluir a quienes no han respondido ({{ sinRespuesta() }})
+      </label>
+    }
+  </div>
 
-    <ul class="seat-tables" role="list">
-      @for (t of tables(); track t.id) {
-        @let full = t.ocupacion >= t.capacidad;
-        <li class="seat-table" [class.is-full]="full">
+  @if (tables().length === 0) {
+    <p class="oq-hint">Primero crea una mesa abajo; luego podrás sentar a tus invitados.</p>
+  } @else {
+    <ul class="seat-todo-list">
+      @for (u of porSentar(); track u.guest_id) {
+        @let nombre = u.nombre || guestNamesById()[u.guest_id] || 'Invitado';
+        <li>
+          <span class="seat-todo-name">
+            {{ nombre }}
+            @if (u.estado_rsvp !== 'confirma') {
+              <span class="oq-hint">sin respuesta</span>
+            }
+          </span>
+          <label class="oq-sr-only" [for]="'mesa-' + u.guest_id">Mesa para {{ nombre }}</label>
+          <select
+            class="oq-select seat-select"
+            [id]="'mesa-' + u.guest_id"
+            [disabled]="busy()"
+            [ngModel]="''"
+            (ngModelChange)="$event && assignSeat(u.guest_id, $event)"
+          >
+            <option value="">Elegir mesa…</option>
+            @for (t of tables(); track t.id) {
+              <option [value]="t.id" [disabled]="t.ocupacion >= t.capacidad">
+                {{ tableLabel(t) }} · {{ t.ocupacion >= t.capacidad ? 'llena' : t.capacidad - t.ocupacion + ' libres' }}
+              </option>
+            }
+          </select>
+        </li>
+      } @empty {
+        <li class="oq-hint">Todos los que confirmaron ya tienen mesa.</li>
+      }
+    </ul>
+  }
+</section>
+
+<section aria-labelledby="mesas-title">
+  <div class="seat-tables-head">
+    <h2 id="mesas-title">Mesas</h2>
+    <form class="seat-new" (ngSubmit)="createTable()">
+      <label class="oq-sr-only" for="tableNombre">Nombre o número de la mesa</label>
+      <input
+        id="tableNombre"
+        class="oq-input"
+        name="tableNombre"
+        placeholder="Nueva mesa: Mesa 5, Familia novia…"
+        required
+        [ngModel]="newTableNombre()"
+        (ngModelChange)="newTableNombre.set($event)"
+      />
+      <label class="oq-sr-only" for="tableCap">Lugares</label>
+      <input
+        id="tableCap"
+        class="oq-input seat-cap"
+        name="tableCap"
+        type="number"
+        min="1"
+        required
+        title="Lugares"
+        [ngModel]="newTableCapacidad()"
+        (ngModelChange)="newTableCapacidad.set($event)"
+      />
+      <button type="submit" class="oq-btn oq-btn-primary" [disabled]="busy()">Crear mesa</button>
+    </form>
+  </div>
+
+  <ul class="seat-board" role="list">
+    @for (t of tables(); track t.id) {
+      @let full = t.ocupacion >= t.capacidad;
+      @let gente = seatedByTable()[t.id] ?? [];
+      <li class="seat-card" [class.is-full]="full">
+        <div class="seat-card-head">
           <span
             class="seat-ring"
             aria-hidden="true"
@@ -47,184 +127,40 @@
           >
             <span>{{ t.ocupacion }}<small>/{{ t.capacidad }}</small></span>
           </span>
-          <span class="seat-table-name">{{ tableLabel(t) }}</span>
-          <span class="oq-hint">
-            {{ full ? 'Llena' : t.capacidad - t.ocupacion + ' lugares libres' }}
-            <span class="oq-sr-only">, {{ t.ocupacion }} de {{ t.capacidad }} ocupados</span>
-          </span>
-        </li>
-      } @empty {
-        <li class="oq-hint">Todavía no hay mesas. Crea la primera abajo.</li>
-      }
-    </ul>
-
-    <form class="seat-new" (ngSubmit)="createTable()">
-      <div class="oq-field seat-new-name">
-        <label class="oq-label" for="tableNombre">Nombre o número</label>
-        <input
-          id="tableNombre"
-          class="oq-input"
-          name="tableNombre"
-          placeholder="Mesa 1, Familia novia…"
-          required
-          [ngModel]="newTableNombre()"
-          (ngModelChange)="newTableNombre.set($event)"
-        />
-      </div>
-      <div class="oq-field seat-new-cap">
-        <label class="oq-label" for="tableCap">Lugares</label>
-        <input
-          id="tableCap"
-          class="oq-input"
-          name="tableCap"
-          type="number"
-          min="1"
-          required
-          [ngModel]="newTableCapacidad()"
-          (ngModelChange)="newTableCapacidad.set($event)"
-        />
-      </div>
-      <button type="submit" class="oq-btn oq-btn-primary" [disabled]="busy()">Crear mesa</button>
-    </form>
-  </section>
-
-  <div class="oq-grid">
-    <section class="oq-card" aria-labelledby="sin-mesa-title">
-      <div class="oq-card-header">
-        <h2 id="sin-mesa-title">Sin mesa ({{ unseated().length }})</h2>
-        <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="refreshAll()">
-          Recargar
-        </button>
-      </div>
-
-      <div class="oq-table-wrap">
-        <table class="oq-table">
-          <caption class="oq-sr-only">Invitados que todavía no tienen mesa</caption>
-          <thead>
-            <tr>
-              <th scope="col">Invitado</th>
-              <th scope="col">Respuesta</th>
-              <th scope="col">Mesa</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (u of unseated(); track u.guest_id) {
-              @let nombre = u.nombre || guestNamesById()[u.guest_id] || 'Invitado';
-              <tr>
-                <td><strong>{{ nombre }}</strong></td>
-                @let declino = u.estado_rsvp === 'declina';
-                <td>
-                  <span
-                    class="oq-badge"
-                    [class.oq-badge-success]="u.estado_rsvp === 'confirma'"
-                    [class.oq-badge-danger]="declino"
-                    [class.oq-badge-neutral]="u.estado_rsvp !== 'confirma' && !declino"
-                  >
-                    {{ rsvpLabel(u.estado_rsvp) }}
-                  </span>
-                </td>
-                <td>
-                  <div class="oq-row">
-                    <label class="oq-sr-only" [for]="'mesa-' + u.guest_id">Mesa para {{ nombre }}</label>
-                    <select
-                      class="oq-select seat-select"
-                      [id]="'mesa-' + u.guest_id"
-                      [ngModel]="selectedTableByGuest()[u.guest_id] || tables()[0]?.id || ''"
-                      (ngModelChange)="setTargetTable(u.guest_id, $event)"
-                    >
-                      @for (t of tables(); track t.id) {
-                        <option [value]="t.id" [disabled]="t.ocupacion >= t.capacidad">
-                          {{ tableLabel(t) }} ({{ t.ocupacion }}/{{ t.capacidad }})
-                        </option>
-                      }
-                    </select>
-                    <button
-                      type="button"
-                      class="oq-btn oq-btn-accent oq-btn-sm"
-                      [disabled]="tables().length === 0 || busy() || declino"
-                      [attr.aria-label]="'Asignar mesa a ' + nombre"
-                      [attr.title]="declino ? 'Declinó la invitación' : null"
-                      (click)="assignSeat(u.guest_id)"
-                    >
-                      Asignar
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            } @empty {
-              <tr>
-                <td colspan="3" class="oq-hint">Todos los invitados tienen mesa.</td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    @if (seatedGuests().length > 0) {
-      <section class="oq-card" aria-labelledby="con-mesa-title">
-        <h2 id="con-mesa-title">Con mesa ({{ seatedGuests().length }})</h2>
-        <div class="oq-table-wrap">
-          <table class="oq-table">
-            <caption class="oq-sr-only">Invitados con mesa asignada</caption>
-            <thead>
-              <tr>
-                <th scope="col">Invitado</th>
-                <th scope="col">Mesa actual</th>
-                <th scope="col">Mover o liberar</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (sg of seatedGuests(); track sg.guest_id ?? sg.id) {
-                @let gid = sg.guest_id ?? sg.id ?? '';
-                @let actual = sg.table_id ?? '';
-                <tr>
-                  <td>{{ sg.nombre }}</td>
-                  <td>{{ tableNameById()[actual] ?? sg.mesa ?? actual }}</td>
-                  <td>
-                    <div class="oq-row seat-actions">
-                      <label class="oq-sr-only" [for]="'mover-' + gid">Mover a {{ sg.nombre }} a otra mesa</label>
-                      <select
-                        class="oq-select seat-select"
-                        [id]="'mover-' + gid"
-                        [ngModel]="selectedTableByGuest()[gid] || actual"
-                        (ngModelChange)="setTargetTable(gid, $event)"
-                      >
-                        @for (t of tables(); track t.id) {
-                          <option
-                            [value]="t.id"
-                            [disabled]="t.id !== actual && t.ocupacion >= t.capacidad"
-                          >
-                            {{ tableLabel(t) }} ({{ t.ocupacion }}/{{ t.capacidad }})
-                          </option>
-                        }
-                      </select>
-                      <button
-                        type="button"
-                        class="oq-btn oq-btn-accent oq-btn-sm"
-                        [disabled]="busy() || !selectedTableByGuest()[gid] || selectedTableByGuest()[gid] === actual"
-                        [attr.aria-label]="'Mover a ' + sg.nombre"
-                        (click)="assignSeat(gid)"
-                      >
-                        Mover
-                      </button>
-                      <button
-                        type="button"
-                        class="oq-btn oq-btn-secondary oq-btn-sm"
-                        [disabled]="busy()"
-                        [attr.aria-label]="'Liberar el lugar de ' + sg.nombre"
-                        (click)="releaseSeat(gid)"
-                      >
-                        Liberar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              }
-            </tbody>
-          </table>
+          <div>
+            <h3>{{ tableLabel(t) }}</h3>
+            <span class="oq-hint">
+              {{ full ? 'Llena' : t.capacidad - t.ocupacion + ' lugares libres' }}
+              <span class="oq-sr-only">, {{ t.ocupacion }} de {{ t.capacidad }} ocupados</span>
+            </span>
+          </div>
         </div>
-      </section>
+        <ul class="seat-guests">
+          @for (sg of gente; track sg.guest_id ?? sg.id) {
+            @let gid = sg.guest_id ?? sg.id ?? '';
+            <li>
+              <span>{{ sg.nombre }}</span>
+              <button
+                type="button"
+                class="seat-remove"
+                [disabled]="busy()"
+                [attr.aria-label]="'Quitar a ' + sg.nombre + ' de ' + tableLabel(t)"
+                title="Quitar de la mesa"
+                (click)="releaseSeat(gid)"
+              >
+                ×
+              </button>
+            </li>
+          } @empty {
+            <li class="oq-hint">Nadie todavía.</li>
+          }
+        </ul>
+      </li>
+    } @empty {
+      <li class="oq-hint">Todavía no hay mesas. Crea la primera arriba.</li>
     }
-  </div>
-</div>
+  </ul>
+  @if (tables().length > 0) {
+    <p class="oq-hint">Para cambiar a alguien de mesa, quítalo con la × y vuelve a elegirle mesa.</p>
+  }
+</section>

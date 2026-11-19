@@ -1,6 +1,6 @@
 <div class="oq-page-header">
   <div>
-    <h1 data-requisitos="RF-01">Nuevo evento</h1>
+    <h1>Nuevo evento</h1>
     <p class="oq-page-subtitle">
       Captura los datos básicos. El evento se guarda como borrador y nadie recibe nada hasta que lo
       publiques.
@@ -32,19 +32,35 @@
 
       <div class="oq-grid-2">
         <div class="oq-field">
-          <label class="oq-label" for="evFecha">Fecha</label>
+          <label class="oq-label" for="evIni">Empieza</label>
           <input
-            id="evFecha"
-            name="fecha"
+            id="evIni"
+            name="inicio"
             class="oq-input"
-            type="date"
+            type="datetime-local"
             required
-            [ngModel]="fecha()"
-            (ngModelChange)="fecha.set($event)"
+            [ngModel]="ventanaInicio()"
+            (ngModelChange)="setInicio($event)"
           />
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="evAforo">Aforo máximo</label>
+          <label class="oq-label" for="evFin">Termina</label>
+          <input
+            id="evFin"
+            name="fin"
+            class="oq-input"
+            type="datetime-local"
+            required
+            [min]="ventanaInicio()"
+            [ngModel]="ventanaFin()"
+            (ngModelChange)="ventanaFin.set($event)"
+          />
+        </div>
+      </div>
+
+      <div class="oq-grid-2">
+        <div class="oq-field">
+          <label class="oq-label" for="evAforo">¿Cuántas personas caben?</label>
           <input
             id="evAforo"
             name="aforo"
@@ -56,9 +72,6 @@
             (ngModelChange)="aforo.set($event)"
           />
         </div>
-      </div>
-
-      <div class="oq-grid-2">
         <div class="oq-field">
           <label class="oq-label" for="evTz">Zona horaria</label>
           <select
@@ -72,44 +85,6 @@
               <option [value]="tz">{{ label(tz) }}</option>
             }
           </select>
-        </div>
-        <div class="oq-field">
-          <label class="oq-label" for="evTzCustom">¿Otra zona horaria?</label>
-          <input
-            id="evTzCustom"
-            name="customTimezone"
-            class="oq-input mono"
-            placeholder="Ej. America/Tijuana"
-            [ngModel]="customTimezone()"
-            (ngModelChange)="customTimezone.set($event)"
-          />
-        </div>
-      </div>
-
-      <div class="oq-grid-2">
-        <div class="oq-field">
-          <label class="oq-label" for="evIni">Empieza</label>
-          <input
-            id="evIni"
-            name="inicio"
-            class="oq-input"
-            type="datetime-local"
-            required
-            [ngModel]="ventanaInicio()"
-            (ngModelChange)="ventanaInicio.set($event)"
-          />
-        </div>
-        <div class="oq-field">
-          <label class="oq-label" for="evFin">Termina</label>
-          <input
-            id="evFin"
-            name="fin"
-            class="oq-input"
-            type="datetime-local"
-            required
-            [ngModel]="ventanaFin()"
-            (ngModelChange)="ventanaFin.set($event)"
-          />
         </div>
       </div>
 
@@ -171,10 +146,11 @@
             />
             <button
               type="button"
-              class="oq-btn oq-btn-danger oq-btn-sm"
+              class="ec-remove"
+              [attr.aria-label]="'Quitar ' + label(req.rol)"
               (click)="removeRequirement($index)"
             >
-              Quitar
+              ×
             </button>
           </div>
         }
