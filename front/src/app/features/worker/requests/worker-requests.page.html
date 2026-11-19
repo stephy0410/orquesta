@@ -2,8 +2,8 @@
   <div>
     <h1 data-requisitos="RF-17">Solicitudes y reservas</h1>
     <p class="oq-page-subtitle">
-      El precio mostrado (<code>costo_congelado</code>) es inmutable desde que se creó la solicitud
-      (TR-20). Las solicitudes pendientes no bloquean tus plazas hasta que aceptas una.
+      El precio de cada solicitud queda fijo desde que la planner la envía. Tu agenda solo se ocupa
+      cuando aceptas.
     </p>
   </div>
 
@@ -11,17 +11,18 @@
     <select
       class="oq-select"
       style="width: auto"
+      aria-label="Filtrar por estado"
       [ngModel]="filterEstado()"
       (ngModelChange)="filterEstado.set($event); loadRequests()"
     >
       <option value="">Todos los estados</option>
-      <option value="solicitada">solicitada</option>
-      <option value="aceptada">aceptada</option>
-      <option value="rechazada">rechazada</option>
-      <option value="cancelada">cancelada</option>
-      <option value="cancelada_pagada">cancelada_pagada</option>
-      <option value="expirada">expirada</option>
-      <option value="completada">completada</option>
+      <option value="solicitada">Por responder</option>
+      <option value="aceptada">Aceptadas</option>
+      <option value="rechazada">Rechazadas</option>
+      <option value="cancelada">Canceladas</option>
+      <option value="cancelada_pagada">Canceladas con pago</option>
+      <option value="expirada">Vencidas</option>
+      <option value="completada">Completadas</option>
     </select>
     <button type="button" class="oq-btn oq-btn-secondary" (click)="loadRequests()">
       Actualizar
@@ -30,21 +31,21 @@
 </div>
 
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 @if (success()) {
-  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+  <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 
 @if (overlapConflict(); as conf) {
   <section class="oq-alert oq-alert-warning" role="alert">
-    <strong>Conflicto de horario / plazas (409 RESERVATION_OVERLAP)</strong>
-    <p>{{ conf.message }} — La solicitud permanece en estado <code>solicitada</code>.</p>
+    <strong>Ya tienes algo en ese horario</strong>
+    <p>{{ conf.message }} La solicitud sigue esperando tu respuesta.</p>
     @if (conf.ganadora; as g) {
-      <div class="mono req-winner-box">
-        Reserva ganadora: <strong>{{ g.reservation_id }}</strong> · Evento: {{ g.event_id }}
-        @if (g.plazas) { · Plazas ocupadas: {{ g.plazas }} }
-        @if (g.ventana) { · Ventana: {{ g.ventana.inicio }} → {{ g.ventana.fin }} }
+      <div class="req-winner-box">
+        Ya aceptaste otra reserva
+        @if (g.ventana) { del {{ formatFecha(g.ventana.inicio) }} al {{ formatFecha(g.ventana.fin) }} }
+        @if (g.plazas) { con {{ g.plazas }} {{ g.plazas === 1 ? 'persona' : 'personas' }} }.
       </div>
     }
   </section>
@@ -56,7 +57,7 @@
     <article class="oq-card" [class.req-emergency]="item.modo_emergencia">
       <div class="oq-between">
         <div class="oq-row">
-          <strong class="mono">{{ reqId }}</strong>
+          <strong>{{ item.evento?.nombre || 'Solicitud' }}</strong>
           <span
             class="oq-badge"
             [class.oq-badge-info]="item.estado === 'solicitada'"
@@ -64,40 +65,36 @@
             [class.oq-badge-danger]="item.estado === 'rechazada' || item.estado === 'cancelada' || item.estado === 'cancelada_pagada'"
             [class.oq-badge-warning]="item.estado === 'expirada'"
           >
-            {{ item.estado }}
+            {{ label(item.estado) }}
           </span>
           @if (item.modo_emergencia) {
-            <span class="oq-badge oq-badge-danger">Modo emergencia (SLA 15 min)</span>
+            <span class="oq-badge oq-badge-danger">Urgente: responde en 15 min</span>
           }
         </div>
 
         @if (item.estado === 'solicitada' && item.expira_en) {
-          <span class="oq-badge oq-badge-warning mono">
-            Expira en: {{ countdownLabel(item.expira_en) }}
+          <span class="oq-badge oq-badge-warning">
+            Vence en {{ countdownLabel(item.expira_en) }}
           </span>
         }
       </div>
 
       <div class="oq-grid-3 req-meta">
         <div>
-          <span class="oq-stat-label">Evento y zona</span>
-          <strong>{{ item.evento?.nombre || item.event_id || 'Evento' }}</strong>
-          <div class="oq-hint">Zona: {{ item.zona || '—' }}</div>
+          <span class="oq-stat-label">Dónde</span>
+          <strong>{{ item.zona ? label(item.zona) : 'Por confirmar' }}</strong>
         </div>
         <div>
-          <span class="oq-stat-label">Rol, plazas y llegada</span>
-          <strong>{{ item.rol }} · {{ item.plazas }} plaza(s)</strong>
-          <div class="oq-hint mono">Llegada: {{ item.hora_llegada }}</div>
+          <span class="oq-stat-label">Puesto y horario</span>
+          <strong>{{ label(item.rol) }}, {{ item.plazas }} {{ item.plazas === 1 ? 'persona' : 'personas' }}</strong>
+          <div class="oq-hint">Llegada: {{ formatFecha(item.hora_llegada) }}</div>
           @if (item.ventana) {
-            <div class="oq-hint mono">{{ item.ventana.inicio }} → {{ item.ventana.fin }}</div>
+            <div class="oq-hint">{{ formatFecha(item.ventana.inicio) }} a {{ formatFecha(item.ventana.fin) }}</div>
           }
         </div>
         <div>
-          <span class="oq-stat-label">Costo congelado (TR-20)</span>
-          <strong class="mono">
-            {{ item.costo_congelado.monto }} {{ item.costo_congelado.moneda }} /
-            {{ item.costo_congelado.unidad }}
-          </strong>
+          <span class="oq-stat-label">Pago</span>
+          <strong>{{ precio(item.costo_congelado) }}</strong>
         </div>
       </div>
 
@@ -105,7 +102,7 @@
         <div class="oq-row req-actions">
           @if (workerTipo() === 'empresa' && item.plazas > 1) {
             <label class="oq-row">
-              <span class="oq-hint">Plazas a aceptar:</span>
+              <span class="oq-hint">Personas que aceptas:</span>
               <input
                 class="oq-input"
                 style="width: 82px"
@@ -119,13 +116,14 @@
           }
 
           <button type="button" class="oq-btn oq-btn-accent" (click)="acceptRequest(item)">
-            Aceptar solicitud
+            Aceptar
           </button>
 
           <input
             class="oq-input"
             style="max-width: 240px"
-            placeholder="Motivo (opcional rechazo)"
+            aria-label="Motivo del rechazo (opcional)"
+            placeholder="Motivo (opcional)"
             [ngModel]="actionMotivo()[reqId] || ''"
             (ngModelChange)="setMotivo(reqId, $event)"
           />
@@ -145,7 +143,8 @@
             <input
               class="oq-input"
               style="max-width: 240px"
-              placeholder="Motivo si cancelas (alerta emergencia)"
+              aria-label="Motivo de la cancelación"
+              placeholder="Motivo si cancelas"
               [ngModel]="actionMotivo()[reqId] || ''"
               (ngModelChange)="setMotivo(reqId, $event)"
             />
@@ -155,16 +154,15 @@
           }
 
           <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="checkPaymentStatus(item)">
-            Consultar estado de pago (RF-11)
+            Ver estado del pago
           </button>
         </div>
 
         @if (paymentByRes()[reqId]; as pay) {
           <div class="oq-alert oq-alert-info req-pay-box">
-            Pago <strong class="mono">{{ pay.payment_id }}</strong>:
-            <span class="oq-badge oq-badge-neutral mono">{{ pay.estado }}</span>
-            · {{ pay.monto }} {{ pay.moneda || item.costo_congelado.moneda }}
-            @if (pay.reverso_de) { · Reverso de {{ pay.reverso_de }} }
+            Pago: <span class="oq-badge oq-badge-neutral">{{ label(pay.estado) }}</span>
+            ({{ pay.monto }} {{ pay.moneda || item.costo_congelado.moneda }})
+            @if (pay.reverso_de) { . Es una devolución de un pago anterior. }
           </div>
         }
       }
@@ -172,7 +170,7 @@
   } @empty {
     <section class="oq-card">
       <p class="oq-hint">
-        {{ loading() ? 'Cargando solicitudes...' : 'No hay solicitudes en esta bandeja todavía.' }}
+        {{ loading() ? 'Cargando solicitudes…' : 'Todavía no tienes solicitudes. Asegúrate de tener tu perfil publicado y tu disponibilidad al día.' }}
       </p>
     </section>
   }

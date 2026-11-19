@@ -21,6 +21,7 @@ import {
   WorkerRequestItemDto,
 } from '../../../core/api/models';
 import { EventSubnavComponent } from '../shared/event-subnav.component';
+import { formatFecha, humanize, humanizeList, precio } from '../../../shared/labels';
 
 @Component({
   selector: 'app-event-workers-page',
@@ -32,6 +33,7 @@ export class EventWorkersPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
 
+  readonly labelList = humanizeList;
   readonly allCategories = WORKER_CATEGORIES;
   readonly allRoles = ROLES_CATALOGO;
   readonly allZones = WORKER_ZONES;
@@ -50,6 +52,14 @@ export class EventWorkersPage implements OnInit {
   readonly filterTarifaMin = signal<number | null>(null);
   readonly filterTarifaMax = signal<number | null>(null);
   readonly filterUnidad = signal<TarifaUnidad | ''>('');
+  readonly label = humanize;
+  readonly formatFecha = formatFecha;
+  readonly precio = precio;
+
+  workerName(workerId: string | null | undefined): string {
+    return this.workers().find((w) => w.worker_id === workerId)?.nombre_publico ?? 'Proveedor';
+  }
+
   readonly workers = signal<PublicWorkerDto[]>([]);
   readonly occupiedByWorker = signal<Record<string, WorkerAvailabilityOccupiedResponse>>({});
 
@@ -170,10 +180,10 @@ export class EventWorkersPage implements OnInit {
       });
       this.requirements.set(res.requerimientos ?? this.requirements());
       if (res.cobertura) this.coverage.set(this.extractCoverageRows(res.cobertura));
-      this.success.set('Requerimientos actualizados (RF-22).');
+      this.success.set('Listo: guardamos cuánta gente necesitas.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error guardando.',
+        err instanceof OrquestaApiError ? err.message : 'Error guardando.',
       );
     }
   }
@@ -210,7 +220,7 @@ export class EventWorkersPage implements OnInit {
       this.workers.set(res.items ?? []);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error buscando personal.',
+        err instanceof OrquestaApiError ? err.message : 'Error buscando personal.',
       );
     }
   }
@@ -231,7 +241,7 @@ export class EventWorkersPage implements OnInit {
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'Error consultando disponibilidad.',
       );
     }
@@ -253,7 +263,7 @@ export class EventWorkersPage implements OnInit {
     const fin = toIso(this.reqFin());
     const horaLlegada = toIso(this.reqHoraLlegada());
     if (!inicio || !fin || !horaLlegada) {
-      this.error.set('Ventana y hora de llegada válidas son obligatorias.');
+      this.error.set('Revisa el horario: la llegada debe estar entre el inicio y el término.');
       return;
     }
 
@@ -271,13 +281,13 @@ export class EventWorkersPage implements OnInit {
         },
       );
       this.success.set(
-        `Solicitud enviada (${res.id ?? res.reservation_id}). Costo congelado: ${res.costo_congelado.monto} ${res.costo_congelado.moneda}/${res.costo_congelado.unidad}.`,
+        `Solicitud enviada. Precio fijo: ${precio(res.costo_congelado)}.`,
       );
       this.selectedWorker.set(null);
       await this.loadRequests();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error enviando solicitud.',
+        err instanceof OrquestaApiError ? err.message : 'Error enviando solicitud.',
       );
     }
   }
@@ -313,12 +323,12 @@ export class EventWorkersPage implements OnInit {
         { motivo },
       );
       this.success.set(
-        `Reserva ${reservationId} → ${res.estado}. Plazas liberadas: ${res.plazas_liberadas ?? 0}.`,
+        `Reserva ${humanize(res.estado).toLowerCase()}.`,
       );
       await Promise.all([this.loadRequests(), this.loadAlerts()]);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al cancelar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al cancelar.',
       );
     }
   }
@@ -341,10 +351,10 @@ export class EventWorkersPage implements OnInit {
         { worker_id: workerId || null },
       );
       if (res.estado === 'sin_cubrir') {
-        this.error.set('SIN_CANDIDATO: La reserva quedó marcada como sin_cubrir con alerta.');
+        this.error.set('Marcamos el puesto como sin cubrir. Te avisaremos en este evento.');
       } else {
         this.success.set(
-          `Reemplazo de emergencia solicitado (${res.id ?? resId}, SLA 15 min).`,
+          'Solicitud urgente enviada. El proveedor tiene 15 minutos para aceptar.',
         );
       }
       this.replacementForResId.set(null);
@@ -353,7 +363,7 @@ export class EventWorkersPage implements OnInit {
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo enviar el reemplazo.',
       );
     }
@@ -375,12 +385,12 @@ export class EventWorkersPage implements OnInit {
       this.paymentsByRes.update((curr) => ({ ...curr, [reservationId]: pay }));
       this.success.set(
         pay.estado === 'desconocido'
-          ? `Resultado PSP desconocido (${pay.payment_id}). Consulta el estado antes de reintentar (TR-09).`
-          : `Pago en modo test ${pay.estado}: ${pay.monto} (key ${key}).`,
+          ? 'No sabemos todavía si el pago pasó. Revisa su estado antes de intentarlo otra vez.'
+          : `Pago de prueba: ${humanize(pay.estado).toLowerCase()} (${pay.monto}).`,
       );
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error ejecutando pago.',
+        err instanceof OrquestaApiError ? err.message : 'Error ejecutando pago.',
       );
     }
   }
@@ -397,7 +407,7 @@ export class EventWorkersPage implements OnInit {
       }
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Sin cobros registrados.',
+        err instanceof OrquestaApiError ? err.message : 'Sin cobros registrados.',
       );
     }
   }

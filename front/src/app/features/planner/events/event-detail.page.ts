@@ -5,6 +5,8 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import * as QRCode from 'qrcode';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
+import { humanize } from '../../../shared/labels';
+import { formatEventDate } from '../../invitation/invitation.page';
 import {
   COMMON_TIMEZONES,
   CheckinItemDto,
@@ -28,6 +30,8 @@ export class EventDetailPage implements OnInit {
   private readonly api = inject(ApiService);
   private readonly route = inject(ActivatedRoute);
 
+  readonly label = humanize;
+  readonly fechaLarga = formatEventDate;
   readonly timezones = COMMON_TIMEZONES;
   readonly rolesCatalog = ROLES_CATALOGO;
 
@@ -66,6 +70,41 @@ export class EventDetailPage implements OnInit {
   // Annulment motivos
   readonly annulMotivos = signal<Record<string, string>>({});
 
+  estadoLabel(estado: string): string {
+    const labels: Record<string, string> = {
+      borrador: 'Borrador',
+      publicado: 'Publicado',
+      en_curso: 'En curso',
+      cerrado: 'Cerrado',
+      cancelado: 'Cancelado',
+    };
+    return labels[estado] ?? estado;
+  }
+
+  verdictLabel(kind: string): string {
+    if (kind === 'admitido') return 'Entró';
+    if (kind === 'anulacion') return 'Anulada';
+    if (kind === 'duplicado_tardio') return 'Repetida (tardía)';
+    return kind;
+  }
+
+  permisosLabel(permisos: readonly string[]): string {
+    const labels: Record<string, string> = {
+      roster: 'lista de invitados',
+      checkin: 'registrar entradas',
+      anulacion: 'anular entradas',
+    };
+    return permisos.map((p) => labels[p] ?? p).join(', ');
+  }
+
+  formatFecha(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' });
+  }
+
   async ngOnInit(): Promise<void> {
     const id = this.route.snapshot.paramMap.get('id') ?? '';
     this.eventId.set(id);
@@ -85,7 +124,7 @@ export class EventDetailPage implements OnInit {
       this.editAforo.set(ev.aforo);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error cargando evento.',
+        err instanceof OrquestaApiError ? err.message : 'Error cargando evento.',
       );
     } finally {
       this.loading.set(false);
@@ -133,7 +172,7 @@ export class EventDetailPage implements OnInit {
       this.success.set('Evento actualizado.');
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al actualizar.',
+        err instanceof OrquestaApiError ? err.message : 'Error al actualizar.',
       );
     }
   }
@@ -152,11 +191,13 @@ export class EventDetailPage implements OnInit {
         `/v1/events/${encodeURIComponent(this.eventId())}/${action}`,
         body,
       );
-      this.success.set(`Transición ejecutada: estado → ${res.estado ?? action}.`);
+      this.success.set(
+        res.estado ? `Listo: el evento ahora está ${this.estadoLabel(res.estado).toLowerCase()}.` : 'Listo.',
+      );
       await this.loadEvent();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Transición rechazada.',
+        err instanceof OrquestaApiError ? err.message : 'Transición rechazada.',
       );
     }
   }
@@ -176,11 +217,11 @@ export class EventDetailPage implements OnInit {
       );
       this.newMemberEmail.set('');
       this.newMemberUserId.set('');
-      this.success.set('Editor agregado al evento (EventMembership).');
+      this.success.set('Listo: ya puede editar este evento.');
       await this.loadMembers();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error agregando miembro.',
+        err instanceof OrquestaApiError ? err.message : 'Error agregando miembro.',
       );
     }
   }
@@ -192,11 +233,11 @@ export class EventDetailPage implements OnInit {
       await this.api.delete(
         `/v1/events/${encodeURIComponent(this.eventId())}/members/${encodeURIComponent(userId)}`,
       );
-      this.success.set('Membresía revocada de inmediato.');
+      this.success.set('Acceso quitado.');
       await this.loadMembers();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error revocando.',
+        err instanceof OrquestaApiError ? err.message : 'Error revocando.',
       );
     }
   }
@@ -219,11 +260,11 @@ export class EventDetailPage implements OnInit {
       );
       this.lastStaffAssignment.set(res);
       this.staffUserId.set('');
-      this.success.set(`Permiso de escaneo otorgado hasta ${res.expira_en}.`);
+      this.success.set(`Permiso guardado hasta el ${this.formatFecha(res.expira_en)}.`);
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError
-          ? `${err.code}: ${err.message}`
+          ? err.message
           : 'No se pudo otorgar permiso.',
       );
     }
@@ -240,10 +281,10 @@ export class EventDetailPage implements OnInit {
       this.issuedAccessToken.set(tok);
       const svg = await QRCode.toString(tok.qr_token, { type: 'svg', width: 220, margin: 2 });
       this.accessQrDataUrl.set(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
-      this.success.set(`QR de acceso emitido para rol "${tok.rol}". Expira con el evento.`);
+      this.success.set(`QR generado para ${humanize(tok.rol).toLowerCase()}. Vence cuando termine el evento.`);
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error emitiendo QR.',
+        err instanceof OrquestaApiError ? err.message : 'Error emitiendo QR.',
       );
     }
   }
@@ -255,7 +296,7 @@ export class EventDetailPage implements OnInit {
   async annulCheckin(checkinId: string): Promise<void> {
     const motivo = (this.annulMotivos()[checkinId] ?? '').trim();
     if (!motivo) {
-      this.error.set('Ingresa el motivo obligatorio de la anulación (RF-14).');
+      this.error.set('Escribe el motivo para anular la entrada.');
       return;
     }
     this.error.set(null);
@@ -265,11 +306,11 @@ export class EventDetailPage implements OnInit {
         `/v1/events/${encodeURIComponent(this.eventId())}/checkins/${encodeURIComponent(checkinId)}/annulments`,
         { motivo, annuls_checkin_id: checkinId },
       );
-      this.success.set(`Check-in ${checkinId} anulado.`);
+      this.success.set('Entrada anulada.');
       await this.loadCheckins();
     } catch (err) {
       this.error.set(
-        err instanceof OrquestaApiError ? `${err.code}: ${err.message}` : 'Error al anular.',
+        err instanceof OrquestaApiError ? err.message : 'Error al anular.',
       );
     }
   }

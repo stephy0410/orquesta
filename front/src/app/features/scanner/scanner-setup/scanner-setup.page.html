@@ -1,25 +1,22 @@
 <header class="oq-topbar">
   <div class="oq-topbar-inner">
-    <a class="oq-brand" routerLink="/">
-      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-      <span>Orquesta · Escáner PWA</span>
-    </a>
-    <div class="oq-row">
+    <a class="oq-brand" routerLink="/">Orquesta <small>escáner</small></a>
+    <div class="oq-row oq-topbar-end">
       <span class="oq-badge" [class.oq-badge-success]="connectivity.isOnline()" [class.oq-badge-warning]="!connectivity.isOnline()">
-        {{ connectivity.isOnline() ? 'En línea' : 'Sin red (Offline)' }}
+        {{ connectivity.isOnline() ? 'En línea' : 'Sin conexión' }}
       </span>
-      <a class="oq-nav-link" routerLink="/planner/login">Consola Planner</a>
+      <a class="oq-nav-link" routerLink="/planner/login">Soy planner</a>
     </div>
   </div>
 </header>
 
-<main class="oq-container-narrow">
+<main class="oq-container-narrow" id="contenido" tabindex="-1">
   <div class="oq-page-header">
     <div>
-      <h1>Iniciar sesión de escaneo</h1>
+      <h1>Escanear entradas</h1>
       <p class="oq-page-subtitle">
-        Una sesión de escaneo corresponde a un único evento (TR-19). El roster firmado y la cola
-        se almacenan en IndexedDB (RPO 0).
+        Abre el escáner del evento en este celular. La lista de invitados se guarda en el teléfono,
+        así que puedes seguir escaneando aunque se vaya la señal.
       </p>
     </div>
   </div>
@@ -28,20 +25,19 @@
     <section class="oq-card setup-existing">
       <div class="oq-between">
         <div>
-          <span class="oq-badge oq-badge-info">Sesión guardada offline</span>
-          <h2 class="setup-title">{{ ses.event_nombre || ses.event_id }}</h2>
+          <span class="oq-badge oq-badge-info">Escáner abierto en este celular</span>
+          <h2 class="setup-title">{{ ses.event_nombre || 'Tu evento' }}</h2>
           <p class="oq-hint">
-            Rol: <strong class="mono">{{ ses.rol }}</strong> · Dispositivo:
-            <strong class="mono">{{ ses.device_id }}</strong> · Roster: {{ rosterCount() }} ·
-            Pendientes: {{ queueDepth() }}
+            Entras como {{ label(ses.rol).toLowerCase() }}. {{ rosterCount() }} invitados en la lista y
+            {{ queueDepth() }} entradas por sincronizar.
           </p>
         </div>
         <div class="oq-row">
           <button type="button" class="oq-btn oq-btn-accent" (click)="resumeExisting()">
-            Ir a terminal
+            Seguir escaneando
           </button>
           <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="clearExisting()">
-            Cerrar sesión
+            Salir de este evento
           </button>
         </div>
       </div>
@@ -49,47 +45,48 @@
   }
 
   @if (error()) {
-    <div class="oq-alert oq-alert-error">{{ error() }}</div>
+    <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
   }
   @if (statusMessage()) {
-    <div class="oq-alert oq-alert-info">{{ statusMessage() }}</div>
+    <div class="oq-alert oq-alert-info" role="status">{{ statusMessage() }}</div>
   }
 
   <section class="oq-card">
-    <h2>Canjear QR de acceso al evento (EventAccessToken)</h2>
+    <h2>Usa el código que te dio la planner</h2>
     <p class="oq-hint">
-      Pega el token emitido por el planner (<code>POST /v1/auth/event-session</code>) para abrir la
-      sesión acotada al evento y precargar el roster firmado.
+      Escanea con la cámara el QR de acceso que te compartió la planner, o pega aquí el código que
+      viene debajo.
     </p>
     <form class="oq-form-grid" (ngSubmit)="activateWithAccessToken()">
       <div class="oq-field">
-        <label class="oq-label" for="accessTokenInput">Token de acceso del evento</label>
+        <label class="oq-label" for="accessTokenInput">Código de acceso</label>
         <textarea
           id="accessTokenInput"
           name="accessTokenInput"
           class="oq-textarea mono"
-          placeholder="Pega aquí el EventAccessToken..."
+          autocomplete="off"
           [ngModel]="accessTokenInput()"
           (ngModelChange)="accessTokenInput.set($event)"
         ></textarea>
       </div>
       <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
-        {{ loading() ? 'Conectando...' : 'Canjear y precargar roster' }}
+        {{ loading() ? 'Abriendo…' : 'Abrir escáner' }}
       </button>
     </form>
   </section>
 
   <section class="oq-card setup-staff-card">
-    <h3>O abrir con cuenta autenticada (StaffAssignment)</h3>
+    <h3>¿Ya tienes cuenta en Orquesta?</h3>
     <p class="oq-hint">
-      Si ya iniciaste sesión como planner o staff habilitado, ingresa el <code>event_id</code>.
+      Si iniciaste sesión y la planner te dio permiso de escanear, escribe el ID del evento.
     </p>
     <form class="oq-row" (ngSubmit)="activateWithStaffAccount()">
       <input
         name="eventIdInput"
         class="oq-input mono setup-event-input"
         type="text"
-        placeholder="evt_01..."
+        aria-label="ID del evento"
+        placeholder="ID del evento"
         [ngModel]="eventIdInput()"
         (ngModelChange)="eventIdInput.set($event)"
       />

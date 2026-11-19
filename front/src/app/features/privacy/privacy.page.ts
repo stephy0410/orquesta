@@ -68,7 +68,7 @@ import { environment } from '../../../environments/environment';
       <h2>5. Conservación</h2>
       <ul>
         <li>Los <strong>teléfonos de los invitados se borran 90 días</strong> después del evento.</li>
-        <li>El resto de los datos de contacto de invitados y tokens se borran o anonimizan a los 12 meses del cierre del evento.</li>
+        <li>El resto de los datos de contacto de invitados y los enlaces de invitación se borran o anonimizan a los 12 meses del cierre del evento.</li>
         <li>Los registros de entrada conservan solo datos agregados sin identificar el dispositivo a los 24 meses.</li>
         <li>Los registros contables de pagos se conservan sin datos personales de contacto.</li>
       </ul>

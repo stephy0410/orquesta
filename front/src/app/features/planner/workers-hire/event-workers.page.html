@@ -2,33 +2,29 @@
   <div>
     <h1 data-requisitos="RF-07..09, RF-11, RF-22">Personal y pagos</h1>
     <p class="oq-page-subtitle">
-      Búsqueda en 3 dimensiones (capacidades AND, zonas/radio, rango de tarifa), disponibilidad
-      sin filtrar eventos ajenos, costo congelado (TR-20) y pago en modo test.
+      Define cuánta gente necesitas, encuentra proveedores disponibles y paga sus reservas. El precio
+      de cada reserva queda fijo desde que envías la solicitud.
     </p>
   </div>
   <a class="oq-btn oq-btn-secondary" [routerLink]="['/planner/events', eventId()]">
-    ← Volver al evento
+    Volver al evento
   </a>
 </div>
 
 <app-event-subnav [eventId]="eventId()" />
 
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 @if (success()) {
-  <div class="oq-alert oq-alert-success">{{ success() }}</div>
+  <div class="oq-alert oq-alert-success" role="status">{{ success() }}</div>
 }
 @if (alerts().length > 0) {
-  <div class="oq-alert oq-alert-warning" style="margin-bottom: 1rem">
-    <strong>Alertas operativas del evento ({{ alerts().length }})</strong>
+  <div class="oq-alert oq-alert-warning" role="alert" style="margin-bottom: 1rem">
+    <strong>Hay {{ alerts().length }} {{ alerts().length === 1 ? 'aviso' : 'avisos' }} sobre el personal</strong>
     <ul style="margin: 0.35rem 0 0 1.2rem">
       @for (al of alerts(); track al.id) {
-        <li class="mono">
-          {{ al.tipo }}
-          @if (al.reservation_id) { · Reserva {{ al.reservation_id }} }
-          · {{ al.created_at }}
-        </li>
+        <li>{{ label(al.tipo) }} ({{ formatFecha(al.created_at) }})</li>
       }
     </ul>
   </div>
@@ -36,9 +32,9 @@
 
 <section class="oq-card" style="margin-bottom: 1rem">
   <div class="oq-card-header">
-    <h2>1. Requerimientos y Cobertura del Evento (RF-22)</h2>
+    <h2>1. ¿Cuánta gente necesitas?</h2>
     <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="addRequirementRow()">
-      + Agregar rol
+      Agregar puesto
     </button>
   </div>
 
@@ -48,11 +44,12 @@
         <select
           class="oq-select"
           style="width: auto"
+          [attr.aria-label]="'Puesto ' + ($index + 1)"
           [ngModel]="req.rol"
           (ngModelChange)="updateReqRow($index, 'rol', $event)"
         >
           @for (r of allRoles; track r) {
-            <option [value]="r">{{ r }}</option>
+            <option [value]="r">{{ label(r) }}</option>
           }
         </select>
         <input
@@ -60,20 +57,22 @@
           style="width: 72px"
           type="number"
           min="1"
+          [attr.aria-label]="'Personas para ' + label(req.rol)"
           [ngModel]="req.cantidad"
           (ngModelChange)="updateReqRow($index, 'cantidad', $event)"
         />
         <button
           type="button"
           class="oq-btn oq-btn-danger oq-btn-sm"
+          [attr.aria-label]="'Quitar ' + label(req.rol)"
           (click)="removeReqRow($index)"
         >
-          ×
+          Quitar
         </button>
       </div>
     }
     <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="saveRequirements()">
-      Guardar requerimientos
+      Guardar
     </button>
   </div>
 
@@ -86,9 +85,9 @@
           [class.oq-badge-danger]="cov.sin_cubrir"
           [class.oq-badge-warning]="!cov.sin_cubrir && (cov.cubiertos ?? 0) < cov.cantidad"
         >
-          {{ cov.rol }}: {{ cov.cubiertos ?? 0 }}/{{ cov.cantidad }}
-          @if (cov.pendientes) { ({{ cov.pendientes }} pendientes) }
-          @if (cov.sin_cubrir) { · SIN CUBRIR }
+          {{ label(cov.rol) }}: {{ cov.cubiertos ?? 0 }} de {{ cov.cantidad }}
+          @if (cov.pendientes) { ({{ cov.pendientes }} por responder) }
+          @if (cov.sin_cubrir) { , falta gente }
         </span>
       }
     </div>
@@ -97,11 +96,12 @@
 
 <div class="oq-grid-2">
   <section class="oq-card">
-    <h2>2. Buscar personal publicado y verificado (RF-07)</h2>
+    <h2>2. Busca proveedores</h2>
+    <p class="oq-hint">Solo aparecen perfiles verificados y disponibles en el horario de tu evento.</p>
 
     <div class="oq-form-grid" style="margin-bottom: 1rem">
       <div class="oq-field">
-        <span class="oq-label">Categorías (AND)</span>
+        <span class="oq-label">Qué saben hacer (todas las que elijas)</span>
         <div class="oq-chips">
           @for (cat of allCategories; track cat) {
             <button
@@ -110,7 +110,7 @@
               [class.active]="filterCategorias().includes(cat)"
               (click)="toggleFilterCategory(cat)"
             >
-              {{ cat }}
+              {{ label(cat) }}
             </button>
           }
         </div>
@@ -126,7 +126,7 @@
               [class.active]="filterZonas().includes(z)"
               (click)="toggleFilterZone(z)"
             >
-              {{ z }}
+              {{ label(z) }}
             </button>
           }
         </div>
@@ -134,7 +134,7 @@
 
       <div class="oq-grid-3">
         <div class="oq-field">
-          <label class="oq-label" for="fMin">Tarifa mín.</label>
+          <label class="oq-label" for="fMin">Tarifa mínima (MXN)</label>
           <input
             id="fMin"
             class="oq-input"
@@ -144,7 +144,7 @@
           />
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="fMax">Tarifa máx.</label>
+          <label class="oq-label" for="fMax">Tarifa máxima (MXN)</label>
           <input
             id="fMax"
             class="oq-input"
@@ -154,7 +154,7 @@
           />
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="fUnidad">Unidad</label>
+          <label class="oq-label" for="fUnidad">Cobra</label>
           <select
             id="fUnidad"
             class="oq-select"
@@ -162,9 +162,9 @@
             (ngModelChange)="filterUnidad.set($event)"
           >
             <option value="">Cualquiera</option>
-            <option value="hora">hora</option>
-            <option value="persona_hora">persona_hora</option>
-            <option value="evento">evento</option>
+            <option value="hora">Por hora</option>
+            <option value="persona_hora">Por persona y hora</option>
+            <option value="evento">Por evento</option>
           </select>
         </div>
       </div>
@@ -174,12 +174,13 @@
           class="oq-input"
           style="width: 140px"
           type="number"
-          placeholder="Radio km"
+          aria-label="Distancia máxima en km"
+          placeholder="Distancia (km)"
           [ngModel]="filterRadioKm()"
           (ngModelChange)="filterRadioKm.set($event)"
         />
         <button type="button" class="oq-btn oq-btn-primary" (click)="searchWorkers()">
-          Buscar candidatos
+          Buscar
         </button>
       </div>
     </div>
@@ -190,15 +191,12 @@
           <div class="oq-between">
             <div>
               <strong>{{ w.nombre_publico }}</strong>
-              <span class="oq-hint mono"> · {{ w.worker_id }}</span>
             </div>
-            <strong class="mono">
-              {{ w.tarifa.monto }} {{ w.tarifa.moneda }} / {{ w.tarifa.unidad }}
-            </strong>
+            <strong>{{ precio(w.tarifa) }}</strong>
           </div>
           <div class="oq-hint">
-            Categorías: {{ w.categorias.join(', ') }} · Zonas: {{ w.zonas.join(', ') }} ·
-            Eventos completados: {{ w.eventos_completados }}
+            {{ labelList(w.categorias) }}. Trabaja en {{ labelList(w.zonas) }}.
+            {{ w.eventos_completados }} eventos completados.
           </div>
           <div class="oq-row" style="margin-top: 0.5rem">
             <button
@@ -206,31 +204,31 @@
               class="oq-btn oq-btn-accent oq-btn-sm"
               (click)="selectWorkerForRequest(w)"
             >
-              Solicitar contratación
+              Contratar
             </button>
             <button
               type="button"
               class="oq-btn oq-btn-secondary oq-btn-sm"
               (click)="checkWorkerAvailability(w.worker_id)"
             >
-              Ver ocupación (NFR-11)
+              Ver su agenda
             </button>
           </div>
           @if (occupiedByWorker()[w.worker_id]; as occ) {
-            <div class="oq-hint mono" style="margin-top: 0.35rem">
-              Ventanas ocupadas:
+            <div class="oq-hint" style="margin-top: 0.35rem">
               @if (occ.ventana_ocupada.length === 0) {
-                <span>Ninguna en el rango</span>
+                Libre en las fechas de tu evento.
               } @else {
+                Ocupado:
                 @for (v of occ.ventana_ocupada; track $index) {
-                  <span>[{{ v.inicio }} → {{ v.fin }}] </span>
+                  <span>{{ formatFecha(v.inicio) }} a {{ formatFecha(v.fin) }}{{ $last ? '.' : ';' }} </span>
                 }
               }
             </div>
           }
         </div>
       } @empty {
-        <p class="oq-hint">No hay trabajadores publicados con los filtros actuales.</p>
+        <p class="oq-hint">No encontramos proveedores con esos filtros. Prueba quitando alguno.</p>
       }
     </div>
   </section>
@@ -238,16 +236,14 @@
   <section class="oq-grid">
     @if (selectedWorker(); as sw) {
       <div class="oq-card" style="border-color: var(--oq-primary)">
-        <h2>Enviar solicitud a {{ sw.nombre_publico }} (RF-08)</h2>
+        <h2>Contratar a {{ sw.nombre_publico }}</h2>
         <p class="oq-hint">
-          Costo congelado al enviar:
-          <strong class="mono">{{ sw.tarifa.monto }} {{ sw.tarifa.moneda }} / {{ sw.tarifa.unidad }}</strong>
-          (TR-20).
+          Precio: <strong>{{ precio(sw.tarifa) }}</strong>. Se respeta aunque después cambie su tarifa.
         </p>
         <form class="oq-form-grid" (ngSubmit)="sendWorkerRequest()">
           <div class="oq-grid-2">
             <div class="oq-field">
-              <label class="oq-label" for="reqRol">Rol</label>
+              <label class="oq-label" for="reqRol">Puesto</label>
               <select
                 id="reqRol"
                 name="reqRol"
@@ -256,12 +252,12 @@
                 (ngModelChange)="reqRol.set($event)"
               >
                 @for (r of allRoles; track r) {
-                  <option [value]="r">{{ r }}</option>
+                  <option [value]="r">{{ label(r) }}</option>
                 }
               </select>
             </div>
             <div class="oq-field">
-              <label class="oq-label" for="reqPlazas">Plazas</label>
+              <label class="oq-label" for="reqPlazas">Personas</label>
               <input
                 id="reqPlazas"
                 name="reqPlazas"
@@ -276,7 +272,7 @@
           </div>
 
           <div class="oq-field">
-            <label class="oq-label" for="reqIni">Inicio ventana</label>
+            <label class="oq-label" for="reqIni">Empieza</label>
             <input
               id="reqIni"
               name="reqIni"
@@ -287,7 +283,7 @@
             />
           </div>
           <div class="oq-field">
-            <label class="oq-label" for="reqFin">Fin exclusivo</label>
+            <label class="oq-label" for="reqFin">Termina</label>
             <input
               id="reqFin"
               name="reqFin"
@@ -298,15 +294,17 @@
             />
           </div>
           <div class="oq-field">
-            <label class="oq-label" for="reqLlegada">Hora de llegada (inicio ≤ llegada &lt; fin)</label>
+            <label class="oq-label" for="reqLlegada">Hora de llegada</label>
             <input
               id="reqLlegada"
               name="reqLlegada"
               class="oq-input"
               type="datetime-local"
+              aria-describedby="reqLlegadaHint"
               [ngModel]="reqHoraLlegada()"
               (ngModelChange)="reqHoraLlegada.set($event)"
             />
+            <span class="oq-hint" id="reqLlegadaHint">Entre la hora de inicio y la de término.</span>
           </div>
 
           <div class="oq-row">
@@ -325,7 +323,7 @@
 
     <div class="oq-card">
       <div class="oq-card-header">
-        <h2>3. Solicitudes y Reservas del Evento</h2>
+        <h2>3. Solicitudes y reservas</h2>
         <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="loadRequests()">
           Recargar
         </button>
@@ -337,14 +335,13 @@
           <div class="oq-stat">
             <div class="oq-between">
               <div>
-                <strong>{{ r.rol }}</strong> ({{ r.plazas }} plaza/s)
-                <div class="oq-hint mono">Worker: {{ r.worker_id }} · {{ rid }}</div>
+                <strong>{{ label(r.rol) }}</strong> ({{ r.plazas }} {{ r.plazas === 1 ? 'persona' : 'personas' }})
+                <div class="oq-hint">{{ workerName(r.worker_id) }}</div>
               </div>
-              <span class="oq-badge oq-badge-info">{{ r.estado }}</span>
+              <span class="oq-badge oq-badge-info">{{ label(r.estado) }}</span>
             </div>
-            <div class="oq-hint mono" style="margin: 0.35rem 0">
-              Costo congelado: {{ r.costo_congelado.monto }} {{ r.costo_congelado.moneda }} /
-              {{ r.costo_congelado.unidad }} · Llegada: {{ r.hora_llegada }}
+            <div class="oq-hint" style="margin: 0.35rem 0">
+              {{ precio(r.costo_congelado) }}. Llega el {{ formatFecha(r.hora_llegada) }}.
             </div>
 
             <div class="oq-row">
@@ -354,14 +351,14 @@
                   class="oq-btn oq-btn-accent oq-btn-sm"
                   (click)="payReservationTestMode(rid)"
                 >
-                  Pagar en modo test (RF-11)
+                  Pagar (modo de prueba)
                 </button>
                 <button
                   type="button"
                   class="oq-btn oq-btn-secondary oq-btn-sm"
                   (click)="queryPaymentStatus(rid)"
                 >
-                  Consultar pago
+                  Ver estado del pago
                 </button>
               }
 
@@ -369,7 +366,8 @@
                 <input
                   class="oq-input"
                   style="max-width: 160px; min-height: 32px"
-                  placeholder="Motivo cancel."
+                  aria-label="Motivo de la cancelación"
+                  placeholder="Motivo"
                   [ngModel]="cancelMotivos()[rid] || ''"
                   (ngModelChange)="setCancelMotivo(rid, $event)"
                 />
@@ -388,40 +386,41 @@
                   class="oq-btn oq-btn-secondary oq-btn-sm"
                   (click)="replacementForResId.set(rid)"
                 >
-                  Reemplazo emergencia (RF-09)
+                  Buscar reemplazo urgente
                 </button>
               }
             </div>
 
             @if (paymentsByRes()[rid]; as pay) {
-              <div class="oq-hint mono" style="margin-top: 0.45rem">
-                Pago {{ pay.payment_id }}: <strong>{{ pay.estado }}</strong> · {{ pay.monto }}
-                @if (pay.ledger_tx_id) { · Ledger TX: {{ pay.ledger_tx_id }} }
+              <div class="oq-hint" style="margin-top: 0.45rem">
+                Pago: <strong>{{ label(pay.estado) }}</strong> ({{ pay.monto }})
               </div>
             }
           </div>
         } @empty {
-          <p class="oq-hint">No hay solicitudes creadas para este evento.</p>
+          <p class="oq-hint">Todavía no contratas a nadie para este evento.</p>
         }
       </div>
 
       @if (replacementForResId()) {
         <div class="oq-alert oq-alert-warning" style="margin-top: 1rem">
-          <strong>Reemplazo de emergencia para {{ replacementForResId() }} (SLA 15 min)</strong>
+          <strong>Reemplazo urgente</strong>
           <p class="oq-hint">
-            Copia exactamente la ventana, rol y plazas de la reserva caída (RF-09). Si dejas el
-            ID vacío se marcará el requerimiento como <code>sin_cubrir</code> con alerta.
+            Se envía una solicitud con el mismo puesto, horario y número de personas, y el proveedor
+            tiene 15 minutos para aceptar. Si no tienes a nadie, marca el puesto como sin cubrir y te
+            avisaremos.
           </p>
           <div class="oq-row">
             <input
               class="oq-input mono"
               style="flex: 1 1 180px"
-              placeholder="worker_id reemplazo (o vacío para sin_cubrir)"
+              aria-label="ID del proveedor de reemplazo"
+              placeholder="ID del proveedor (opcional)"
               [ngModel]="replacementWorkerId()"
               (ngModelChange)="replacementWorkerId.set($event)"
             />
             <button type="button" class="oq-btn oq-btn-primary oq-btn-sm" (click)="sendEmergencyReplacement()">
-              {{ replacementWorkerId().trim() ? 'Enviar reemplazo' : 'Marcar sin_cubrir' }}
+              {{ replacementWorkerId().trim() ? 'Enviar solicitud' : 'Marcar sin cubrir' }}
             </button>
             <button
               type="button"

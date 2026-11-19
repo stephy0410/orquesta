@@ -609,6 +609,20 @@ code,
   border-bottom: none;
 }
 
+/* Grupos de opciones (checkbox/radio) sin el borde por defecto del navegador */
+fieldset.oq-row {
+  border: none;
+  padding: 0;
+  margin: 0;
+  gap: 0.5rem 1.25rem;
+}
+
+fieldset.oq-row > legend {
+  width: 100%;
+  padding: 0;
+  margin-bottom: 0.35rem;
+}
+
 /* Flex helpers */
 .oq-row {
   display: flex;

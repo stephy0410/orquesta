@@ -92,7 +92,7 @@ export class BatchSyncService {
     if (!rosterRes.notModified && rosterRes.body) {
       const sigOk = await this.verifier.verifyRosterSignature(rosterRes.body);
       if (!sigOk) {
-        throw new Error('La firma ES256 del roster recibido es inválida.');
+        throw new Error('La lista de invitados descargada no es auténtica. Inténtalo de nuevo.');
       }
       await this.storage.saveRoster(rosterRes.body, rosterRes.etag);
       rosterUpdated = true;

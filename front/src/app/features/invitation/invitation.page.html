@@ -29,21 +29,19 @@
       </section>
     } @else if (loading()) {
       <section class="oq-card inv-card inv-center">
-        <p class="oq-page-subtitle">Cargando detalles del evento y pase QR...</p>
+        <p class="oq-page-subtitle" role="status">Cargando tu invitación…</p>
       </section>
     } @else if (error(); as apiErr) {
       <section class="oq-card inv-card">
-        <div class="oq-alert oq-alert-error">
-          <strong>{{ apiErr.code }}</strong> — {{ apiErr.message }}
-        </div>
+        <div class="oq-alert oq-alert-error" role="alert">{{ apiErr.message }}</div>
         @if (apiErr.code === 'TOKEN_TIPO_INCORRECTO') {
           <p class="oq-hint">
-            Estás intentando abrir un QR de check-in en la página de confirmación RSVP. Utiliza el
-            enlace enviado a tu SMS o correo.
+            Este código es tu pase de entrada, no el enlace para responder. Para confirmar tu
+            asistencia abre el enlace que te llegó por SMS o correo.
           </p>
         } @else if (apiErr.code === 'INVITACION_REVOCADA') {
           <p class="oq-hint">
-            Esta invitación fue dada de baja o reemplazada por el organizador del evento.
+            El organizador canceló esta invitación o te envió una más reciente. Revisa tus mensajes.
           </p>
         }
         <button class="oq-btn oq-btn-secondary" type="button" (click)="loadRsvpState(token()!)">

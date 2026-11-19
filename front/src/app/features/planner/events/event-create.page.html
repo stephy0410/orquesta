@@ -2,15 +2,15 @@
   <div>
     <h1 data-requisitos="RF-01">Nuevo evento</h1>
     <p class="oq-page-subtitle">
-      Define venue, zona horaria IANA obligatoria, ventana horaria y límite duro de
-      <code>aforo</code>. El evento nace en <code>borrador</code>.
+      Captura los datos básicos. El evento se guarda como borrador y nadie recibe nada hasta que lo
+      publiques.
     </p>
   </div>
-  <a class="oq-btn oq-btn-secondary" routerLink="/planner/dashboard">← Volver al tablero</a>
+  <a class="oq-btn oq-btn-secondary" routerLink="/planner/dashboard">Volver al tablero</a>
 </div>
 
 @if (error()) {
-  <div class="oq-alert oq-alert-error">{{ error() }}</div>
+  <div class="oq-alert oq-alert-error" role="alert">{{ error() }}</div>
 }
 
 <div class="oq-grid-2">
@@ -44,7 +44,7 @@
           />
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="evAforo">Aforo (límite duro)</label>
+          <label class="oq-label" for="evAforo">Aforo máximo</label>
           <input
             id="evAforo"
             name="aforo"
@@ -60,7 +60,7 @@
 
       <div class="oq-grid-2">
         <div class="oq-field">
-          <label class="oq-label" for="evTz">Zona horaria IANA (obligatoria)</label>
+          <label class="oq-label" for="evTz">Zona horaria</label>
           <select
             id="evTz"
             name="timezone"
@@ -69,17 +69,17 @@
             (ngModelChange)="timezone.set($event)"
           >
             @for (tz of timezones; track tz) {
-              <option [value]="tz">{{ tz }}</option>
+              <option [value]="tz">{{ label(tz) }}</option>
             }
           </select>
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="evTzCustom">O IANA personalizada</label>
+          <label class="oq-label" for="evTzCustom">¿Otra zona horaria?</label>
           <input
             id="evTzCustom"
             name="customTimezone"
             class="oq-input mono"
-            placeholder="America/..."
+            placeholder="Ej. America/Tijuana"
             [ngModel]="customTimezone()"
             (ngModelChange)="customTimezone.set($event)"
           />
@@ -88,7 +88,7 @@
 
       <div class="oq-grid-2">
         <div class="oq-field">
-          <label class="oq-label" for="evIni">Ventana inicio</label>
+          <label class="oq-label" for="evIni">Empieza</label>
           <input
             id="evIni"
             name="inicio"
@@ -100,7 +100,7 @@
           />
         </div>
         <div class="oq-field">
-          <label class="oq-label" for="evFin">Ventana fin exclusivo</label>
+          <label class="oq-label" for="evFin">Termina</label>
           <input
             id="evFin"
             name="fin"
@@ -115,13 +115,13 @@
 
       <div class="oq-field">
         <div class="oq-between">
-          <label class="oq-label" for="evVenue">Venue</label>
+          <label class="oq-label" for="evVenue">Lugar</label>
           <button
             type="button"
             class="oq-btn oq-btn-secondary oq-btn-sm"
             (click)="showNewVenue.set(!showNewVenue())"
           >
-            {{ showNewVenue() ? 'Cerrar formulario venue' : '+ Nuevo venue' }}
+            {{ showNewVenue() ? 'Cerrar' : 'Agregar lugar' }}
           </button>
         </div>
         <select
@@ -133,16 +133,16 @@
           (ngModelChange)="venueId.set($event)"
         >
           @for (v of venues(); track v.id) {
-            <option [value]="v.id">{{ v.nombre }} ({{ v.zona }}) — {{ v.direccion }}</option>
+            <option [value]="v.id">{{ v.nombre }}, {{ v.direccion }}</option>
           }
         </select>
       </div>
 
       <div class="oq-field">
         <div class="oq-between">
-          <span class="oq-label">Requerimientos iniciales de personal (RF-22)</span>
+          <span class="oq-label">Personal que vas a necesitar (opcional)</span>
           <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="addRequirement()">
-            + Agregar rol
+            Agregar puesto
           </button>
         </div>
         @for (req of requerimientos(); track $index) {
@@ -156,7 +156,7 @@
               (ngModelChange)="updateRequirement($index, 'rol', $event)"
             >
               @for (r of roles; track r) {
-                <option [value]="r">{{ r }}</option>
+                <option [value]="r">{{ label(r) }}</option>
               }
             </select>
             <input
@@ -188,10 +188,9 @@
 
   @if (showNewVenue()) {
     <section class="oq-card">
-      <h2>2. Registrar nuevo Venue (RF-01)</h2>
+      <h2>2. Agrega un lugar</h2>
       <p class="oq-hint">
-        El venue es un dato del evento (sin reserva ni aforo propio); su <code>zona</code> se cruza
-        en la búsqueda de trabajadores (RF-07).
+        La zona nos ayuda a sugerirte proveedores que trabajan cerca.
       </p>
       <form class="oq-form-grid" (ngSubmit)="createVenue()">
         <div class="oq-field">
@@ -217,7 +216,7 @@
             (ngModelChange)="venueZona.set($event)"
           >
             @for (z of zones; track z) {
-              <option [value]="z">{{ z }}</option>
+              <option [value]="z">{{ label(z) }}</option>
             }
           </select>
         </div>
@@ -235,7 +234,7 @@
           />
         </div>
 
-        <button type="submit" class="oq-btn oq-btn-accent">Guardar Venue</button>
+        <button type="submit" class="oq-btn oq-btn-accent">Guardar lugar</button>
       </form>
     </section>
   }

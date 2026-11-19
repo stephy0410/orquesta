@@ -1,56 +1,52 @@
 <header class="oq-topbar">
   <div class="oq-topbar-inner">
     <a class="oq-brand" routerLink="/scan/terminal">
-      <img src="icons/orquesta-icon.svg" alt="Orquesta" width="28" height="28" />
-      <span>{{ session()?.event_nombre || session()?.event_id || 'Terminal Check-in' }}</span>
+      Orquesta <small>{{ session()?.event_nombre || 'escáner' }}</small>
     </a>
 
-    <div class="oq-row">
+    <div class="oq-row oq-topbar-end">
       <span
         class="oq-badge"
+        role="status"
         [class.oq-badge-success]="connectivity.isOnline()"
         [class.oq-badge-danger]="!connectivity.isOnline()"
       >
-        {{
-          connectivity.isOnline()
-            ? 'Online' + (connectivity.latencyMs() !== null ? ' · ' + connectivity.latencyMs() + ' ms' : '')
-            : 'Sin red (Offline)'
-        }}
+        {{ connectivity.isOnline() ? 'En línea' : 'Sin conexión' }}
       </span>
 
       <span class="oq-badge" [class.oq-badge-warning]="queueDepth() > 0" [class.oq-badge-neutral]="queueDepth() === 0">
-        Cola: {{ queueDepth() }}
+        {{ queueDepth() }} por sincronizar
       </span>
 
       <button type="button" class="oq-btn oq-btn-sm oq-btn-secondary" (click)="switchSession()">
-        Cambiar sesión
+        Cambiar de evento
       </button>
     </div>
   </div>
 </header>
 
-<main class="oq-container">
+<main class="oq-container" id="contenido" tabindex="-1">
   <section class="oq-card scan-status-bar">
     <div class="oq-grid-stats">
       <div class="oq-stat">
-        <span class="oq-stat-label">Roster local</span>
+        <span class="oq-stat-label">Invitados en la lista</span>
         <span class="oq-stat-value">{{ rosterCount() }}</span>
       </div>
       <div class="oq-stat">
-        <span class="oq-stat-label">Cola offline</span>
+        <span class="oq-stat-label">Entradas por sincronizar</span>
         <span class="oq-stat-value">{{ queueDepth() }}</span>
       </div>
       <div class="oq-stat">
-        <span class="oq-stat-label">Seq local / ack</span>
-        <span class="oq-stat-value mono">{{ lastSequence() }} / {{ lastAckedSequence() }}</span>
+        <span class="oq-stat-label">Entradas en este celular</span>
+        <span class="oq-stat-value">{{ lastSequence() }}</span>
       </div>
       <div class="oq-stat">
-        <span class="oq-stat-label">Revocaciones (TTL 2 h)</span>
+        <span class="oq-stat-label">Invitaciones canceladas</span>
         <span class="oq-stat-value">
           @if (revocationsExpired()) {
-            <span class="oq-badge oq-badge-warning">Vencida (&gt; 2 h)</span>
+            <span class="oq-badge oq-badge-warning">Actualiza la lista</span>
           } @else {
-            <span class="oq-badge oq-badge-success">Vigente</span>
+            <span class="oq-badge oq-badge-success">Al día</span>
           }
         </span>
       </div>
@@ -63,79 +59,78 @@
         [disabled]="sync.syncing() || queueDepth() === 0"
         (click)="syncNow()"
       >
-        {{ sync.syncing() ? 'Sincronizando...' : 'Sincronizar cola (' + queueDepth() + ')' }}
+        {{ sync.syncing() ? 'Sincronizando…' : 'Sincronizar (' + queueDepth() + ')' }}
       </button>
       <button type="button" class="oq-btn oq-btn-secondary" (click)="refreshRosterNow()">
-        Refrescar roster y revocaciones
+        Actualizar lista de invitados
       </button>
       <button type="button" class="oq-btn oq-btn-secondary" (click)="connectivity.checkHealth()">
-        Probar /health
+        Probar conexión
       </button>
     </div>
   </section>
 
   @if (bannerError()) {
-    <div class="oq-alert oq-alert-error">{{ bannerError() }}</div>
+    <div class="oq-alert oq-alert-error" role="alert">{{ bannerError() }}</div>
   }
   @if (bannerInfo()) {
-    <div class="oq-alert oq-alert-success">{{ bannerInfo() }}</div>
+    <div class="oq-alert oq-alert-success" role="status">{{ bannerInfo() }}</div>
   }
 
   @if (lastVerdict(); as v) {
     <section
       class="oq-card scan-verdict"
+      role="status"
       [class.verdict-success]="v.tone === 'success'"
       [class.verdict-warning]="v.tone === 'warning'"
       [class.verdict-danger]="v.tone === 'danger'"
     >
-      <div class="oq-between">
-        <span class="oq-badge oq-badge-neutral mono">{{ v.verdict }}</span>
-        <span class="mono oq-hint">
-          {{ v.durationMs }} ms @if (v.sequence) { · seq #{{ v.sequence }} }
-        </span>
-      </div>
+      <span class="oq-badge oq-badge-neutral">{{ label(v.verdict) }}</span>
       <h2 class="verdict-title">{{ v.title }}</h2>
       @if (v.guestName) {
         <p class="verdict-guest">
           {{ v.guestName }}
-          @if (v.codigoCorto) { · código <strong class="mono">{{ v.codigoCorto }}</strong> }
-          @if (v.mesa) { · Mesa <strong>{{ v.mesa }}</strong> }
+          @if (v.mesa) { , mesa <strong>{{ v.mesa }}</strong> }
+          @if (v.codigoCorto) { (código <strong class="mono">{{ v.codigoCorto }}</strong>) }
         </p>
       }
       <p>{{ v.subtitle }}</p>
 
       @if (v.pendingConditionalEvaluation) {
         <button type="button" class="oq-btn oq-btn-accent" (click)="confirmConditionalNoEnRoster()">
-          Admitir condicionalmente y marcar para revisión
+          Dejar pasar y avisar a la planner
         </button>
       }
     </section>
   }
 
-  <div class="oq-tabs" role="tablist">
+  <div class="oq-tabs">
     <button
       type="button"
       class="oq-tab"
       [class.active]="activeTab() === 'escaner'"
+      [attr.aria-pressed]="activeTab() === 'escaner'"
       (click)="activeTab.set('escaner')"
     >
-      Escáner QR (Cámara / Token)
+      Escanear QR
     </button>
     <button
       type="button"
       class="oq-tab"
       [class.active]="activeTab() === 'manual'"
+      [attr.aria-pressed]="activeTab() === 'manual'"
       (click)="activeTab.set('manual')"
     >
-      Fallback manual (Nombre / 6 dígitos)
+      Buscar por nombre o código
     </button>
     <button
       type="button"
       class="oq-tab"
       [class.active]="activeTab() === 'actividad'"
+      [attr.aria-pressed]="activeTab() === 'actividad'"
       (click)="activeTab.set('actividad'); loadServerCheckins()"
     >
-      Cola local y Anulación (RF-14)
+      Entradas registradas
     </button>
   </div>
 
@@ -143,18 +138,14 @@
     <section class="oq-grid-2">
       <div class="oq-card">
         <div class="oq-card-header">
-          <h2>Cámara del dispositivo</h2>
+          <h2>Cámara</h2>
           @if (!cameraSupported()) {
-            <span class="oq-badge oq-badge-warning">Sin cámara disponible</span>
-          } @else if (usingCanvasFallback()) {
-            <span class="oq-badge oq-badge-info">Canvas jsQR (Safari/Firefox)</span>
-          } @else {
-            <span class="oq-badge oq-badge-success">BarcodeDetector nativo</span>
+            <span class="oq-badge oq-badge-warning">No hay cámara</span>
           }
         </div>
 
         @if (cameraError()) {
-          <div class="oq-alert oq-alert-warning">{{ cameraError() }}</div>
+          <div class="oq-alert oq-alert-warning" role="alert">{{ cameraError() }}</div>
         }
 
         <div class="scan-camera-box">
@@ -162,7 +153,7 @@
             <video #videoPreview class="scan-video" playsinline muted></video>
           } @else {
             <div class="scan-camera-placeholder">
-              <p>Apunta la cámara al QR del invitado para verificar firma ES256 sin red.</p>
+              <p>Enciende la cámara y apunta al QR del invitado. Funciona aunque no haya señal.</p>
             </div>
           }
         </div>
@@ -181,25 +172,25 @@
       </div>
 
       <div class="oq-card">
-        <h2>Entrada directa de token QR</h2>
+        <h2>¿Usas un lector de códigos?</h2>
         <p class="oq-hint">
-          Útil para lectores USB/Bluetooth o pruebas sin cámara. Ejecuta la verificación ECDSA P-256
-          y guarda en IndexedDB antes de emitir veredicto.
+          Si tienes un lector USB o Bluetooth, haz clic en el campo y escanea el QR; también puedes
+          pegar el código del QR.
         </p>
         <form class="oq-form-grid" (ngSubmit)="submitQrInput()">
           <div class="oq-field">
-            <label class="oq-label" for="qrTokenInput">Token JWS del QR</label>
+            <label class="oq-label" for="qrTokenInput">Código del QR</label>
             <textarea
               id="qrTokenInput"
               name="qrTokenInput"
               class="oq-textarea mono"
-              placeholder="eyJhbGciOiJFUzI1NiIs..."
+              autocomplete="off"
               [ngModel]="qrTokenInput()"
               (ngModelChange)="qrTokenInput.set($event)"
             ></textarea>
           </div>
           <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg">
-            Verificar QR offline
+            Revisar invitación
           </button>
         </form>
       </div>
@@ -210,20 +201,20 @@
     <section class="oq-card">
       <div class="oq-card-header">
         <div>
-          <h2>Fallback manual sin cámara (RF-13)</h2>
+          <h2>Buscar invitado</h2>
           <p class="oq-hint">
-            Busca localmente en IndexedDB por nombre o código corto de 6 dígitos.
+            Si el QR no se lee, busca por nombre o por el código de 6 dígitos de su invitación.
           </p>
         </div>
         @if (connectivity.isOnline()) {
           <button type="button" class="oq-btn oq-btn-secondary oq-btn-sm" (click)="searchOnServer()">
-            Consultar también en servidor
+            Buscar también en línea
           </button>
         }
       </div>
 
       <div class="oq-field scan-manual-search">
-        <label class="oq-label" for="manualQuery">Nombre o código corto de 6 dígitos</label>
+        <label class="oq-label" for="manualQuery">Nombre o código de 6 dígitos</label>
         <input
           id="manualQuery"
           name="manualQuery"
@@ -239,10 +230,10 @@
         <table class="oq-table">
           <thead>
             <tr>
-              <th>Invitado</th>
-              <th>Código corto</th>
-              <th>Zona / Mesa</th>
-              <th>Acción</th>
+              <th scope="col">Invitado</th>
+              <th scope="col">Código</th>
+              <th scope="col">Mesa</th>
+              <th scope="col"><span class="oq-sr-only">Acciones</span></th>
             </tr>
           </thead>
           <tbody>
@@ -250,23 +241,23 @@
               <tr>
                 <td>
                   <strong>{{ guest.nombre }}</strong>
-                  <div class="oq-hint mono">{{ guest.invitation_id }}</div>
                 </td>
                 <td class="mono"><strong>{{ guest.codigo_corto }}</strong></td>
-                <td>{{ guest.zona || '—' }} / Mesa {{ guest.mesa ?? '—' }}</td>
+                <td>{{ guest.mesa ?? '—' }}@if (guest.zona) { ({{ label(guest.zona) }}) }</td>
                 <td>
                   <button
                     type="button"
                     class="oq-btn oq-btn-accent oq-btn-sm"
+                    [attr.aria-label]="'Dejar pasar a ' + guest.nombre"
                     (click)="admitManualGuest(guest)"
                   >
-                    Admitir manual
+                    Dejar pasar
                   </button>
                 </td>
               </tr>
             } @empty {
               <tr>
-                <td colspan="4" class="oq-hint">Sin coincidencias en el roster local.</td>
+                <td colspan="4" class="oq-hint">No encontramos a nadie con ese nombre o código.</td>
               </tr>
             }
           </tbody>
@@ -274,15 +265,15 @@
       </div>
 
       @if (serverSearchResults().length > 0) {
-        <h3 class="scan-sub">Resultados adicionales en servidor</h3>
+        <h3 class="scan-sub">También encontramos en línea</h3>
         <div class="oq-table-wrap">
           <table class="oq-table">
             <thead>
               <tr>
-                <th>Nombre</th>
-                <th>Código corto</th>
-                <th>Estado</th>
-                <th>Acción</th>
+                <th scope="col">Invitado</th>
+                <th scope="col">Código</th>
+                <th scope="col">Invitación</th>
+                <th scope="col"><span class="oq-sr-only">Acciones</span></th>
               </tr>
             </thead>
             <tbody>
@@ -290,14 +281,15 @@
                 <tr>
                   <td>{{ item.nombre }}</td>
                   <td class="mono">{{ item.codigo_corto }}</td>
-                  <td>{{ item.estado || 'vigente' }}</td>
+                  <td>{{ item.estado ? label(item.estado) : 'Válida' }}</td>
                   <td>
                     <button
                       type="button"
                       class="oq-btn oq-btn-primary oq-btn-sm"
+                      [attr.aria-label]="'Dejar pasar a ' + item.nombre"
                       (click)="admitManualGuest(item)"
                     >
-                      Admitir
+                      Dejar pasar
                     </button>
                   </td>
                 </tr>
@@ -312,45 +304,43 @@
   @if (activeTab() === 'actividad') {
     <section class="oq-grid-2">
       <div class="oq-card">
-        <h2>Cola durable local (IndexedDB)</h2>
-        <p class="oq-hint">Secuencia monotónica del dispositivo: {{ session()?.device_id }}</p>
+        <h2>En este celular</h2>
+        <p class="oq-hint">Las entradas se guardan aquí y se envían cuando hay conexión.</p>
         <div class="oq-table-wrap">
           <table class="oq-table">
             <thead>
               <tr>
-                <th>Seq</th>
-                <th>Invitación</th>
-                <th>Veredicto local</th>
-                <th>Estado</th>
+                <th scope="col">#</th>
+                <th scope="col">Invitado</th>
+                <th scope="col">Resultado</th>
+                <th scope="col">Envío</th>
               </tr>
             </thead>
             <tbody>
               @for (ev of recentLocalQueue(); track ev.sequence) {
                 <tr>
-                  <td class="mono">#{{ ev.sequence }}</td>
+                  <td>{{ ev.sequence }}</td>
                   <td>
-                    <div>{{ ev.guest_nombre || ev.invitation_id }}</div>
-                    <div class="oq-hint mono">{{ ev.modo }} · {{ ev.scanned_at }}</div>
+                    <div>{{ ev.guest_nombre || 'Invitado' }}</div>
+                    <div class="oq-hint">{{ formatFecha(ev.scanned_at) }}</div>
                   </td>
                   <td>
-                    <span class="oq-badge oq-badge-info mono">{{ ev.verdict_local }}</span>
+                    <span class="oq-badge oq-badge-info">{{ label(ev.verdict_local) }}</span>
                     @if (ev.server_result?.resolucion_al_sincronizar) {
-                      <div class="oq-hint mono">
-                        {{ ev.server_result?.resolucion_al_sincronizar }}
-                      </div>
+                      <div class="oq-hint">{{ label(ev.server_result?.resolucion_al_sincronizar) }}</div>
                     }
                   </td>
                   <td>
                     @if (ev.synced === 1) {
-                      <span class="oq-badge oq-badge-success">Sincronizado</span>
+                      <span class="oq-badge oq-badge-success">Enviada</span>
                     } @else {
-                      <span class="oq-badge oq-badge-warning">En cola</span>
+                      <span class="oq-badge oq-badge-warning">Por enviar</span>
                     }
                   </td>
                 </tr>
               } @empty {
                 <tr>
-                  <td colspan="4" class="oq-hint">Aún no hay escaneos registrados en este dispositivo.</td>
+                  <td colspan="4" class="oq-hint">Todavía no registras entradas en este celular.</td>
                 </tr>
               }
             </tbody>
@@ -360,7 +350,7 @@
 
       <div class="oq-card">
         <div class="oq-card-header">
-          <h2>Check-ins en servidor y anulación (RF-14)</h2>
+          <h2>Todas las entradas del evento</h2>
           <button
             type="button"
             class="oq-btn oq-btn-secondary oq-btn-sm"
@@ -375,24 +365,22 @@
           <table class="oq-table">
             <thead>
               <tr>
-                <th>Check-in</th>
-                <th>Kind / Verdict</th>
-                <th>Anulación</th>
+                <th scope="col">Hora</th>
+                <th scope="col">Resultado</th>
+                <th scope="col">Anular entrada</th>
               </tr>
             </thead>
             <tbody>
               @for (chk of serverCheckins(); track chk.checkin_id) {
                 <tr>
                   <td>
-                    <div class="mono">{{ chk.checkin_id }}</div>
-                    <div class="oq-hint mono">{{ chk.invitation_id }}</div>
+                    {{ formatFecha(chk.scanned_at) }}
                     @if (chk.tardio) {
-                      <span class="oq-badge oq-badge-warning">tardio</span>
+                      <span class="oq-badge oq-badge-warning">Llegó tarde al sistema</span>
                     }
                   </td>
                   <td>
-                    <span class="oq-badge oq-badge-neutral mono">{{ chk.kind }}</span>
-                    <div class="mono">{{ chk.verdict }}</div>
+                    <span class="oq-badge oq-badge-neutral">{{ label(chk.kind) }}</span>
                   </td>
                   <td>
                     @if (chk.kind === 'admitido' && canAnnul()) {
@@ -400,7 +388,8 @@
                         <input
                           class="oq-input"
                           type="text"
-                          placeholder="Motivo obligatorio"
+                          aria-label="Motivo para anular la entrada"
+                          placeholder="Motivo"
                           [ngModel]="annulMotivoMap()[chk.checkin_id] || ''"
                           (ngModelChange)="setAnnulMotivo(chk.checkin_id, $event)"
                         />
@@ -413,7 +402,7 @@
                         </button>
                       </div>
                     } @else if (chk.kind === 'anulacion') {
-                      <span class="oq-hint mono">Anula a {{ chk.annuls_checkin_id }}</span>
+                      <span class="oq-hint">Anula una entrada anterior</span>
                     } @else {
                       <span class="oq-hint">—</span>
                     }
@@ -422,7 +411,7 @@
               } @empty {
                 <tr>
                   <td colspan="3" class="oq-hint">
-                    {{ connectivity.isOnline() ? 'Sin check-ins cargados aún.' : 'Disponible al recuperar conectividad.' }}
+                    {{ connectivity.isOnline() ? 'Todavía no hay entradas registradas.' : 'Se mostrarán cuando vuelva la conexión.' }}
                   </td>
                 </tr>
               }
