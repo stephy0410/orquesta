@@ -69,7 +69,9 @@ import { AuthService } from '../../../core/auth/auth.service';
           <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
             {{ loading() ? 'Creando cuenta...' : 'Registrarme como planner' }}
           </button>
-        <p class="oq-hint">Al registrarte aceptas el <a href="/privacidad">Aviso de privacidad</a>.</p>
+          <p class="oq-hint">
+            Al registrarte aceptas el <a routerLink="/privacidad">Aviso de privacidad</a>.
+          </p>
         </form>
 
         <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />

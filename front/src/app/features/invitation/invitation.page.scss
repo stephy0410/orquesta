@@ -156,14 +156,48 @@
 .inv-messages {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.5rem;
 
   h2 {
-    font-size: 1.05rem;
+    font-size: 1.15rem;
     margin: 0;
   }
 
-  .inv-actions {
-    margin-top: 0.25rem;
+  p {
+    max-width: 40ch;
+    margin: 0;
+  }
+}
+
+/* Bajas: enlaces discretos para no competir con confirmar asistencia */
+.inv-unsub {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1.75rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.inv-unsub-btn {
+  padding: 0.35rem 0 0.3rem;
+  border: none;
+  border-bottom: 1px solid currentColor;
+  background: none;
+  color: var(--oq-ink-muted);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: var(--oq-olive-deep);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 }
