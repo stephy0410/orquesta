@@ -10,6 +10,15 @@ import {
   formatEventTime,
 } from './invitation.page';
 
+/** Espera a que se cumpla la condición (máx. 2 s) en vez de dormir un tiempo fijo. */
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error('waitFor: la condición no se cumplió a tiempo');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 describe('InvitationPage (RF-18, NFR-02)', () => {
   let httpMock: HttpTestingController;
 
@@ -61,7 +70,8 @@ describe('InvitationPage (RF-18, NFR-02)', () => {
       evento: { nombre: 'Gala Orquesta', fecha: '2026-06-15', inicio: '19:00', lugar: 'Salon Sur' },
     });
 
-    await new Promise((r) => setTimeout(r, 25));
+    // El QR se dibuja de forma asíncrona antes de quitar "Cargando…": en CI tarda más de 25 ms.
+    await waitFor(() => !fixture.componentInstance.loading());
     await fixture.whenStable();
     fixture.detectChanges();
 
