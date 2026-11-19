@@ -81,6 +81,7 @@ export class InvitationPage implements OnInit {
   readonly state = signal<PublicRsvpStateResponse | null>(null);
   readonly qrDataUrl = signal<string | null>(null);
   readonly lastActionBanner = signal<string | null>(null);
+  readonly changing = signal(false);
   readonly unsubscribing = signal<boolean>(false);
   readonly bajaBanner = signal<string | null>(null);
 
@@ -193,6 +194,7 @@ export class InvitationPage implements OnInit {
         ...res,
         evento: res.evento ?? prev?.evento,
       }));
+      this.changing.set(false);
       await this.renderQr(res.qr?.token ?? this.state()?.qr?.token ?? null);
       this.lastActionBanner.set(
         respuesta === 'confirma'

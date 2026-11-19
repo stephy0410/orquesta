@@ -52,6 +52,16 @@
 }
 
 <div class="oq-grid">
+@if (noProfile()) {
+  <section class="oq-card wr-welcome">
+    <h2>Bienvenido a Orquesta</h2>
+    <p>
+      Para que las planners te encuentren y te manden solicitudes, primero crea tu perfil: qué
+      haces, tu tarifa y las zonas donde trabajas. Después marca los días en que estás disponible.
+    </p>
+    <a class="oq-btn oq-btn-primary" routerLink="/worker/profile">Crear mi perfil</a>
+  </section>
+} @else {
   @for (item of requests(); track getReqId(item)) {
     @let reqId = getReqId(item);
     <article class="oq-card" [class.req-emergency]="item.modo_emergencia">
@@ -174,4 +184,5 @@
       </p>
     </section>
   }
+}
 </div>

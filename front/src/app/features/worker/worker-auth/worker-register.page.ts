@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { WorkerTipo } from '../../../core/api/models';
 import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
@@ -39,6 +39,7 @@ import { AuthService } from '../../../core/auth/auth.service';
           <div class="oq-alert oq-alert-success">{{ success() }}</div>
         }
 
+        @if (step() === 'datos') {
         <form class="oq-form-grid" (ngSubmit)="register()">
           <div class="oq-field">
             <label class="oq-label" for="regTipo">Tipo de perfil</label>
@@ -82,35 +83,40 @@ import { AuthService } from '../../../core/auth/auth.service';
           </div>
 
           <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading()">
-            {{ loading() ? 'Registrando...' : 'Crear cuenta de trabajador' }}
+            {{ loading() ? 'Registrando...' : 'Crear cuenta de proveedor' }}
           </button>
           <p class="oq-hint">
             Al registrarte aceptas el <a routerLink="/privacidad">Aviso de privacidad</a>.
           </p>
         </form>
 
-        <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid var(--oq-border)" />
-
-        <h2>Verificar correo electrónico</h2>
-        <form class="oq-row" (ngSubmit)="verifyEmail()">
+        <p class="oq-hint" style="margin-top: 1rem">
+          ¿Ya tienes cuenta? <a routerLink="/worker/login">Inicia sesión</a>
+        </p>
+        } @else {
+        <h2>Revisa tu correo</h2>
+        <p class="oq-hint">
+          Te enviamos un código a <strong>{{ email() }}</strong>. Pégalo aquí para activar tu cuenta;
+          vence en 72 horas.
+        </p>
+        <form class="oq-form-grid" (ngSubmit)="verifyEmail()">
           <input
             name="verifyToken"
             class="oq-input mono"
-            style="flex: 1 1 220px"
             aria-label="Código de verificación"
             autocomplete="one-time-code"
-            placeholder="Código que te enviamos por correo"
+            placeholder="Código de verificación"
             [ngModel]="verifyToken()"
             (ngModelChange)="verifyToken.set($event)"
           />
-          <button type="submit" class="oq-btn oq-btn-accent" [disabled]="loading()">
-            Confirmar email
+          <button type="submit" class="oq-btn oq-btn-primary oq-btn-lg" [disabled]="loading() || !verifyToken().trim()">
+            {{ loading() ? 'Verificando…' : 'Verificar y entrar' }}
           </button>
         </form>
-
         <p class="oq-hint" style="margin-top: 1rem">
-          ¿Ya verificaste tu correo? <a routerLink="/worker/login">Ir al login</a>
+          ¿Te equivocaste de correo? <button type="button" class="oq-link-button" (click)="step.set('datos')">Cambiarlo</button>
         </p>
+        }
       </section>
       </div>
       <aside class="oq-auth-art" aria-hidden="true">
@@ -122,6 +128,9 @@ import { AuthService } from '../../../core/auth/auth.service';
 })
 export class WorkerRegisterPage {
   private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly step = signal<'datos' | 'codigo'>('datos');
 
   readonly tipo = signal<WorkerTipo>('persona');
   readonly email = signal('');
@@ -137,10 +146,8 @@ export class WorkerRegisterPage {
     this.error.set(null);
     this.success.set(null);
     try {
-      const res = await this.auth.registerWorker(this.email().trim(), this.password(), this.tipo());
-      this.success.set(
-        'Cuenta creada. Te enviamos un código a tu correo para verificarla.',
-      );
+      await this.auth.registerWorker(this.email().trim(), this.password(), this.tipo());
+      this.step.set('codigo');
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Error al registrar.',
@@ -158,7 +165,13 @@ export class WorkerRegisterPage {
     this.success.set(null);
     try {
       await this.auth.verifyEmail(token);
-      this.success.set('Correo verificado. Ya puedes iniciar sesión.');
+      // Verificado: entra directo a armar su perfil, que es lo primero que necesita.
+      try {
+        await this.auth.login(this.email().trim(), this.password(), 'worker');
+        await this.router.navigate(['/worker/profile'], { queryParams: { nuevo: 1 } });
+      } catch {
+        await this.router.navigate(['/worker/login']);
+      }
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Ese código no es correcto o ya venció.',

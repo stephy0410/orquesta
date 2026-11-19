@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, DestroyRef, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../../../core/api/api.service';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { formatFecha, humanize, precio } from '../../../shared/labels';
@@ -24,7 +25,7 @@ export interface WinningReservationConflict {
 @Component({
   selector: 'app-worker-requests-page',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, RouterLink],
   templateUrl: './worker-requests.page.html',
   styleUrl: './worker-requests.page.scss',
 })
@@ -63,14 +64,16 @@ export class WorkerRequestsPage implements OnInit {
     await Promise.all([this.loadProfileTipo(), this.loadRequests()]);
   }
 
+  readonly noProfile = signal(false);
+
   async loadProfileTipo(): Promise<void> {
     try {
       const res = await this.api.get<WorkerProfileStatusResponse>('/v1/worker/profile');
       if (res.perfil?.tipo) {
         this.workerTipo.set(res.perfil.tipo);
       }
-    } catch {
-      // Ignore if profile does not exist yet
+    } catch (err) {
+      if (err instanceof OrquestaApiError && err.status === 404) this.noProfile.set(true);
     }
   }
 
@@ -96,6 +99,10 @@ export class WorkerRequestsPage implements OnInit {
       }
       this.partialPlazas.set(plazasInit);
     } catch (err) {
+      if (err instanceof OrquestaApiError && err.status === 404) {
+        this.noProfile.set(true);
+        return;
+      }
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Error cargando solicitudes.',
       );
