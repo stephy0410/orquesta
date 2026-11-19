@@ -3,29 +3,48 @@ import { ApiService } from '../../core/api/api.service';
 import { OrquestaApiError } from '../../core/api/api-config';
 import {
   CanalBaja,
+  PublicEventSummary,
   PublicRsvpStateResponse,
   PublicUnsubscribeResponse,
   RsvpRespuesta,
 } from '../../core/api/models';
 import { OliveSprigComponent } from '../../shared/ui/olive-sprig.component';
 
-export function extractRsvpTokenFromHash(hash: string): string | null {
-  if (!hash) return null;
+export interface InvitationHashParams {
+  token: string | null;
+  eventId: string | null;
+}
+
+export function extractInvitationParamsFromHash(hash: string): InvitationHashParams {
+  const empty: InvitationHashParams = {
+    token: null,
+    eventId: null,
+  };
+  if (!hash) return empty;
   const trimmed = hash.startsWith('#') ? hash.slice(1) : hash;
-  if (!trimmed) return null;
+  if (!trimmed) return empty;
 
   const params = new URLSearchParams(trimmed.startsWith('?') ? trimmed.slice(1) : trimmed);
-  const fromParam = params.get('t') ?? params.get('token');
-  if (fromParam && fromParam.trim().length > 0) {
-    return fromParam.trim();
+  const rawToken = params.get('t') ?? params.get('token');
+  let token = rawToken && rawToken.trim().length > 0 ? rawToken.trim() : null;
+  if (!token) {
+    const match = trimmed.match(/(?:^|&)t=([^&]+)/);
+    if (match && match[1]) {
+      token = decodeURIComponent(match[1]).trim() || null;
+    }
   }
 
-  const match = trimmed.match(/(?:^|&)t=([^&]+)/);
-  if (match && match[1]) {
-    return decodeURIComponent(match[1]).trim();
-  }
+  const rawEventId = params.get('e');
+  const eventId = rawEventId && rawEventId.trim().length > 0 ? rawEventId.trim() : null;
 
-  return null;
+  return {
+    token,
+    eventId,
+  };
+}
+
+export function extractRsvpTokenFromHash(hash: string): string | null {
+  return extractInvitationParamsFromHash(hash).token;
 }
 
 /** "sábado, 21 de noviembre de 2026" a partir de YYYY-MM-DD (sin desfase de zona). */
@@ -84,6 +103,7 @@ export class InvitationPage implements OnInit {
   readonly changing = signal(false);
   readonly unsubscribing = signal<boolean>(false);
   readonly bajaBanner = signal<string | null>(null);
+  private stateVersion = 0;
 
   readonly fechaLabel = computed(() => formatEventDate(this.state()?.evento.fecha));
   readonly horarioLabel = computed(() => {
@@ -129,13 +149,19 @@ export class InvitationPage implements OnInit {
 
   syncTokenFromLocation(): void {
     const hash = typeof window !== 'undefined' ? window.location.hash : '';
-    const extracted = extractRsvpTokenFromHash(hash);
-    if (extracted && extracted === this.token() && (this.loading() || this.state() !== null)) {
+    const parsed = extractInvitationParamsFromHash(hash);
+    if (parsed.token && parsed.token === this.token() && (this.loading() || this.state() !== null)) {
       return;
     }
-    this.token.set(extracted);
-    if (extracted) {
-      void this.loadRsvpState(extracted);
+    this.stateVersion++;
+    this.token.set(parsed.token);
+    if (parsed.token && parsed.eventId) {
+      void this.loadFromCachedSummary({
+        rsvpToken: parsed.token,
+        eventId: parsed.eventId,
+      });
+    } else if (parsed.token) {
+      void this.loadRsvpState(parsed.token);
     } else {
       this.state.set(null);
       this.qrDataUrl.set(null);
@@ -153,7 +179,74 @@ export class InvitationPage implements OnInit {
     }
   }
 
+  async loadFromCachedSummary(opts: { rsvpToken: string; eventId: string }): Promise<void> {
+    const version = ++this.stateVersion;
+    this.loading.set(true);
+    this.error.set(null);
+    try {
+      const summary = await this.api.get<PublicEventSummary>(
+        `/v1/public/events/${encodeURIComponent(opts.eventId)}/summary`,
+        { publicNoCookies: true },
+      );
+      if (this.token() !== opts.rsvpToken || version !== this.stateVersion) return;
+      this.state.set({
+        respuesta: null,
+        respondido_en: null,
+        qr: { token: '' },
+        evento: summary,
+      });
+      this.loading.set(false);
+      // Hidratar estado real (respuesta, bajas y QR vigente) en segundo plano sin bloquear el primer render.
+      void this.hydrateRsvpState(opts.rsvpToken, version);
+    } catch (err) {
+      if (this.token() !== opts.rsvpToken || version !== this.stateVersion) return;
+      if (err instanceof OrquestaApiError && err.status === 404) {
+        await this.loadRsvpState(opts.rsvpToken);
+        return;
+      }
+      this.state.set(null);
+      this.qrDataUrl.set(null);
+      this.error.set(
+        err instanceof OrquestaApiError
+          ? err
+          : new OrquestaApiError(500, 'UNKNOWN_ERROR', 'No se pudo cargar tu invitación.'),
+      );
+      this.loading.set(false);
+    }
+  }
+
+  private async hydrateRsvpState(rsvpToken: string, version: number): Promise<void> {
+    try {
+      const res = await this.api.get<PublicRsvpStateResponse>(
+        `/v1/public/invitations/${encodeURIComponent(rsvpToken)}/rsvp`,
+        { publicNoCookies: true },
+      );
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
+      this.state.update((prev) => ({
+        ...res,
+        evento: res.evento ?? prev?.evento,
+      }));
+      await this.renderQr(res.qr?.token ?? null);
+    } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
+      if (
+        err instanceof OrquestaApiError &&
+        (err.code === 'INVITACION_REVOCADA' ||
+          err.code === 'TOKEN_INVALIDO' ||
+          err.code === 'TOKEN_TIPO_INCORRECTO' ||
+          err.status === 404 ||
+          err.status === 410)
+      ) {
+        this.state.set(null);
+        this.qrDataUrl.set(null);
+        this.error.set(err);
+      }
+      // Para otros errores (red, 5xx) se conserva la vista cacheada del resumen.
+    }
+  }
+
   async loadRsvpState(rsvpToken: string): Promise<void> {
+    const version = ++this.stateVersion;
     this.loading.set(true);
     this.error.set(null);
     try {
@@ -161,9 +254,11 @@ export class InvitationPage implements OnInit {
         `/v1/public/invitations/${encodeURIComponent(rsvpToken)}/rsvp`,
         { publicNoCookies: true },
       );
+      if (version !== this.stateVersion) return;
       this.state.set(res);
       await this.renderQr(res.qr?.token ?? null);
     } catch (err) {
+      if (version !== this.stateVersion) return;
       this.state.set(null);
       this.qrDataUrl.set(null);
       this.error.set(
@@ -172,7 +267,9 @@ export class InvitationPage implements OnInit {
           : new OrquestaApiError(500, 'UNKNOWN_ERROR', 'No se pudo cargar tu invitación.'),
       );
     } finally {
-      this.loading.set(false);
+      if (version === this.stateVersion) {
+        this.loading.set(false);
+      }
     }
   }
 
@@ -180,6 +277,7 @@ export class InvitationPage implements OnInit {
     const rsvpToken = this.token();
     if (!rsvpToken || this.submitting()) return;
 
+    const version = ++this.stateVersion;
     this.submitting.set(true);
     this.error.set(null);
     this.lastActionBanner.set(null);
@@ -190,6 +288,7 @@ export class InvitationPage implements OnInit {
         { respuesta },
         { publicNoCookies: true },
       );
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.state.update((prev) => ({
         ...res,
         invitado: res.invitado ?? prev?.invitado,
@@ -203,6 +302,7 @@ export class InvitationPage implements OnInit {
           : 'Registramos que no podrás asistir. Puedes cambiar tu respuesta en cualquier momento.',
       );
     } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.error.set(
         err instanceof OrquestaApiError
           ? err
@@ -220,6 +320,7 @@ export class InvitationPage implements OnInit {
   async unsubscribe(canal: CanalBaja): Promise<void> {
     const rsvpToken = this.token();
     if (!rsvpToken || this.unsubscribing()) return;
+    const version = ++this.stateVersion;
     this.unsubscribing.set(true);
     this.error.set(null);
     this.bajaBanner.set(null);
@@ -229,6 +330,7 @@ export class InvitationPage implements OnInit {
         { canal },
         { publicNoCookies: true },
       );
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.state.update((prev) => (prev ? { ...prev, bajas: res.bajas } : prev));
       this.bajaBanner.set(
         canal === 'sms'
@@ -238,6 +340,7 @@ export class InvitationPage implements OnInit {
             : 'Listo: ya no te enviaremos mensajes sobre este evento.',
       );
     } catch (err) {
+      if (this.token() !== rsvpToken || version !== this.stateVersion) return;
       this.error.set(
         err instanceof OrquestaApiError
           ? err

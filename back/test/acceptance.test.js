@@ -663,7 +663,22 @@ test("Ciclo completo del invitado: evento, import CSV, envíos SMS+Email, RSVP s
   const anaEmailMsg = h.ctx.emailProvider.captured.find(
     (m) => m.to === "ana@example.com" && m.metadata?.rsvp_url
   );
-  const rsvpToken = anaEmailMsg.metadata.rsvp_url.split("#t=")[1];
+  const rsvpHashParams = new URLSearchParams(anaEmailMsg.metadata.rsvp_url.split("#")[1] || "");
+  const rsvpToken = rsvpHashParams.get("t");
+  assert.ok(rsvpToken);
+  assert.equal(rsvpHashParams.get("e"), eventId);
+  assert.equal(rsvpHashParams.get("q"), null);
+  assert.equal(rsvpHashParams.get("c"), null);
+
+  const smsInvMsg = h.ctx.smsProvider.captured.find(
+    (m) => m.metadata?.plantilla === "invitacion" && m.message.includes("#")
+  );
+  assert.ok(smsInvMsg);
+  const smsHashParams = new URLSearchParams(smsInvMsg.message.split("#")[1] || "");
+  assert.ok(smsHashParams.get("t"));
+  assert.equal(smsHashParams.get("e"), eventId);
+  assert.equal(smsHashParams.get("q"), null);
+  assert.equal(smsHashParams.get("c"), null);
 
   const pubSummary = await h.request("GET", `/v1/public/events/${eventId}/summary`);
   assert.equal(pubSummary.status, 200);
@@ -1665,7 +1680,7 @@ test("Retención NFR-08: 13 meses borra PII de evento manteniendo worker activo;
   assert.equal(r13.retention.anonymized_workers, 0);
 
   const rsvpMsg = h.ctx.emailProvider.captured.find((m) => m.to === "viejo@x.com");
-  const rsvpTok = rsvpMsg.metadata.rsvp_url.split("#t=")[1];
+  const rsvpTok = new URLSearchParams(rsvpMsg.metadata.rsvp_url.split("#")[1] || "").get("t");
   const pubAfter13 = await h.request("GET", `/v1/public/invitations/${rsvpTok}/rsvp`);
   assert.equal(pubAfter13.status, 404); // token borrado/anonimizado
 
