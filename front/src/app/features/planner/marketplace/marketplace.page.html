@@ -295,7 +295,7 @@
               </select>
               @if (busy(); as b) {
                 @if (b.ventana_ocupada.length === 0) {
-                  <span class="mk-avail">Libre en el horario de este evento</span>
+                  <span class="mk-avail">Sin otros compromisos a esa hora</span>
                 } @else {
                   <span class="mk-busy">
                     Tiene otro compromiso de {{ formatFecha(b.ventana_ocupada[0].inicio) }} a

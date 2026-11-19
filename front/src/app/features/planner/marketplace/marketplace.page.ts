@@ -372,7 +372,7 @@ export class MarketplacePage implements OnInit {
       this.hireError.set(
         err instanceof OrquestaApiError
           ? /disponibilidad/i.test(err.message)
-            ? 'Este proveedor no marcó disponibilidad en ese horario para ese puesto. Prueba con otro horario o con otro proveedor.'
+            ? 'Este proveedor no marcó disponibilidad que cubra todo ese horario para ese puesto. Prueba un horario más corto o con otro proveedor.'
             : err.message
           : 'No pudimos enviar la solicitud.',
       );

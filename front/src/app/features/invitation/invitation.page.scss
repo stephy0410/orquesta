@@ -240,3 +240,23 @@
   text-decoration: underline;
   cursor: pointer;
 }
+
+.inv-guest {
+  margin: 0 0 0.15rem;
+  font-family: var(--oq-font-display);
+  font-size: 1.35rem;
+  text-align: center;
+}
+
+.inv-pass-name {
+  margin: 0.25rem 0 0;
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.inv-pass-table {
+  margin: 0.15rem 0 0.75rem;
+  font-family: var(--oq-font-display);
+  font-size: 1.6rem;
+  color: var(--oq-olive);
+}

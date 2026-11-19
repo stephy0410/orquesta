@@ -84,7 +84,20 @@ const PROVEEDORES = [
   { nombre: "Cinema Bodas Video", tipo: "persona", categorias: ["video", "fotografo"], servicios: ["fotografia_evento"], tarifa: [16500, "evento"], zonas: ["guadalajara", "metropolitana"], idiomas: ["es", "en"], exp: 9 },
 ];
 
-/** Registra, verifica, publica y abre 60 días de disponibilidad para un proveedor del catálogo. */
+/** Disponibilidad abierta por dos años en cada puesto y zona, para poder contratar en cualquier fecha de prueba. */
+async function disponibleTodoElAnio(h, roles, zonas) {
+  const desde = Date.now() - 2 * 86400_000;
+  for (const rol of roles) {
+    for (const zona of zonas) {
+      await call("POST", "/v1/worker/availability", {
+        headers: h,
+        body: { inicio: iso(desde), fin: iso(desde + 730 * 86400_000), zona, rol },
+      });
+    }
+  }
+}
+
+/** Registra, verifica, publica y abre disponibilidad para un proveedor del catálogo. */
 async function proveedor(spec, i) {
   const email = `proveedor${i + 1}@orquesta.test`;
   const h = await account({ email, worker: true });
@@ -112,13 +125,7 @@ async function proveedor(spec, i) {
   } catch (err) {
     if (!/EMAIL_YA_REGISTRADA|ya posee|ya existe/i.test(String(err.message))) throw err;
   }
-  const desde = Date.now() - 2 * 86400_000;
-  for (const rol of spec.categorias) {
-    await call("POST", "/v1/worker/availability", {
-      headers: h,
-      body: { inicio: iso(desde), fin: iso(desde + 60 * 86400_000), zona: spec.zonas[0], rol },
-    }).catch(() => {});
-  }
+  await disponibleTodoElAnio(h, spec.categorias, spec.zonas);
 }
 const NOMBRES = ["Ana", "Luis", "Sofía", "Diego", "Valeria", "Mateo", "Camila", "Emiliano", "Regina", "Santiago", "Ximena", "Leonardo", "Renata", "Sebastián", "Daniela", "Andrés", "Fernanda", "Rodrigo", "Mariana", "Pablo", "Lucía", "Jorge", "Paola", "Ricardo", "Isabel", "Héctor", "Carmen", "Javier", "Natalia", "Gerardo", "Elena", "Tomás", "Alejandra", "Arturo", "Mónica", "Bruno", "Gabriela", "Iván", "Teresa", "Óscar"];
 const APELLIDOS = ["García", "Hernández", "López", "Martínez", "González", "Pérez", "Ramírez", "Torres", "Flores", "Rivera", "Morales", "Cruz", "Ortiz", "Reyes", "Mendoza", "Castillo", "Vargas", "Romero", "Navarro", "Aguilar"];
@@ -204,10 +211,7 @@ async function main() {
   const bodaInicio = new Date(Date.now() + 10 * 86400_000);
   bodaInicio.setUTCHours(1, 0, 0, 0); // 19:00 CDMX
   const bodaFin = new Date(bodaInicio.getTime() + 7 * 3600_000);
-  await call("POST", "/v1/worker/availability", {
-    headers: dj,
-    body: { inicio: iso(bodaInicio.getTime() - 3 * 3600_000), fin: iso(bodaFin.getTime() + 3600_000), zona: "sur", rol: "dj" },
-  }).catch(() => {});
+  await disponibleTodoElAnio(dj, ["dj"], ["sur", "centro"]);
   const boda = (await call("POST", "/v1/events", {
     headers: planner,
     body: {

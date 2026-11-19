@@ -637,15 +637,18 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       throw new AppError("TOKEN_TIPO_INCORRECTO", "El token de check-in no puede usarse para RSVP");
     }
     const res = await this.pool.query(
-      `SELECT i.*, g.deleted_at AS guest_deleted_at, g.baja_sms_en, g.baja_email_en,
+      `SELECT i.*, g.deleted_at AS guest_deleted_at, g.baja_sms_en, g.baja_email_en, g.nombre AS guest_nombre,
               e.nombre AS event_nombre, e.fecha, e.ventana_inicio, e.ventana_fin, e.timezone,
               v.nombre AS venue_nombre, v.direccion AS venue_direccion,
-              r.respuesta, r.respondido_en
+              r.respuesta, r.respondido_en,
+              t.numero AS mesa_numero, t.nombre AS mesa_nombre
          FROM invitation i
          JOIN guest g ON g.id = i.guest_id
          JOIN event e ON e.id = i.event_id
          JOIN venue v ON v.id = e.venue_id
          LEFT JOIN rsvp_response r ON r.invitation_id = i.id AND r.superseded_at IS NULL
+         LEFT JOIN seat_assignment sa ON sa.guest_id = g.id AND sa.estado IN ('confirmado','pendiente')
+         LEFT JOIN event_table t ON t.id = sa.table_id AND t.deleted_at IS NULL
         WHERE i.rsvp_token_hash = $1`,
       [sha256Hex(rawToken)]
     );
@@ -657,6 +660,10 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
       throw new AppError("INVITACION_REVOCADA", "La invitación fue revocada");
     }
     return {
+      invitado: {
+        nombre: row.guest_nombre,
+        mesa: row.mesa_numero ? { numero: row.mesa_numero, nombre: row.mesa_nombre || null } : null,
+      },
       respuesta: row.respuesta || null,
       respondido_en: toIso(row.respondido_en),
       qr: {

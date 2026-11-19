@@ -61,6 +61,9 @@
           }
         </div>
 
+        @if (inv.invitado?.nombre) {
+          <p class="inv-guest">{{ inv.invitado!.nombre }}</p>
+        }
         <p class="inv-kicker">Tienes una invitación a</p>
         <h1 class="inv-title">{{ inv.evento.nombre }}</h1>
         <app-olive-sprig class="inv-sprig" [width]="150" />
@@ -131,6 +134,16 @@
 
         <div class="inv-qr-box">
           <h2>Tu pase de entrada</h2>
+          @if (inv.invitado; as g) {
+            <p class="inv-pass-name">{{ g.nombre }}</p>
+            @if (g.mesa) {
+              <p class="inv-pass-table">
+                Mesa {{ g.mesa.numero }}@if (g.mesa.nombre && !g.mesa.nombre.toLowerCase().startsWith('mesa')) { · {{ g.mesa.nombre }} }
+              </p>
+            } @else if (inv.respuesta === 'confirma') {
+              <p class="oq-hint">Tu mesa aparecerá aquí cuando la planner la asigne.</p>
+            }
+          }
           <p class="oq-hint">
             @if (inv.respuesta === 'confirma') {
               Muéstralo en la entrada. Lo puedes volver a abrir con este mismo enlace cuando quieras.

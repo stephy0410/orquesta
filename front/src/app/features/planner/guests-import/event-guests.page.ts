@@ -76,6 +76,11 @@ export class EventGuestsPage implements OnInit {
     );
   });
 
+  /** Regla del proyecto: no se envía la invitación a quien todavía no tiene mesa. */
+  readonly sinMesaPorEnviar = computed(() =>
+    this.guests().filter((g) => !g.deleted_at && this.filtroDe(g) === 'sin_enviar' && !g.table_id && !g.mesa),
+  );
+
   readonly allVisibleSelected = computed(() => {
     const vis = this.visibleGuests();
     const sel = this.selectedGuestIds();
@@ -262,6 +267,19 @@ export class EventGuestsPage implements OnInit {
 
   async prepareSend(alcance: 'pendiente_envio' | 'seleccion'): Promise<void> {
     this.error.set(null);
+    const sel = this.selectedGuestIds();
+    const sinMesa =
+      alcance === 'seleccion'
+        ? this.guests().filter((g) => sel.has(this.getGuestId(g)) && !g.table_id && !g.mesa)
+        : this.sinMesaPorEnviar();
+    if (sinMesa.length > 0) {
+      this.error.set(
+        sinMesa.length === 1
+          ? `${sinMesa[0].nombre} todavía no tiene mesa. Asígnasela en Mesas antes de enviar su invitación.`
+          : `${sinMesa.length} invitados todavía no tienen mesa. Asígnales mesa en Mesas antes de enviar sus invitaciones.`,
+      );
+      return;
+    }
     await this.loadPendingSummary();
     this.sendAlcance.set(alcance);
     this.confirmSendOpen.set(true);
