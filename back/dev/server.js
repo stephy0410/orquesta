@@ -126,6 +126,19 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  // Solo en el servidor local (no existe en la Lambda): bandeja de emails/SMS capturados, para
+  // scripts como `npm run seed` que necesitan tokens de verificación, OTP o links de invitación.
+  if (req.method === "GET" && url.pathname === "/__dev/messages") {
+    const pick = (m) => ({ to: m.to, subject: m.subject, message: m.message, metadata: m.metadata });
+    res.writeHead(200, { ...corsHeaders(allowedOrigin), "content-type": "application/json" });
+    return res.end(
+      JSON.stringify({
+        emails: (ctx.emailProvider.captured || []).map(pick),
+        sms: (ctx.smsProvider.captured || []).map(pick),
+      })
+    );
+  }
+
   const contentType = req.headers["content-type"] || "";
   const isBinary = raw.length > 0 && !/json|text|x-www-form-urlencoded/.test(contentType);
   const event = {

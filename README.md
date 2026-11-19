@@ -451,6 +451,8 @@ npm run dev
 cd front && npm ci && npx ng serve
 ```
 
+Con el backend corriendo, `cd back && npm run seed` llena la app con datos de demostración (planner `demo@orquesta.test` / `Demo12345!`, una boda con mesas y DJ pagado, una gala en curso con check-ins, un proveedor y un link de invitado). Si el puerto 3000 está ocupado: `PORT=3001 npm run dev`, `API_URL=http://localhost:3001 npm run seed` y apunta el front con `window.__ORQUESTA_API__ = { baseUrl: 'http://localhost:3001' }` en `front/public/runtime-config.js` (cambio local, no se sube).
+
 `npm run dev` corre el mismo handler de la Lambda `api` y los workers en proceso (import, tablero, SMS, email, recordatorios y conciliación). **Email y SMS no se envían: se imprimen en la Terminal 1**, con los tokens de verificación, los códigos OTP y los links de invitación para copiarlos al navegador.
 
 Recorrido sugerido: registrarte como planner (pega el token de la consola) → crear y publicar un evento → importar un CSV → enviar invitaciones → abrir un link de invitación de la consola y confirmar → crear un acceso de staff y abrir `/scan` → ver el tablero.
