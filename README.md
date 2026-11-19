@@ -4,6 +4,8 @@
 
 Plataforma para *wedding & event planners*: invitaciones con QR, RSVP sin cuenta, check-in offline en el venue, tablero en vivo de todos los eventos, contratación y pago de proveedores, y acomodo de mesas.
 
+> **¿Quieres verla funcionando?** [Orquesta en acción](docs/recorrido.md) recorre la aplicación pantalla por pantalla, con capturas de la app corriendo.
+
 Este README sigue el **delivery framework** de system design (Requirements → Core Entities → API → Data Flow → High-Level Design → Deep Dives) y agrega lo que un equipo necesita para operar el sistema: estado de entrega, calidad, CI/CD, cómo correrlo, responsables y riesgos.
 
 > **Fuente de verdad.** La especificación normativa (22 RF, 12 NFR, 20 TR, 29 AC y decisiones D1–D11) vive en [`docs/requerimientos.md`](docs/requerimientos.md). La narrativa de diseño detallada está en [`docs/delivery/`](docs/delivery/README.md). Este README resume y enlaza; si hay contradicción, gana `docs/requerimientos.md`.
