@@ -22,12 +22,12 @@ variable "aws_region" {
 }
 
 variable "db_mode" {
-  description = "Motor PostgreSQL: 'aurora' (Aurora PostgreSQL Serverless v2 escalable por defecto) o 'rds_lab' (RDS db.t4g.micro)."
+  description = "Motor PostgreSQL: 'aurora' (Aurora PostgreSQL Serverless v2) o 'rds_lab' (RDS db.t4g.micro). Vacío = rds_lab en lab, aurora en prod."
   type        = string
-  default     = "aurora"
+  default     = null
 
   validation {
-    condition     = contains(["rds_lab", "aurora"], var.db_mode)
+    condition     = var.db_mode == null || contains(["rds_lab", "aurora"], coalesce(var.db_mode, "rds_lab"))
     error_message = "db_mode debe ser 'rds_lab' o 'aurora'."
   }
 }
@@ -137,6 +137,18 @@ variable "custom_domain" {
 
 variable "route53_zone_id" {
   description = "Hosted zone de Route 53 del custom_domain (para validar el certificado y crear los registros DNS, SPF, DKIM y DMARC)."
+  type        = string
+  default     = ""
+}
+
+variable "use_lab_role" {
+  description = "true en AWS Learner Lab (usa su LabRole). false en una cuenta propia: Terraform crea el rol de las Lambdas con permisos mínimos (iam.tf)."
+  type        = bool
+  default     = true
+}
+
+variable "ses_sender_email" {
+  description = "Sin dominio propio: correo remitente que SES verifica (llega un correo de confirmación). En sandbox de SES también hay que verificar cada destinatario."
   type        = string
   default     = ""
 }

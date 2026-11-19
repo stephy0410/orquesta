@@ -5,7 +5,7 @@ resource "aws_db_subnet_group" "main" {
 
 # Modo Learner Lab económico (db_mode = "rds_lab"): RDS PostgreSQL db.t4g.micro
 resource "aws_db_instance" "postgres_lab" {
-  count = var.db_mode == "rds_lab" ? 1 : 0
+  count = local.db_mode == "rds_lab" ? 1 : 0
 
   identifier            = "${local.name_prefix}-pg-${random_id.suffix.hex}"
   engine                = "postgres"
@@ -31,7 +31,7 @@ resource "aws_db_instance" "postgres_lab" {
 
 # Modo Producción escalable (db_mode = "aurora"): Aurora PostgreSQL Serverless v2
 resource "aws_rds_cluster" "aurora" {
-  count = var.db_mode == "aurora" ? 1 : 0
+  count = local.db_mode == "aurora" ? 1 : 0
 
   cluster_identifier      = "${local.name_prefix}-aurora-${random_id.suffix.hex}"
   engine                  = "aurora-postgresql"
@@ -54,7 +54,7 @@ resource "aws_rds_cluster" "aurora" {
 }
 
 resource "aws_rds_cluster_instance" "aurora_writer" {
-  count = var.db_mode == "aurora" ? 1 : 0
+  count = local.db_mode == "aurora" ? 1 : 0
 
   identifier          = "${local.name_prefix}-aurora-w1-${random_id.suffix.hex}"
   cluster_identifier  = aws_rds_cluster.aurora[0].id
@@ -68,7 +68,7 @@ resource "aws_rds_cluster_instance" "aurora_writer" {
 # pierde ningún pago ni check-in confirmado"). El almacenamiento de Aurora ya replica cada escritura
 # confirmada en 6 copias sobre 3 AZ; la réplica de lectura aporta el failover del cómputo (RTO).
 resource "aws_rds_cluster_instance" "aurora_reader" {
-  count = var.db_mode == "aurora" && !local.is_lab ? var.aurora_reader_instances : 0
+  count = local.db_mode == "aurora" && !local.is_lab ? var.aurora_reader_instances : 0
 
   identifier          = "${local.name_prefix}-aurora-r${count.index + 1}-${random_id.suffix.hex}"
   cluster_identifier  = aws_rds_cluster.aurora[0].id

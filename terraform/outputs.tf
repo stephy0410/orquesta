@@ -35,7 +35,7 @@ output "imports_bucket_name" {
 
 output "db_mode" {
   description = "Modo activo de base de datos PostgreSQL (rds_lab | aurora)."
-  value       = var.db_mode
+  value       = local.db_mode
 }
 
 output "db_endpoint" {
@@ -50,7 +50,7 @@ output "db_port" {
 
 output "aurora_cluster_id" {
   description = "Identificador del clúster Aurora PostgreSQL Serverless v2 (null cuando db_mode = 'rds_lab')."
-  value       = var.db_mode == "aurora" ? aws_rds_cluster.aurora[0].id : null
+  value       = local.db_mode == "aurora" ? aws_rds_cluster.aurora[0].id : null
 }
 
 output "secrets_manager_arn" {
@@ -79,7 +79,7 @@ output "sqs_queues" {
 }
 
 output "lambda_functions" {
-  description = "Nombres de las funciones Lambda desplegadas con LabRole."
+  description = "Nombres de las funciones Lambda desplegadas."
   value = {
     api           = aws_lambda_function.api.function_name
     import_worker = aws_lambda_function.import_worker.function_name

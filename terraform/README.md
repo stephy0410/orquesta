@@ -32,6 +32,26 @@ El workflow **Deploy** aplica solo el perfil de producción: Aurora con réplica
 | `sms_provider_mode` | `"capture"` | `"sns"` | Evita consumir el crédito de \$100 USD en pruebas automatizadas; activable con `"sns"` para envío real |
 | `lambda_in_vpc` | `false` | `true` (con NAT/VPC Endpoints) | Evita timeouts hacia SQS/SNS/Secrets Manager en Learner Lab sin NAT Gateway (~USD 32/mes) |
 
+## Cuenta propia de AWS (fuera de Learner Lab)
+
+Learner Lab bloquea SES, SMS, Aurora y la lectura de *object lock* de S3, así que para probar correo y SMS reales se despliega en una cuenta propia con el perfil barato de `lab`:
+
+```bash
+export AWS_PROFILE=orquesta            # usuario IAM con AdministratorAccess (no la cuenta root)
+terraform workspace new personal       # estado separado del de Learner Lab
+terraform apply \
+  -var use_lab_role=false \
+  -var enable_cloudfront=true \
+  -var email_provider_mode=ses -var ses_sender_email=<tu-correo> \
+  -var sms_provider_mode=sns
+```
+
+- `use_lab_role=false` crea el rol de las Lambdas con permisos mínimos ([`iam.tf`](iam.tf)).
+- SES arranca en *sandbox*: el remitente recibe un correo de verificación y solo se puede enviar a correos verificados.
+- SNS SMS también arranca en *sandbox*: cada teléfono destino se verifica con `aws sns create-sms-sandbox-phone-number --phone-number +52…` y el código que llega por SMS.
+- Costo aproximado: unos USD 5–10 al mes (IP pública de RDS, KMS, Secrets Manager y alarmas); RDS micro, Lambda, API Gateway, SQS y CloudFront entran en la capa gratuita. `terraform destroy` lo borra todo.
+- La llave de Stripe se pasa con `TF_VAR_stripe_secret_key`; sin ella los pagos usan el PSP simulado.
+
 ## Comandos principales
 
 ```powershell
