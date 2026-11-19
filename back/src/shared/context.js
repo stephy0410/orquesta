@@ -1,6 +1,6 @@
 import { getPool, loadAppSecrets, PgStore } from "./db.js";
 import { MetricsEmitter } from "./observability.js";
-import { createPortsFromEnv } from "./ports.js";
+import { createPortsFromEnv, StripePspAdapter } from "./ports.js";
 import { InMemoryStore } from "./store.js";
 
 /**
@@ -32,6 +32,23 @@ export async function createAppContext(options = {}) {
     secrets.psp_webhook_secret ||
     "orquesta-dev-psp-secret";
 
+  // Stripe real si hay llave (env o Secrets Manager); si no, el PSP simulado de siempre.
+  const stripeSecretKey =
+    options.stripeSecretKey ??
+    (process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET || secrets.stripe_secret_key || "");
+  const stripeWebhookSecret =
+    options.stripeWebhookSecret ??
+    (process.env.STRIPE_WEBHOOK_SECRET || secrets.stripe_webhook_secret || "");
+  if (stripeSecretKey && !options.ports && !options.portOverrides?.paymentProvider) {
+    const publicBase = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+    ports.paymentProvider = new StripePspAdapter({
+      secretKey: stripeSecretKey,
+      iconUrl: publicBase ? `${publicBase}/icons/icon-512x512.png` : null,
+      logoUrl: publicBase ? `${publicBase}/brand/orquesta-logo-verde.png` : null,
+      logoFileId: process.env.STRIPE_LOGO_FILE_ID || secrets.stripe_logo_file_id || null,
+    });
+  }
+
   const canalesEnv = process.env.CANALES_ACTIVOS || "sms,email";
   const canalesActivos = options.canalesActivos || canalesEnv.split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -58,6 +75,7 @@ export async function createAppContext(options = {}) {
     piiKey,
     sessionSecret,
     pspWebhookSecret,
+    stripeWebhookSecret,
     canalesActivos,
     assetsBucket: options.assetsBucket || process.env.ASSETS_BUCKET || "orquesta-assets",
     importsBucket: options.importsBucket || process.env.IMPORTS_BUCKET || "orquesta-imports",

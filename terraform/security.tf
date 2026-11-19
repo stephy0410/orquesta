@@ -31,6 +31,9 @@ resource "aws_secretsmanager_secret_version" "app_secrets" {
     session_secret     = random_password.session_secret.result
     psp_webhook_secret = random_password.psp_webhook_secret.result
     pii_encryption_key = random_password.pii_encryption_key.result
+    # Pagos con Stripe Checkout (FR6); vacíos = PSP simulado.
+    stripe_secret_key     = var.stripe_secret_key
+    stripe_webhook_secret = var.stripe_webhook_secret
   })
 }
 

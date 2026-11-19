@@ -26,11 +26,29 @@ Ambos stores exponen **la misma interfaz** y la suite de aceptación corre contr
 
 `npm run dev` levanta el API en `http://localhost:3000` (el front en modo desarrollo apunta ahí) con los workers en proceso y CORS para `http://localhost:4200`. Usa PostgreSQL de `npm run db:up`, o `npm run dev -- --memory` para no necesitar Docker. Email y SMS se imprimen en consola (tokens, OTP, links de invitación). Código: [`dev/server.js`](dev/server.js).
 
+### Pagos con Stripe
+
+Sin configuración, los pagos usan el PSP simulado (cobra al momento; es lo que usan las pruebas). Para usar **Stripe Checkout en modo prueba**:
+
+1. Crea `back/.env` (está en `.gitignore`) con `STRIPE_SECRET_KEY=sk_test_…` (también acepta `STRIPE_SECRET`).
+2. `npm run stripe:logo` sube el logo de Orquesta a Stripe y guarda `STRIPE_LOGO_FILE_ID` en `.env` (en AWS no hace falta: Stripe lo descarga de `PUBLIC_BASE_URL/brand/orquesta-logo-verde.png`).
+3. `npm run dev` debe decir `Pagos: Stripe Checkout (modo prueba)`. Paga con la tarjeta de prueba `4242 4242 4242 4242`, cualquier fecha futura y cualquier CVC.
+
+Cómo funciona ([`StripePspAdapter`](src/shared/ports.js)):
+
+- **Pagar** crea una sesión de Checkout con los colores, la tipografía y el logo de Orquesta y responde `checkout_url`. La llave de idempotencia de Stripe es `pay:<reserva>:checkout:<sesión anterior>`: un doble clic devuelve la misma sesión; solo cuando una sesión caduca (1 h) se abre otra.
+- La confirmación llega por tres caminos, todos idempotentes sobre el mismo ledger: el **GET** de pagos al volver del checkout (consulta la sesión), el **webhook** `checkout.session.completed` firmado (`STRIPE_WEBHOOK_SECRET`, cabecera `Stripe-Signature`) y el **barrido** del outbox-poller. Una sesión caducada sin pago deja el pago `fallido` para poder reintentar.
+- Las URL de regreso solo pueden ser del front propio (`PUBLIC_BASE_URL`, `ALLOWED_RETURN_ORIGINS`; `localhost` fuera de prod).
+- Si la reserva pagada se cancela (por la planner **o por el proveedor**) se reembolsa en Stripe con la llave `refund:<pay:reserva>` y se asienta el reverso en el ledger; `GET /payments` devuelve `reembolsado: true`.
+- La conciliación diaria compara el ledger con los PaymentIntent cobrados del día que traen `metadata.idempotency_key`.
+
+En AWS, la llave y el secreto del webhook llegan por Secrets Manager desde los secrets `STRIPE_SECRET_KEY` y `STRIPE_WEBHOOK_SECRET` del environment de GitHub (`deploy.yml` → `TF_VAR_stripe_*`). El webhook en el dashboard de Stripe apunta a `<API>/v1/webhooks/psp` con los eventos `checkout.session.completed` y `checkout.session.async_payment_succeeded`.
+
 ## Pruebas
 
 ```bash
 npm ci
-npm test            # 16 escenarios de aceptación con InMemoryStore (~3 s)
+npm test            # 17 escenarios de aceptación con InMemoryStore + pruebas del adaptador de Stripe
 npm run db:up       # PostgreSQL 16 en localhost:55432 (docker compose)
 npm run test:pg     # la misma suite contra PgStore + migraciones reales
 npm run test:all    # ambas
@@ -57,6 +75,7 @@ npm run db:down
 | `005_seating_plan_version.sql` | Versión optimista del plano de mesas (FR7) |
 | `006_payment_reconciliation.sql` | Resultado de la conciliación diaria ledger ↔ procesador (FR6) |
 | `007_guest_unsubscribe.sql` | Baja del invitado por canal (FR8) |
+| `008_payment_checkout.sql` | Sesión de Stripe Checkout del pago (FR6) |
 
 - Se aplican automáticamente en el *cold start* (`AUTO_MIGRATE=true`), en **una** transacción serializada con advisory lock, registrando cada archivo en `schema_migrations`.
 - Cada archivo trae su propio `BEGIN/COMMIT` para poder aplicarse también con `psql -f`.

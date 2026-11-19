@@ -152,7 +152,12 @@ export class SesEmailAdapter {
 // PaymentProvider (TR-14, D1, D5): MockPspTestAdapter + queryByKey
 // ============================================================================
 export class MockPspTestAdapter {
-  constructor({ clock = null } = {}) {
+  /**
+   * @param {object} [opts]
+   * @param {boolean} [opts.checkout] simula Stripe Checkout: `charge` crea una sesión que la
+   *   planner paga fuera (`completeCheckout`) en vez de cobrar al momento.
+   */
+  constructor({ clock = null, checkout = false } = {}) {
     // Reloj inyectable: createAppContext lo alinea con ctx.now() para que las pruebas que viajan
     // en el tiempo vean los cobros en el día correcto al conciliar.
     this.clock = clock || (() => new Date());
@@ -161,6 +166,66 @@ export class MockPspTestAdapter {
     this.timeoutNextForKey = new Set(); // simula timeout donde PSP sí cobró pero caller vio unknown
     this.unknownStatusKeys = new Set();
     this.chargeExecutions = 0;
+    this.checkout = checkout;
+    this.sessions = new Map(); // reference -> sesión de checkout simulada
+    this.sessionByRequestKey = new Map();
+  }
+
+  /** El cobro requiere que la planner complete un checkout hospedado (ver StripePspAdapter). */
+  get requiresCustomerAction() {
+    return this.checkout;
+  }
+
+  /** Simula que la planner pagó la sesión en la página del PSP. */
+  completeCheckout(reference) {
+    const s = this.sessions.get(reference);
+    if (!s) throw new Error(`sesión ${reference} no existe`);
+    s.status = "complete";
+    const record = {
+      status: "succeeded",
+      psp_charge_id: `pi_mock_${ulid()}`,
+      amount: s.amount,
+      currency: s.currency,
+      idempotency_key: s.idempotency_key,
+      metadata: s.metadata,
+      charged_at: new Date(this.clock()).toISOString(),
+    };
+    this.charges.set(s.idempotency_key, record);
+    this.chargeExecutions += 1;
+    return { ...record };
+  }
+
+  /** Simula que la sesión caducó sin pago. */
+  expireCheckout(reference) {
+    const s = this.sessions.get(reference);
+    if (s && s.status === "open") s.status = "expired";
+  }
+
+  _createCheckout({ idempotencyKey, amount, currency, metadata, successUrl, cancelUrl, previousReference }) {
+    const requestKey = `${idempotencyKey}:checkout:${previousReference || "1"}`;
+    const existing = this.sessionByRequestKey.get(requestKey);
+    const s = existing
+      ? this.sessions.get(existing)
+      : {
+          reference: `cs_mock_${ulid()}`,
+          status: "open",
+          idempotency_key: idempotencyKey,
+          amount: Number(Number(amount).toFixed(2)),
+          currency: String(currency).toUpperCase(),
+          metadata,
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+        };
+    if (!existing) {
+      this.sessions.set(s.reference, s);
+      this.sessionByRequestKey.set(requestKey, s.reference);
+    }
+    return {
+      status: "requires_action",
+      reference: s.reference,
+      checkout_url: `https://checkout.mock.test/${s.reference}`,
+      idempotency_key: idempotencyKey,
+    };
   }
 
   simulateTimeoutAfterCharge(idempotencyKey) {
@@ -171,9 +236,12 @@ export class MockPspTestAdapter {
     this.unknownStatusKeys.add(idempotencyKey);
   }
 
-  async charge({ idempotencyKey, amount, currency, metadata = {} }) {
+  async charge({ idempotencyKey, amount, currency, metadata = {}, successUrl, cancelUrl, previousReference = null }) {
     if (!idempotencyKey || typeof idempotencyKey !== "string") {
       throw new Error("idempotencyKey is required");
+    }
+    if (this.checkout) {
+      return this._createCheckout({ idempotencyKey, amount, currency, metadata, successUrl, cancelUrl, previousReference });
     }
     const existing = this.charges.get(idempotencyKey);
     if (existing) {
@@ -214,7 +282,20 @@ export class MockPspTestAdapter {
     return { ...record };
   }
 
-  async queryByKey(idempotencyKey) {
+  async queryByKey(idempotencyKey, { reference = null } = {}) {
+    const session = reference ? this.sessions.get(reference) : null;
+    if (session && session.status === "open") {
+      return {
+        found: false,
+        status: "open",
+        reference,
+        checkout_url: `https://checkout.mock.test/${reference}`,
+        idempotency_key: idempotencyKey,
+      };
+    }
+    if (session && session.status === "expired" && !this.charges.has(idempotencyKey)) {
+      return { found: false, status: "expired", reference, psp_charge_id: null, idempotency_key: idempotencyKey };
+    }
     const existing = this.charges.get(idempotencyKey);
     if (!existing) {
       return {
@@ -266,6 +347,253 @@ export class MockPspTestAdapter {
 }
 
 export const MockStripeTestAdapter = MockPspTestAdapter;
+
+/**
+ * Apariencia de la página de pago: la misma paleta y forma que el front (`front/src/styles.scss`).
+ * Stripe no ofrece Figtree; Inter es la más cercana de su catálogo.
+ */
+export const ORQUESTA_CHECKOUT_BRANDING = Object.freeze({
+  display_name: "Orquesta",
+  background_color: "#f5f2e8", // --oq-bg
+  button_color: "#56602a", // --oq-olive (botón primario)
+  border_style: "rectangular", // --oq-radius-sm: esquinas casi rectas
+  font_family: "inter",
+});
+
+export class StripeApiError extends Error {
+  constructor(status, body) {
+    super(body?.error?.message || `Stripe respondió ${status}`);
+    this.name = "StripeApiError";
+    this.status = status;
+    this.type = body?.error?.type || null;
+    this.code = body?.error?.code || null;
+  }
+}
+
+/** Codifica objetos anidados al formato `a[b][0][c]=v` que espera la API de Stripe. */
+export function stripeForm(obj, prefix = "", out = new URLSearchParams()) {
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    const key = prefix ? `${prefix}[${k}]` : k;
+    if (typeof v === "object") stripeForm(v, key, out);
+    else out.append(key, String(v));
+  }
+  return out;
+}
+
+const toMinorUnits = (amount) => Math.round(Number(amount) * 100);
+const fromMinorUnits = (n) => Math.round(Number(n)) / 100;
+
+/**
+ * PaymentProvider real sobre Stripe (FR6) con Stripe Checkout: la planner paga en la página
+ * hospedada de Stripe, así que Orquesta nunca toca datos de tarjeta (PCI SAQ A).
+ *
+ *   - `charge` crea (o recupera) la sesión de Checkout y devuelve `requires_action` + `checkout_url`.
+ *     La llave de idempotencia de Stripe es `<pay:reserva>:checkout:<sesión anterior|1>`: doble clic
+ *     o reintentos devuelven la MISMA sesión; solo tras expirar una sesión se crea otra.
+ *   - `queryByKey` consulta la sesión guardada (o busca el PaymentIntent por metadata) para
+ *     confirmar al volver del checkout, en el barrido de conciliación o si se perdió el webhook.
+ *   - `listCharges` alimenta la conciliación diaria con los PaymentIntent cobrados del día.
+ *   - `refund` reembolsa con su propia llave de idempotencia.
+ */
+export class StripePspAdapter {
+  constructor({
+    secretKey,
+    fetchImpl = globalThis.fetch,
+    apiBase = "https://api.stripe.com",
+    apiVersion = "2025-04-30.basil",
+    timeoutMs = 15_000,
+    branding = ORQUESTA_CHECKOUT_BRANDING,
+    iconUrl = null,
+    logoUrl = null,
+    logoFileId = null,
+    locale = "es-419",
+    sessionTtlSec = 3600,
+    clock = null,
+  } = {}) {
+    if (!secretKey || !/^(sk|rk)_(test|live)_/.test(secretKey)) {
+      throw new Error("StripePspAdapter: STRIPE_SECRET_KEY inválida (se espera sk_test_… o sk_live_…)");
+    }
+    this.secretKey = secretKey;
+    this.fetchImpl = fetchImpl;
+    this.apiBase = apiBase.replace(/\/+$/, "");
+    this.apiVersion = apiVersion;
+    this.timeoutMs = timeoutMs;
+    this.branding = branding;
+    // Stripe descarga el ícono: solo sirve una URL pública https (no localhost).
+    const publicHttps = (u) => (u && /^https:\/\//.test(u) && !/localhost|127\.0\.0\.1/.test(u) ? u : null);
+    this.iconUrl = publicHttps(iconUrl);
+    // Logo de Orquesta (verde) en el encabezado: archivo ya subido a Stripe (sirve en local) o URL pública.
+    this.logoFileId = logoFileId && /^file_/.test(logoFileId) ? logoFileId : null;
+    this.logoUrl = publicHttps(logoUrl);
+    this.locale = locale;
+    // Stripe acepta entre 30 min y 24 h. Una hora basta para pagar y libera pronto los abandonos.
+    this.sessionTtlSec = Math.min(Math.max(sessionTtlSec, 1800), 86400);
+    this.clock = clock || (() => new Date());
+    this.mode = secretKey.includes("_live_") ? "live" : "test";
+  }
+
+  get requiresCustomerAction() {
+    return true;
+  }
+
+  async _request(method, path, { params = null, idempotencyKey = null } = {}) {
+    const headers = {
+      Authorization: `Bearer ${this.secretKey}`,
+      "Stripe-Version": this.apiVersion,
+    };
+    let url = `${this.apiBase}${path}`;
+    let body;
+    if (params && method === "GET") {
+      url += `?${stripeForm(params).toString()}`;
+    } else if (params) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+      body = stripeForm(params).toString();
+    }
+    if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+
+    let res;
+    try {
+      res = await this.fetchImpl(url, { method, headers, body, signal: AbortSignal.timeout(this.timeoutMs) });
+    } catch (cause) {
+      // Sin respuesta: no sabemos si Stripe procesó la petición → el llamador lo trata como
+      // `desconocido` y la conciliación lo resuelve por llave.
+      const err = new Error(`Stripe sin respuesta: ${cause?.message || cause}`);
+      err.isTimeout = true;
+      throw err;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new StripeApiError(res.status, json);
+      if (res.status >= 500 || res.status === 429) err.isTimeout = true; // reintentable, resultado incierto
+      throw err;
+    }
+    return json;
+  }
+
+  async charge({ idempotencyKey, amount, currency, metadata = {}, successUrl, cancelUrl, previousReference = null, description = null }) {
+    if (!idempotencyKey) throw new Error("idempotencyKey is required");
+    if (!successUrl || !cancelUrl) throw new Error("Stripe Checkout requiere success_url y cancel_url");
+    const meta = { ...metadata, idempotency_key: idempotencyKey };
+    const nowSec = Math.floor(new Date(this.clock()).getTime() / 1000);
+    const branding = { ...this.branding };
+    if (this.iconUrl) branding.icon = { type: "url", url: this.iconUrl };
+    if (this.logoFileId) branding.logo = { type: "file", file: this.logoFileId };
+    else if (this.logoUrl) branding.logo = { type: "url", url: this.logoUrl };
+    const session = await this._request("POST", "/v1/checkout/sessions", {
+      idempotencyKey: `${idempotencyKey}:checkout:${previousReference || "1"}`,
+      params: {
+        mode: "payment",
+        locale: this.locale,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        client_reference_id: idempotencyKey,
+        expires_at: nowSec + this.sessionTtlSec,
+        submit_type: "pay",
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: String(currency).toLowerCase(),
+              unit_amount: toMinorUnits(amount),
+              product_data: { name: description || "Contratación de proveedor · Orquesta" },
+            },
+          },
+        ],
+        metadata: meta,
+        payment_intent_data: { metadata: meta, description: description || undefined },
+        branding_settings: branding,
+      },
+    });
+    return this._mapSession(session, idempotencyKey);
+  }
+
+  _mapSession(s, idempotencyKey) {
+    const base = { reference: s.id, idempotency_key: idempotencyKey };
+    if (s.payment_status === "paid" || s.payment_status === "no_payment_required") {
+      const pi = typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id;
+      return {
+        ...base,
+        found: true,
+        status: "succeeded",
+        psp_charge_id: pi || s.id,
+        amount: fromMinorUnits(s.amount_total),
+        currency: String(s.currency || "").toUpperCase(),
+      };
+    }
+    if (s.status === "open") {
+      return { ...base, found: false, status: "requires_action", checkout_url: s.url };
+    }
+    if (s.status === "expired") return { ...base, found: false, status: "expired", psp_charge_id: null };
+    // `complete` sin pagar: método asíncrono (p. ej. OXXO) en proceso.
+    return { ...base, found: false, status: "pending", psp_charge_id: null };
+  }
+
+  async queryByKey(idempotencyKey, { reference = null } = {}) {
+    if (reference) {
+      const s = await this._request("GET", `/v1/checkout/sessions/${encodeURIComponent(reference)}`);
+      const mapped = this._mapSession(s, idempotencyKey);
+      if (mapped.status === "requires_action") mapped.status = "open";
+      return mapped;
+    }
+    // Sin sesión guardada (p. ej. se perdió la respuesta al crearla): buscar el cobro por metadata.
+    const safeKey = String(idempotencyKey).replace(/['\\]/g, "");
+    const found = await this._request("GET", "/v1/payment_intents/search", {
+      params: { query: `metadata['idempotency_key']:'${safeKey}' AND status:'succeeded'`, limit: 1 },
+    });
+    const pi = found?.data?.[0];
+    if (!pi) return { found: false, status: "not_found", psp_charge_id: null, idempotency_key: idempotencyKey };
+    return this._mapPaymentIntent(pi, idempotencyKey);
+  }
+
+  _mapPaymentIntent(pi, idempotencyKey = pi.metadata?.idempotency_key) {
+    return {
+      found: true,
+      status: pi.status === "succeeded" ? "succeeded" : pi.status,
+      psp_charge_id: pi.id,
+      amount: fromMinorUnits(pi.amount_received ?? pi.amount),
+      currency: String(pi.currency).toUpperCase(),
+      idempotency_key: idempotencyKey,
+      charged_at: new Date(pi.created * 1000).toISOString(),
+    };
+  }
+
+  async listCharges({ from, to }) {
+    const out = [];
+    let startingAfter = null;
+    for (let page = 0; page < 50; page += 1) {
+      const res = await this._request("GET", "/v1/payment_intents", {
+        params: {
+          limit: 100,
+          created: { gte: Math.floor(new Date(from).getTime() / 1000), lt: Math.floor(new Date(to).getTime() / 1000) },
+          starting_after: startingAfter || undefined,
+        },
+      });
+      for (const pi of res.data || []) {
+        // Solo cobros de Orquesta (la cuenta puede tener otros movimientos).
+        if (pi.status === "succeeded" && pi.metadata?.idempotency_key) out.push(this._mapPaymentIntent(pi));
+      }
+      if (!res.has_more || !res.data?.length) break;
+      startingAfter = res.data[res.data.length - 1].id;
+    }
+    return out;
+  }
+
+  async refund({ idempotencyKey, pspChargeId, amount, currency }) {
+    const r = await this._request("POST", "/v1/refunds", {
+      idempotencyKey: `refund:${idempotencyKey}`,
+      params: { payment_intent: pspChargeId, amount: toMinorUnits(amount), metadata: { idempotency_key: idempotencyKey } },
+    });
+    return {
+      status: r.status === "failed" || r.status === "canceled" ? "failed" : "refunded",
+      psp_refund_id: r.id,
+      psp_charge_id: pspChargeId,
+      amount: fromMinorUnits(r.amount),
+      currency: String(r.currency || currency).toUpperCase(),
+      refunded_at: new Date(r.created * 1000).toISOString(),
+    };
+  }
+}
 
 // Contract test reutilizable para cualquier adaptador PaymentProvider (TR-14)
 export async function verifyPaymentProviderContract(providerFactory) {

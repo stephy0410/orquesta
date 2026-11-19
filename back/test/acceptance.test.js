@@ -17,7 +17,8 @@ import {
   verifyEs256Jws,
 } from "../src/shared/crypto.js";
 import { parseGuestsCsv } from "../src/shared/domain-helpers.js";
-import { verifyPaymentProviderContract } from "../src/shared/ports.js";
+import { MockPspTestAdapter, verifyPaymentProviderContract } from "../src/shared/ports.js";
+import { createHmac } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // por defecto usa InMemoryStore. Ver back/README.md §Pruebas.
 const TEST_DB = process.env.TEST_DB === "pg" ? "pg" : "memory";
 
-async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } = {}) {
+async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z"), paymentProvider = null } = {}) {
   let currentNow = new Date(nowDate);
   const pgStore = TEST_DB === "pg" ? await createFreshPgStore() : null;
   const ctx = await createAppContext({
@@ -33,6 +34,9 @@ async function createTestHarness({ nowDate = new Date("2026-06-10T12:00:00Z") } 
     store: pgStore || undefined,
     silentMetrics: true,
     now: () => new Date(currentNow),
+    // Nunca llamar a Stripe real desde la suite, aunque haya STRIPE_SECRET_KEY en el entorno.
+    stripeSecretKey: "",
+    portOverrides: paymentProvider ? { paymentProvider } : undefined,
   });
   const introspect = pgStore ? pgIntrospection(pgStore) : memoryIntrospection(ctx.store);
   // PG: alinea el reloj de prueba de la BD con el reloj simulado antes de cada operación.
@@ -2708,4 +2712,178 @@ test("Invitados: baja por canal respetada en reenvíos y recordatorios; teléfon
   assert.ok(telRow.pii_anonimizada_en, "sin teléfono ni email, el invitado queda anonimizado");
   const again = await h.outboxPoller();
   assert.equal(again.retention.telefonos_invitados_borrados, 0);
+});
+
+test("Pagos: Stripe Checkout sin doble sesión, confirma al volver o por webhook firmado y reintenta tras expirar (FR6)", async () => {
+  const psp = new MockPspTestAdapter({ checkout: true });
+  const h = await createTestHarness({ nowDate: "2026-06-05T12:00:00Z", paymentProvider: psp });
+  h.ctx.stripeWebhookSecret = "whsec_prueba_orquesta";
+  const planner = await h.registerAndLoginUser({ email: "co-planner@orquesta.test" });
+  const worker = await h.registerAndLoginUser({ email: "co-worker@orquesta.test", role: "worker" });
+  const wp = await h.request("POST", "/v1/worker/profile", {
+    headers: worker.headers,
+    body: {
+      tipo: "persona",
+      nombre_publico: "Foto Checkout",
+      categorias: ["fotografo"],
+      tarifa: { monto: 700, moneda: "MXN", unidad: "evento" },
+      zonas: ["norte"],
+      telefono_e164: "+525513131313",
+    },
+  });
+  const ch = await h.request("POST", "/v1/worker/profile/verifications", { headers: worker.headers, body: { canal: "telefono" } });
+  await h.drainAll();
+  const otp = h.ctx.smsProvider.captured.find((s) => s.to === "+525513131313").metadata.codigo_otp;
+  await h.request("POST", `/v1/worker/profile/verifications/${ch.body.desafio_id}/confirm`, {
+    headers: worker.headers,
+    body: { codigo_otp: otp },
+  });
+  await h.request("POST", "/v1/worker/profile/publish", { headers: worker.headers });
+  await h.request("POST", "/v1/worker/availability", {
+    headers: worker.headers,
+    body: { inicio: "2026-06-15T10:00:00Z", fin: "2026-06-15T22:00:00Z", zona: "norte", rol: "fotografo" },
+  });
+  const venue = await h.request("POST", "/v1/venues", {
+    headers: planner.headers,
+    body: { nombre: "Jardín", zona: "norte", direccion: "Norte 10" },
+  });
+  const evt = await h.request("POST", "/v1/events", {
+    headers: planner.headers,
+    body: {
+      nombre: "Boda Checkout",
+      fecha: "2026-06-15",
+      timezone: "America/Mexico_City",
+      ventana: { inicio: "2026-06-15T12:00:00Z", fin: "2026-06-15T20:00:00Z" },
+      venue_id: venue.body.id,
+      aforo: 20,
+    },
+  });
+  async function contratar(inicio, fin) {
+    const r = await h.request("POST", `/v1/events/${evt.body.id}/worker-requests`, {
+      headers: planner.headers,
+      body: { worker_id: wp.body.worker_id, rol: "fotografo", plazas: 1, ventana: { inicio, fin }, hora_llegada: inicio },
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const acc = await h.request("POST", `/v1/worker/requests/${r.body.id}/accept`, { headers: worker.headers, body: {} });
+    assert.equal(acc.status, 200, JSON.stringify(acc.body));
+    return r.body.id;
+  }
+  const ledgerOk = (item) => {
+    assert.equal(item.ledger_entries.length, 2);
+    assert.equal(item.ledger_entries.reduce((a, e) => a + Number(e.importe), 0), 0);
+  };
+  function stripeSign(raw) {
+    const t = Math.floor(Date.now() / 1000);
+    const v1 = createHmac("sha256", h.ctx.stripeWebhookSecret).update(`${t}.${raw}`).digest("hex");
+    return `t=${t},v1=${v1}`;
+  }
+
+  // 1) La planner pulsa Pagar: se abre una sesión de checkout; la URL de regreso ajena se descarta.
+  const resA = await contratar("2026-06-15T13:00:00Z", "2026-06-15T15:00:00Z");
+  const pay1 = await h.request("POST", `/v1/reservations/${resA}/payments`, {
+    headers: planner.headers,
+    body: { success_url: "https://evil.example/robar", cancel_url: "http://localhost:4200/planner?pago=cancelado" },
+  });
+  assert.equal(pay1.status, 202);
+  assert.equal(pay1.body.estado, "pendiente");
+  assert.match(pay1.body.checkout_url, /^https:\/\/checkout\.mock\.test\//);
+  const [sesion] = [...psp.sessions.values()];
+  assert.ok(!sesion.success_url.includes("evil.example"), "no redirige a orígenes ajenos");
+  assert.match(sesion.success_url, /\/planner\/events\/.+\/workers\?pago=exito$/);
+  assert.equal(sesion.cancel_url, "http://localhost:4200/planner?pago=cancelado");
+
+  // 2) Doble clic / regresar con "atrás": misma sesión, nunca una segunda abierta.
+  const pay2 = await h.request("POST", `/v1/reservations/${resA}/payments`, { headers: planner.headers, body: {} });
+  assert.equal(pay2.body.checkout_url, pay1.body.checkout_url);
+  assert.equal(psp.sessions.size, 1);
+
+  // 3) Mientras no paga, el GET sigue pendiente y sin asientos.
+  const g1 = await h.request("GET", `/v1/reservations/${resA}/payments`, { headers: planner.headers });
+  assert.equal(g1.body.items[0].estado, "pendiente");
+  assert.equal(g1.body.items[0].ledger_entries.length, 0);
+
+  // 4) Paga en Stripe y vuelve: el GET confirma consultando la sesión, sin esperar al webhook.
+  psp.completeCheckout(sesion.reference);
+  const g2 = await h.request("GET", `/v1/reservations/${resA}/payments`, { headers: planner.headers });
+  assert.equal(g2.body.items[0].estado, "confirmado");
+  ledgerOk(g2.body.items[0]);
+
+  // 5) El webhook llega después (y repetido): firma verificada, sin asiento doble.
+  const evento = {
+    id: "evt_checkout_1",
+    type: "checkout.session.completed",
+    data: {
+      object: {
+        id: sesion.reference,
+        payment_status: "paid",
+        amount_total: 70000,
+        currency: "mxn",
+        payment_intent: "pi_123",
+        metadata: { idempotency_key: `pay:${resA}` },
+      },
+    },
+  };
+  const raw = JSON.stringify(evento);
+  for (let i = 0; i < 2; i++) {
+    const wh = await h.request("POST", "/v1/webhooks/psp", { headers: { "stripe-signature": stripeSign(raw), "content-type": "application/json" }, rawBody: raw });
+    assert.equal(wh.status, 200);
+    assert.equal(wh.body.estado, "confirmado");
+  }
+  const falsa = await h.request("POST", "/v1/webhooks/psp", {
+    headers: { "stripe-signature": `t=${Math.floor(Date.now() / 1000)},v1=${"0".repeat(64)}`, "content-type": "application/json" },
+    rawBody: raw,
+  });
+  assert.equal(falsa.status, 401);
+  const otro = JSON.stringify({ id: "evt_otro", type: "customer.created", data: { object: {} } });
+  const ign = await h.request("POST", "/v1/webhooks/psp", { headers: { "stripe-signature": stripeSign(otro), "content-type": "application/json" }, rawBody: otro });
+  assert.equal(ign.status, 200);
+  assert.equal(ign.body.ignorado, "customer.created");
+  const g3 = await h.request("GET", `/v1/reservations/${resA}/payments`, { headers: planner.headers });
+  ledgerOk(g3.body.items[0]);
+  assert.equal(g3.body.items[0].reembolsado, false);
+
+  // 5b) El proveedor cancela la reserva ya pagada: se reembolsa a la planner en el PSP, una sola vez.
+  for (let i = 0; i < 2; i++) {
+    const cancel = await h.request("POST", `/v1/worker/reservations/${resA}/cancel`, {
+      headers: worker.headers,
+      body: { motivo: "Se enfermó" },
+    });
+    assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
+    assert.equal(cancel.body.estado, "cancelada_pagada");
+  }
+  assert.equal(psp.refunds.size, 1, "un solo reembolso aunque cancele dos veces");
+  const reembolso = psp.refunds.get(`refund:pay:${resA}`);
+  assert.equal(reembolso.amount, 700);
+  assert.match(reembolso.psp_charge_id, /^pi_mock_/, "reembolsa el cobro real del checkout");
+  const g4 = await h.request("GET", `/v1/reservations/${resA}/payments`, { headers: planner.headers });
+  assert.equal(g4.body.items[0].reembolsado, true);
+  assert.equal(g4.body.items[0].ledger_entries.length, 4);
+  assert.equal(g4.body.items[0].ledger_entries.reduce((a, e) => a + Number(e.importe), 0), 0);
+
+  // 6) Sesión abandonada: caduca, el barrido libera el pago y el reintento abre una sesión NUEVA.
+  const resB = await contratar("2026-06-15T16:00:00Z", "2026-06-15T18:00:00Z");
+  const pB1 = await h.request("POST", `/v1/reservations/${resB}/payments`, { headers: planner.headers, body: {} });
+  const refB1 = pB1.body.checkout_url.split("/").pop();
+  psp.expireCheckout(refB1);
+  h.advanceMs(2 * 60 * 1000);
+  const sweep = await h.outboxPoller();
+  assert.equal(sweep.payments.revisados, 1);
+  const gB = await h.request("GET", `/v1/reservations/${resB}/payments`, { headers: planner.headers });
+  assert.equal(gB.body.items[0].estado, "fallido");
+  const pB2 = await h.request("POST", `/v1/reservations/${resB}/payments`, { headers: planner.headers, body: {} });
+  assert.equal(pB2.status, 202);
+  assert.notEqual(pB2.body.checkout_url, pB1.body.checkout_url);
+  const refB2 = pB2.body.checkout_url.split("/").pop();
+
+  // 7) Esta vez solo llega el webhook (la planner cerró la pestaña): confirma igual.
+  psp.completeCheckout(refB2);
+  const rawB = JSON.stringify({
+    id: "evt_checkout_2",
+    type: "checkout.session.completed",
+    data: { object: { id: refB2, payment_status: "paid", amount_total: 70000, currency: "mxn", payment_intent: "pi_456", metadata: { idempotency_key: `pay:${resB}` } } },
+  });
+  const whB = await h.request("POST", "/v1/webhooks/psp", { headers: { "stripe-signature": stripeSign(rawB), "content-type": "application/json" }, rawBody: rawB });
+  assert.equal(whB.body.estado, "confirmado");
+  const gB2 = await h.request("GET", `/v1/reservations/${resB}/payments`, { headers: planner.headers });
+  ledgerOk(gB2.body.items[0]);
 });

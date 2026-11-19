@@ -57,6 +57,9 @@ jobs:
       TF_VAR_custom_domain: ${{ vars.CUSTOM_DOMAIN }}
       TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
       TF_VAR_alarm_email: ${{ vars.ALARM_EMAIL }}
+      # Secrets del environment de GitHub (vacíos = pagos con el PSP simulado).
+      TF_VAR_stripe_secret_key: ${{ secrets.STRIPE_SECRET_KEY }}
+      TF_VAR_stripe_webhook_secret: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
     steps:
       - uses: actions/checkout@v4
 

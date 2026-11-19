@@ -1,5 +1,8 @@
 # Pago a proveedores con Stripe
 
+> **Estado:** el backend ya lo implementa (Stripe Checkout, webhook firmado, conciliación y
+> reembolsos). Configuración y detalles en [`back/README.md` → Pagos con Stripe](../back/README.md#pagos-con-stripe).
+
 El front ya tiene el flujo completo en **Personal y pagos**: la planner pulsa **Pagar**, ve el resumen
 (proveedor, servicio, evento, total) y confirma.
 

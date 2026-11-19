@@ -251,6 +251,36 @@ export function verifySessionJwt(token, secret, nowMs = Date.now()) {
   return payload;
 }
 
+/**
+ * Verifica la cabecera `Stripe-Signature` (`t=<unix>,v1=<hex>[,v1=…]`): HMAC-SHA256 de
+ * `${t}.${body}` con el secreto `whsec_…` del endpoint, con tolerancia contra repetición.
+ * https://docs.stripe.com/webhooks#verify-manually
+ */
+export function verifyStripeSignature(rawBody, header, secret, { toleranceSec = 300, nowMs = Date.now() } = {}) {
+  if (typeof header !== "string" || !header || !secret) return false;
+  let t = null;
+  const v1 = [];
+  for (const part of header.split(",")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim();
+    const v = part.slice(i + 1).trim();
+    if (k === "t") t = v;
+    else if (k === "v1") v1.push(v);
+  }
+  if (!t || !/^\d+$/.test(t) || v1.length === 0) return false;
+  if (Math.abs(Math.floor(nowMs / 1000) - Number(t)) > toleranceSec) return false;
+  const bodyBuf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody), "utf8");
+  const expected = Buffer.from(
+    createHmac("sha256", String(secret)).update(`${t}.`).update(bodyBuf).digest("hex"),
+    "utf8"
+  );
+  return v1.some((sig) => {
+    const got = Buffer.from(sig, "utf8");
+    return got.length === expected.length && timingSafeEqual(got, expected);
+  });
+}
+
 export function signWebhookHmac(rawBody, secret) {
   const bodyBuf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody), "utf8");
   return createHmac("sha256", String(secret)).update(bodyBuf).digest("hex");

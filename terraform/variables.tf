@@ -159,6 +159,20 @@ variable "waf_rate_limit_per_5min" {
   default     = 3000
 }
 
+variable "stripe_secret_key" {
+  description = "Llave secreta de Stripe (sk_test_… en lab, sk_live_… en prod). Vacía = PSP simulado. Viene del secret STRIPE_SECRET_KEY del environment de GitHub."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "stripe_webhook_secret" {
+  description = "Secreto de firma (whsec_…) del endpoint de webhook en Stripe que apunta a /v1/webhooks/psp. Vacío = solo se concilia consultando a Stripe."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "alarm_email" {
   description = "Email que recibe las alarmas de CloudWatch (vacío = solo se publican en el tópico SNS de alarmas)."
   type        = string
