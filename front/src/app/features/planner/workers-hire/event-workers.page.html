@@ -137,7 +137,9 @@
                   {{ label(r.rol) }} · {{ r.plazas }} {{ r.plazas === 1 ? 'persona' : 'personas' }}
                 </span>
               </div>
-              @if (pagado) {
+              @if (pay?.reembolsado) {
+                <span class="oq-badge">Reembolsado</span>
+              } @else if (pagado) {
                 <span class="oq-badge oq-badge-success">Pagado</span>
               } @else {
                 <span class="oq-badge" [class.oq-badge-info]="r.estado === 'aceptada'">

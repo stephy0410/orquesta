@@ -421,6 +421,10 @@ export interface PaymentDto {
   ledger_tx_id?: string;
   intentos?: number;
   reverso_de?: string | null;
+  /** El cobro se devolvió a la planner (cancelación de una reserva ya pagada). */
+  reembolsado?: boolean;
+  /** Stripe Checkout: página a la que se manda a la planner para pagar. */
+  checkout_url?: string;
 }
 
 export interface PublicEventSummary {

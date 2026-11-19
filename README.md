@@ -372,6 +372,7 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 | Índice único `payment_entry(pago_id) WHERE movimiento='cobro'` impedía la 2.ª línea del asiento doble | **Ningún pago podía registrarse** | Migración `003`: unicidad `(pago_id, movimiento, cuenta)` |
 | Columnas OUT de `aceptar_worker_reservation` ambiguas con las de la tabla | **Ningún proveedor podía aceptar** una solicitud | Migración `002`: `#variable_conflict use_column` |
 | 5 pagos concurrentes asentaban el ledger en paralelo | Error 500 / riesgo de doble asiento | Asiento único bajo `FOR UPDATE` (`_postCobroLedger`) |
+| En PostgreSQL, la cancelación **del proveedor** no recibía el PSP | Se asentaba el reverso pero **nunca se devolvía el dinero** a la planner | `cancelWorkerReservationByWorker` pasa el PSP y el reloj; prueba de reembolso único en ambos stores |
 | Lecturas con otra conexión antes del `COMMIT` (`createWorkerProfile`, import, requerimientos) | Respuestas `null` → 500 | Lectura después del commit |
 | `RETURNING DISTINCT` (SQL inválido) en el barrido `indeterminado` | El `outbox-poller` fallaba completo cada minuto | CTE + `GROUP BY` |
 | Veredicto de check-in tomado tal cual del cliente | Un cliente podía persistir un veredicto arbitrario | El servidor solo acepta admisiones condicionales conocidas |
@@ -541,6 +542,7 @@ Cada requisito transversal del README contra lo que lo cumple. **Lo único pendi
 | PITR 7 días, RPO ≤ 5 min, RTO < 1 h | `backup_retention_period = 7` en `prod`; Aurora PITR | `database.tf` |
 | Alarmas de p99, 5xx y colas atascadas en < 5 min | API 5xx, latencia p99, errores por Lambda, edad del mensaje más viejo por cola, DLQ, frescura, PSP; todas notifican a SNS (+ email) | `observability.tf` |
 | Aislamiento de fallas | Colas independientes por canal; PSP y notificaciones nunca bloquean check-in ni contratación | `notify-*`, `payment-reconciliation.js` |
+| Pagos reales sin tocar tarjetas | Stripe Checkout hospedado (PCI SAQ A) con el diseño de Orquesta; webhook con firma `Stripe-Signature`; reembolso automático si se cancela una reserva pagada | `StripePspAdapter`, `routes/payments.js` |
 | Congelamiento de despliegues en sábado | El workflow rechaza `apply` a `prod` en sábado | `deploy.yml` |
 | Accesibilidad WCAG 2.2 AA y LCP < 2.5 s | Auditoría axe + recorrido con teclado; LCP p75 2.35 s | PRs #14 y #15 (front) |
 

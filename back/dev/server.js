@@ -13,7 +13,8 @@
  * Uso:
  *   npm run db:up && npm run dev          # PostgreSQL local (docker compose, puerto 55432)
  *   npm run dev -- --memory               # sin Docker: datos en memoria (se pierden al salir)
- * Variables: PORT (3000), FRONT_ORIGIN (http://localhost:4200), PUBLIC_BASE_URL (http://localhost:4200).
+ * Variables: PORT (3000), FRONT_ORIGIN (http://localhost:4200), PUBLIC_BASE_URL (http://localhost:4200),
+ *   STRIPE_SECRET_KEY (opcional, en back/.env: pagos con Stripe Checkout en modo prueba).
  */
 import http from "node:http";
 import { parseArgs } from "node:util";
@@ -23,6 +24,12 @@ const PORT = Number(process.env.PORT || 3000);
 const FRONT_ORIGIN = process.env.FRONT_ORIGIN || "http://localhost:4200";
 process.env.PUBLIC_BASE_URL ||= FRONT_ORIGIN;
 process.env.ORQUESTA_SILENT_EMF ||= "1";
+// Llaves locales (p. ej. STRIPE_SECRET_KEY) en back/.env, que está en .gitignore.
+try {
+  process.loadEnvFile(new URL("../.env", import.meta.url));
+} catch {
+  // sin .env: pagos con el PSP simulado
+}
 
 const { createAppContext, flushOutboxNow } = await import("../src/shared/context.js");
 const { createApiHandler } = await import("../src/lambdas/api/index.js");
@@ -165,5 +172,11 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`\nOrquesta API local en http://localhost:${PORT}  ·  datos: ${label}`);
   console.log(`Front: cd front && npx ng serve  →  ${FRONT_ORIGIN}`);
+  const psp = ctx.paymentProvider;
+  console.log(
+    psp?.mode
+      ? `Pagos: Stripe Checkout (modo ${psp.mode === "live" ? "PRODUCCIÓN, cobra dinero real" : "prueba"}).`
+      : "Pagos: PSP simulado (pon STRIPE_SECRET_KEY en back/.env para usar Stripe)."
+  );
   console.log("Los emails y SMS se imprimen aquí abajo (tokens, OTP y links de invitación).\n");
 });

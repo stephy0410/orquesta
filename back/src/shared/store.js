@@ -4874,7 +4874,7 @@ export class InMemoryStore {
     return txId;
   }
 
-  async processReservationPayment({ reservationId, eventId = null, paymentProvider, now = new Date() }) {
+  async processReservationPayment({ reservationId, eventId = null, paymentProvider, now = new Date(), checkout = null }) {
     const resCheck = this.workerReservations.get(reservationId);
     if (!resCheck || resCheck.deleted_at) {
       throw new AppError("NOT_FOUND", "Reserva no encontrada");
@@ -4908,6 +4908,7 @@ export class InMemoryStore {
           moneda,
           estado_psp: "pendiente",
           psp_charge_id: null,
+          psp_checkout_id: null,
           cobrado_en: null,
           created_at: nowIso,
           updated_at: nowIso,
@@ -4932,33 +4933,60 @@ export class InMemoryStore {
         };
       }
 
-      // Si hubo resultado previo desconocido o pendiente, consultar primero al PSP por clave (TR-09, AC-09)
-      if (payment.estado_psp === "desconocido") {
-        const queried = await paymentProvider.queryByKey(payment.idempotency_key);
-        if (queried?.found && queried.status === "succeeded") {
-          payment.estado_psp = "confirmado";
-          payment.psp_charge_id = queried.psp_charge_id;
-          payment.cobrado_en = nowIso;
-          payment.updated_at = nowIso;
-          const txId = this._recordBalancedLedgerPair({
-            pagoId: payment.id,
-            movimiento: "cobro",
-            monto: payment.monto,
-            moneda: payment.moneda,
-            nowIso,
-          });
-          return {
-            statusCode: 201,
-            body: {
-              payment_id: payment.id,
-              estado: "confirmado",
-              monto: payment.monto,
-              moneda: payment.moneda,
-              idempotency_key: payment.idempotency_key,
-              ledger_tx_id: txId,
-            },
-          };
+      const body = (estado, extra = {}) => ({
+        payment_id: payment.id,
+        estado,
+        monto: payment.monto,
+        moneda: payment.moneda,
+        idempotency_key: payment.idempotency_key,
+        ...extra,
+      });
+      const confirm = (pspChargeId) => {
+        payment.estado_psp = "confirmado";
+        payment.psp_charge_id = pspChargeId;
+        payment.cobrado_en = nowIso;
+        payment.updated_at = nowIso;
+        const txId = this._recordBalancedLedgerPair({
+          pagoId: payment.id,
+          movimiento: "cobro",
+          monto: payment.monto,
+          moneda: payment.moneda,
+          nowIso,
+        });
+        return { statusCode: 201, body: body("confirmado", { ledger_tx_id: txId }) };
+      };
+      const markFailed = () => {
+        payment.estado_psp = "fallido";
+        payment.updated_at = nowIso;
+        return { statusCode: 200, body: body("fallido") };
+      };
+      // Checkout hospedado (Stripe): el cobro lo completa la planner fuera de Orquesta.
+      const needsAction = Boolean(paymentProvider.requiresCustomerAction);
+      const ageMs = new Date(now).getTime() - new Date(payment.created_at).getTime();
+
+      // Si hubo resultado previo desconocido o hay un checkout abierto, consultar primero al PSP (TR-09, AC-09)
+      if (payment.estado_psp === "desconocido" || payment.psp_checkout_id) {
+        let queried = null;
+        try {
+          queried = await paymentProvider.queryByKey(payment.idempotency_key, { reference: payment.psp_checkout_id || null });
+        } catch {
+          // continuar al flujo normal de charge/desconocido
         }
+        if (queried?.found && queried.status === "succeeded") return confirm(queried.psp_charge_id);
+        if (queried?.status === "open" && queried.checkout_url) {
+          // Doble clic o regreso con "atrás": la misma sesión, nunca una segunda abierta.
+          return { statusCode: 202, body: body("pendiente", { checkout_url: queried.checkout_url }) };
+        }
+        if (needsAction && !checkout && (queried?.status === "expired" || queried?.status === "not_found") && ageMs >= 60_000) {
+          // La sesión caducó sin pago (o nunca llegó a la planner): libera el pago para reintentar.
+          return markFailed();
+        }
+      }
+
+      if (needsAction && !checkout) {
+        // Solo sincronizar (GET o conciliación): sin URLs de regreso no se abre un checkout nuevo.
+        if (payment.estado_psp === "pendiente" && !payment.psp_checkout_id && ageMs >= 60_000) return markFailed();
+        return { statusCode: 202, body: body(payment.estado_psp) };
       }
 
       // Llamar al PSP reutilizando siempre la misma idempotencyKey
@@ -4968,38 +4996,37 @@ export class InMemoryStore {
           idempotencyKey: payment.idempotency_key,
           amount: payment.monto,
           currency: payment.moneda,
-          metadata: { reservation_id: res.id, event_id: res.event_id },
+          metadata: { reservation_id: res.id, event_id: res.event_id, payment_id: payment.id },
+          successUrl: checkout?.successUrl,
+          cancelUrl: checkout?.cancelUrl,
+          description: checkout?.description,
+          previousReference: payment.psp_checkout_id || null,
         });
       } catch (err) {
+        if (err?.status >= 400 && err?.status < 500 && !err.isTimeout) {
+          // Rechazo definitivo de la petición (p. ej. monto bajo el mínimo): no hubo cobro.
+          markFailed();
+          if (this.metrics) this.metrics.pspError("charge_rejected");
+          throw new AppError("PSP_ERROR", "El procesador de pagos rechazó el cobro. Intenta de nuevo o contacta a soporte.");
+        }
         payment.estado_psp = "desconocido";
         payment.updated_at = nowIso;
         if (this.metrics) this.metrics.pspError(err.isTimeout ? "timeout" : "charge_exception");
-        return {
-          statusCode: 202,
-          body: {
-            payment_id: payment.id,
-            estado: "desconocido",
-            monto: payment.monto,
-            moneda: payment.moneda,
-            idempotency_key: payment.idempotency_key,
-          },
-        };
+        return { statusCode: 202, body: body("desconocido") };
+      }
+
+      if (pspRes?.status === "requires_action" && pspRes.checkout_url) {
+        payment.estado_psp = "pendiente";
+        payment.psp_checkout_id = pspRes.reference;
+        payment.updated_at = nowIso;
+        return { statusCode: 202, body: body("pendiente", { checkout_url: pspRes.checkout_url }) };
       }
 
       if (!pspRes || pspRes.status === "unknown" || pspRes.status === "pending") {
         payment.estado_psp = "desconocido";
         payment.updated_at = nowIso;
         if (this.metrics) this.metrics.pspError("unknown_status");
-        return {
-          statusCode: 202,
-          body: {
-            payment_id: payment.id,
-            estado: "desconocido",
-            monto: payment.monto,
-            moneda: payment.moneda,
-            idempotency_key: payment.idempotency_key,
-          },
-        };
+        return { statusCode: 202, body: body("desconocido") };
       }
 
       if (pspRes.status === "succeeded") {
@@ -5095,6 +5122,7 @@ export class InMemoryStore {
           moneda: payment.moneda,
           idempotency_key: payment.idempotency_key,
           cobrado_en: payment.cobrado_en,
+          reembolsado: entries.some((e) => e.movimiento === "reverso"),
           ledger_entries: entries.map((e) => ({
             id: e.id,
             transaccion_id: e.transaccion_id,

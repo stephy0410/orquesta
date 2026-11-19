@@ -2116,23 +2116,42 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
     return { reservation_id: reservationId, estado: "rechazada", devuelve_a_busqueda: true };
   };
 
-  proto.cancelWorkerReservationByWorker = async function ({ userId, reservationId, motivo = "Cancelación" }) {
+  /**
+   * El proveedor cancela una reserva aceptada. Si ya estaba pagada se reembolsa a la planner en el
+   * PSP (llave `refund:<pay:reserva>`, sin doble reembolso) y se asienta el reverso en el ledger.
+   */
+  proto.cancelWorkerReservationByWorker = async function ({
+    userId,
+    reservationId,
+    motivo = "Cancelación",
+    paymentProvider = null,
+    now = new Date(),
+  }) {
     const wp = await this.getWorkerProfileByUserId(userId);
     if (!wp) throw new AppError("NOT_FOUND", "Perfil no encontrado");
-    const rRes = await this.pool.query(`SELECT event_id FROM worker_reservation WHERE id = $1 AND worker_id = $2`, [
-      reservationId,
-      wp.worker_id,
-    ]);
+    const rRes = await this.pool.query(
+      `SELECT event_id, estado FROM worker_reservation WHERE id = $1 AND worker_id = $2 AND deleted_at IS NULL`,
+      [reservationId, wp.worker_id]
+    );
     if (rRes.rowCount === 0) throw new AppError("NOT_FOUND", "Reserva no encontrada");
+    const { estado } = rRes.rows[0];
+    if (estado === "cancelada" || estado === "cancelada_pagada") {
+      return { reservation_id: reservationId, estado, alerta_planner: "emitida" };
+    }
+    if (estado !== "aceptada") {
+      throw new AppError("RESERVATION_NOT_ACCEPTED", "Solo se puede cancelar una reserva aceptada");
+    }
     const out = await this.cancelEventReservation({
       eventId: rRes.rows[0].event_id,
       reservationId,
       actorId: userId,
       motivo,
+      paymentProvider,
+      now,
     });
     await this.pool.query(
-      `INSERT INTO planner_alert (id, event_id, reservation_id, tipo, detalle) VALUES ($1,$2,$3,'reserva_cancelada_en_vivo',$4::jsonb)`,
-      [ulid(), rRes.rows[0].event_id, reservationId, JSON.stringify({ worker_id: wp.worker_id })]
+      `INSERT INTO planner_alert (id, event_id, reservation_id, tipo, detalle, created_at) VALUES ($1,$2,$3,'reserva_cancelada_en_vivo',$4::jsonb,$5)`,
+      [ulid(), rRes.rows[0].event_id, reservationId, JSON.stringify({ worker_id: wp.worker_id }), toIso(now)]
     );
     return { reservation_id: reservationId, estado: out.estado, alerta_planner: "emitida" };
   };
@@ -2699,6 +2718,7 @@ export function attachPgStoreMethods(PgStoreClass, withTx) {
           moneda: p.moneda,
           idempotency_key: p.idempotency_key,
           cobrado_en: toIso(p.cobrado_en),
+          reembolsado: eRes.rows.some((e) => e.movimiento === "reverso"),
           // DTO explícito: `numeric` llega de pg como string y no debe filtrarse al contrato.
           ledger_entries: eRes.rows.map((e) => ({
             id: e.id,

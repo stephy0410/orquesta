@@ -17,7 +17,8 @@
     "load:checkin": "node load/checkin-load.js",
     "load:import": "node load/import-load.js",
     "dev": "node dev/server.js",
-    "seed": "node dev/seed.js"
+    "seed": "node dev/seed.js",
+    "stripe:logo": "node dev/stripe-logo.js"
   },
   "dependencies": {
     "pg": "^8.13.1",

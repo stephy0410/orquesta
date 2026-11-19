@@ -1516,7 +1516,12 @@ export class PgStore {
     };
   }
 
-  async processReservationPayment({ reservationId, eventId = null, paymentProvider, now = new Date() }) {
+  /**
+   * Cobra una reserva aceptada (FR6, TR-09). `checkout` = `{ successUrl, cancelUrl, description }`
+   * cuando la planner inicia el pago; sin él (GET de estado, conciliación) solo se sincroniza con el
+   * PSP y nunca se abre un checkout nuevo.
+   */
+  async processReservationPayment({ reservationId, eventId = null, paymentProvider, now = new Date(), checkout = null }) {
     const pre = await withTx(this.pool, async (client) => {
       const rRes = await client.query(`SELECT * FROM worker_reservation WHERE id = $1 FOR UPDATE`, [reservationId]);
       if (rRes.rowCount === 0) throw new AppError("NOT_FOUND", "Reserva no encontrada");
@@ -1566,15 +1571,46 @@ export class PgStore {
       };
     }
 
-    if (payment.estado_psp === "desconocido") {
+    const body = (estado, extra = {}) => ({
+      payment_id: payment.id,
+      estado,
+      monto: Number(payment.monto),
+      moneda: payment.moneda,
+      idempotency_key: payment.idempotency_key,
+      ...extra,
+    });
+    // Checkout hospedado (Stripe): el cobro lo completa la planner fuera de Orquesta.
+    const needsAction = Boolean(paymentProvider.requiresCustomerAction);
+    const ageMs = new Date(now).getTime() - new Date(payment.created_at).getTime();
+
+    if (payment.estado_psp === "desconocido" || payment.psp_checkout_id) {
+      let q = null;
       try {
-        const q = await paymentProvider.queryByKey(payment.idempotency_key);
-        if (q?.found && q.status === "succeeded") {
-          return this._confirmPaymentCharge({ paymentId: payment.id, pspChargeId: q.psp_charge_id, nowIso });
-        }
+        q = await paymentProvider.queryByKey(payment.idempotency_key, { reference: payment.psp_checkout_id || null });
       } catch {
         // continuar al flujo normal de charge/desconocido
       }
+      if (q?.found && q.status === "succeeded") {
+        return this._confirmPaymentCharge({ paymentId: payment.id, pspChargeId: q.psp_charge_id, nowIso });
+      }
+      if (q?.status === "open" && q.checkout_url) {
+        // Doble clic o regreso con "atrás": la misma sesión, nunca una segunda abierta.
+        return { statusCode: 202, body: body("pendiente", { checkout_url: q.checkout_url }) };
+      }
+      if (needsAction && !checkout && (q?.status === "expired" || q?.status === "not_found") && ageMs >= 60_000) {
+        // La sesión caducó sin pago (o nunca llegó a la planner): libera el pago para reintentar.
+        await this.pool.query(`UPDATE payment SET estado_psp = 'fallido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
+        return { statusCode: 200, body: body("fallido") };
+      }
+    }
+
+    if (needsAction && !checkout) {
+      // Solo sincronizar (GET o conciliación): sin URLs de regreso no se abre un checkout nuevo.
+      if (payment.estado_psp === "pendiente" && !payment.psp_checkout_id && ageMs >= 60_000) {
+        await this.pool.query(`UPDATE payment SET estado_psp = 'fallido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
+        return { statusCode: 200, body: body("fallido") };
+      }
+      return { statusCode: 202, body: body(payment.estado_psp) };
     }
 
     let pspRes;
@@ -1583,36 +1619,36 @@ export class PgStore {
         idempotencyKey: payment.idempotency_key,
         amount: Number(payment.monto),
         currency: payment.moneda,
-        metadata: { reservation_id: res.id, event_id: res.event_id },
+        metadata: { reservation_id: res.id, event_id: res.event_id, payment_id: payment.id },
+        successUrl: checkout?.successUrl,
+        cancelUrl: checkout?.cancelUrl,
+        description: checkout?.description,
+        previousReference: payment.psp_checkout_id || null,
       });
     } catch (err) {
+      if (err?.status >= 400 && err?.status < 500 && !err.isTimeout) {
+        // Rechazo definitivo de la petición (p. ej. monto bajo el mínimo): no hubo cobro.
+        await this.pool.query(`UPDATE payment SET estado_psp = 'fallido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
+        if (this.metrics) this.metrics.pspError("charge_rejected");
+        throw new AppError("PSP_ERROR", "El procesador de pagos rechazó el cobro. Intenta de nuevo o contacta a soporte.");
+      }
       await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
       if (this.metrics) this.metrics.pspError(err?.isTimeout ? "timeout" : "charge_exception");
-      return {
-        statusCode: 202,
-        body: {
-          payment_id: payment.id,
-          estado: "desconocido",
-          monto: Number(payment.monto),
-          moneda: payment.moneda,
-          idempotency_key: payment.idempotency_key,
-        },
-      };
+      return { statusCode: 202, body: body("desconocido") };
+    }
+
+    if (pspRes?.status === "requires_action" && pspRes.checkout_url) {
+      await this.pool.query(
+        `UPDATE payment SET estado_psp = 'pendiente', psp_checkout_id = $2 WHERE id = $1 AND cobrado_en IS NULL`,
+        [payment.id, pspRes.reference]
+      );
+      return { statusCode: 202, body: body("pendiente", { checkout_url: pspRes.checkout_url }) };
     }
 
     if (!pspRes || pspRes.status === "unknown" || pspRes.status === "pending") {
       await this.pool.query(`UPDATE payment SET estado_psp = 'desconocido' WHERE id = $1 AND cobrado_en IS NULL`, [payment.id]);
       if (this.metrics) this.metrics.pspError("unknown_status");
-      return {
-        statusCode: 202,
-        body: {
-          payment_id: payment.id,
-          estado: "desconocido",
-          monto: Number(payment.monto),
-          moneda: payment.moneda,
-          idempotency_key: payment.idempotency_key,
-        },
-      };
+      return { statusCode: 202, body: body("desconocido") };
     }
 
     if (pspRes.status === "succeeded") {
