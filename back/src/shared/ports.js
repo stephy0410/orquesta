@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import {
   derEcdsaToP1363,
   generateEs256KeyPair,
@@ -8,13 +9,25 @@ import {
 } from "./crypto.js";
 import { ulid } from "./ulid.js";
 
+function isCaptureConsoleEnabled() {
+  return Boolean(
+    (process.env.AWS_LAMBDA_FUNCTION_NAME && process.env.ENVIRONMENT !== "prod") ||
+      process.env.CAPTURE_LOG === "true"
+  );
+}
+
 // ============================================================================
 // SmsProvider (CaptureSmsAdapter / SnsSmsAdapter)
 // ============================================================================
 export class CaptureSmsAdapter {
-  constructor() {
+  constructor({
+    logToConsole = isCaptureConsoleEnabled(),
+    retainCaptured = !process.env.AWS_LAMBDA_FUNCTION_NAME,
+  } = {}) {
     this.captured = [];
     this.failRules = new Map(); // to -> remaining failures or fn
+    this.logToConsole = logToConsole;
+    this.retainCaptured = retainCaptured;
   }
 
   setFailCount(phone, count) {
@@ -37,7 +50,22 @@ export class CaptureSmsAdapter {
       metadata,
       sent_at: new Date().toISOString(),
     };
-    this.captured.push(entry);
+    if (this.retainCaptured) {
+      this.captured.push(entry);
+    }
+    if (this.logToConsole) {
+      console.log(
+        JSON.stringify({
+          level: "info",
+          component: "capture_sms",
+          provider_message_id: entry.provider_message_id,
+          to: entry.to,
+          message: entry.message,
+          metadata: entry.metadata,
+          sent_at: entry.sent_at,
+        })
+      );
+    }
     return { provider_message_id: entry.provider_message_id, status: "sent" };
   }
 }
@@ -76,9 +104,14 @@ export class SnsSmsAdapter {
 // EmailProvider (CaptureEmailAdapter / SesEmailAdapter)
 // ============================================================================
 export class CaptureEmailAdapter {
-  constructor() {
+  constructor({
+    logToConsole = isCaptureConsoleEnabled(),
+    retainCaptured = !process.env.AWS_LAMBDA_FUNCTION_NAME,
+  } = {}) {
     this.captured = [];
     this.failRules = new Map();
+    this.logToConsole = logToConsole;
+    this.retainCaptured = retainCaptured;
   }
 
   setFailCount(email, count) {
@@ -105,32 +138,175 @@ export class CaptureEmailAdapter {
       metadata,
       sent_at: new Date().toISOString(),
     };
-    this.captured.push(entry);
+    if (this.retainCaptured) {
+      this.captured.push(entry);
+    }
+    if (this.logToConsole) {
+      console.log(
+        JSON.stringify({
+          level: "info",
+          component: "capture_email",
+          provider_message_id: entry.provider_message_id,
+          to: entry.to,
+          subject: entry.subject,
+          attachments_count: Array.isArray(attachments) ? attachments.length : 0,
+          metadata: entry.metadata,
+          sent_at: entry.sent_at,
+        })
+      );
+    }
     return { provider_message_id: entry.provider_message_id, status: "sent" };
   }
+}
+
+function wrapBase64(b64) {
+  return b64.replace(/.{1,76}/g, "$&\r\n").replace(/\r\n$/, "");
+}
+
+function sanitizeHeaderValue(value) {
+  return String(value ?? "").replace(/[\r\n]+/g, " ").trim();
+}
+
+function encodeRfc2047Utf8(value) {
+  const clean = sanitizeHeaderValue(value);
+  return `=?UTF-8?B?${Buffer.from(clean, "utf8").toString("base64")}?=`;
+}
+
+function toBase64Body(content) {
+  if (Buffer.isBuffer(content)) return wrapBase64(content.toString("base64"));
+  if (content instanceof Uint8Array) return wrapBase64(Buffer.from(content).toString("base64"));
+  return wrapBase64(String(content ?? "").replace(/\s+/g, ""));
+}
+
+/**
+ * Construye un correo MIME con cuerpo alternativo (texto/HTML), imágenes inline (cid:)
+ * y adjuntos binarios descargables (p. ej. `qr.png` offline).
+ */
+export function buildRawMimeEmail({ from, to, subject, html, text, attachments = [] }) {
+  const token = randomBytes(8).toString("hex");
+  const mixedBoundary = `orquesta_mix_${token}`;
+  const relatedBoundary = `orquesta_rel_${token}`;
+  const altBoundary = `orquesta_alt_${token}`;
+
+  const binaryAttachments = (attachments || []).filter((a) => a && a.content);
+  const inlineAttachments = binaryAttachments.filter((a) => a.contentId);
+
+  const lines = [
+    `From: ${sanitizeHeaderValue(from)}`,
+    `To: ${sanitizeHeaderValue(to)}`,
+    `Subject: ${encodeRfc2047Utf8(subject || "")}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+    "",
+    `--${mixedBoundary}`,
+    `Content-Type: multipart/related; boundary="${relatedBoundary}"`,
+    "",
+    `--${relatedBoundary}`,
+    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+    "",
+    `--${altBoundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(String(text || ""), "utf8").toString("base64")),
+    "",
+    `--${altBoundary}`,
+    'Content-Type: text/html; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(String(html || text || ""), "utf8").toString("base64")),
+    "",
+    `--${altBoundary}--`,
+  ];
+
+  for (const att of inlineAttachments) {
+    const filename = sanitizeHeaderValue(att.filename || "attachment.bin").replace(/"/g, "");
+    const contentType = sanitizeHeaderValue(att.contentType || "application/octet-stream");
+    const cid = sanitizeHeaderValue(att.contentId).replace(/[<>]/g, "");
+    lines.push(
+      `--${relatedBoundary}`,
+      `Content-Type: ${contentType}; name="${filename}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: inline; filename="${filename}"`,
+      `Content-ID: <${cid}>`,
+      "",
+      toBase64Body(att.content),
+      ""
+    );
+  }
+
+  lines.push(`--${relatedBoundary}--`, "");
+
+  for (const att of binaryAttachments) {
+    const filename = sanitizeHeaderValue(att.filename || "attachment.bin").replace(/"/g, "");
+    const contentType = sanitizeHeaderValue(att.contentType || "application/octet-stream");
+    lines.push(
+      `--${mixedBoundary}`,
+      `Content-Type: ${contentType}; name="${filename}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${filename}"`,
+      "",
+      toBase64Body(att.content),
+      ""
+    );
+  }
+
+  lines.push(`--${mixedBoundary}--`, "");
+  return lines.join("\r\n");
 }
 
 export class SesEmailAdapter {
   constructor({
     region = process.env.AWS_REGION || "us-east-1",
     fromEmail = process.env.EMAIL_FROM || "no-reply@orquesta.local",
+    client = null,
+    sesSdk = null,
   } = {}) {
     this.region = region;
     this.fromEmail = fromEmail;
-    this.client = null;
+    this.client = client;
+    this.sesSdk = sesSdk;
+  }
+
+  async _getSdk() {
+    if (!this.sesSdk) {
+      this.sesSdk = await import("@aws-sdk/client-ses");
+    }
+    return this.sesSdk;
   }
 
   async _getClient() {
     if (!this.client) {
-      const { SESClient } = await import("@aws-sdk/client-ses");
+      const { SESClient } = await this._getSdk();
       this.client = new SESClient({ region: this.region });
     }
     return this.client;
   }
 
-  async send({ to, subject, html, text }) {
-    const { SendEmailCommand } = await import("@aws-sdk/client-ses");
+  async send({ to, subject, html, text, attachments = [] }) {
+    const { SendEmailCommand, SendRawEmailCommand } = await this._getSdk();
     const client = await this._getClient();
+    const binaryAttachments = (attachments || []).filter((a) => a && a.content);
+
+    if (binaryAttachments.length > 0) {
+      const raw = buildRawMimeEmail({
+        from: this.fromEmail,
+        to,
+        subject,
+        html,
+        text,
+        attachments: binaryAttachments,
+      });
+      const res = await client.send(
+        new SendRawEmailCommand({
+          Source: this.fromEmail,
+          Destinations: [to],
+          RawMessage: { Data: Buffer.from(raw, "utf8") },
+        })
+      );
+      return { provider_message_id: res.MessageId, status: "sent" };
+    }
+
     const res = await client.send(
       new SendEmailCommand({
         Source: this.fromEmail,
@@ -690,16 +866,29 @@ export class LocalQrSigner {
 }
 
 export class KmsQrSigner {
-  constructor({ keyId, region = process.env.AWS_REGION || "us-east-1" }) {
+  constructor({
+    keyId,
+    region = process.env.AWS_REGION || "us-east-1",
+    client = null,
+    kmsSdk = null,
+  }) {
     this.activeKeyId = keyId;
     this.region = region;
-    this.client = null;
+    this.client = client;
+    this.kmsSdk = kmsSdk;
     this.cachedPublicKeyPem = null;
+  }
+
+  async _getSdk() {
+    if (!this.kmsSdk) {
+      this.kmsSdk = await import("@aws-sdk/client-kms");
+    }
+    return this.kmsSdk;
   }
 
   async _getClient() {
     if (!this.client) {
-      const { KMSClient } = await import("@aws-sdk/client-kms");
+      const { KMSClient } = await this._getSdk();
       this.client = new KMSClient({ region: this.region });
     }
     return this.client;
@@ -707,7 +896,7 @@ export class KmsQrSigner {
 
   async getPublicKey() {
     if (!this.cachedPublicKeyPem) {
-      const { GetPublicKeyCommand } = await import("@aws-sdk/client-kms");
+      const { GetPublicKeyCommand } = await this._getSdk();
       const client = await this._getClient();
       const res = await client.send(new GetPublicKeyCommand({ KeyId: this.activeKeyId }));
       const b64 = Buffer.from(res.PublicKey).toString("base64");
@@ -718,14 +907,17 @@ export class KmsQrSigner {
   }
 
   async signBytes(bytes) {
-    const { SignCommand } = await import("@aws-sdk/client-kms");
+    const { SignCommand } = await this._getSdk();
     const client = await this._getClient();
     const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes), "utf8");
+    // KMS MessageType "RAW" rechaza mensajes > 4096 bytes (p. ej. rosters con >= 25 invitados).
+    // Con SHA-256 + MessageType "DIGEST" la firma ECDSA_SHA_256 es idéntica y soporta cualquier tamaño.
+    const digest = createHash("sha256").update(buf).digest();
     const res = await client.send(
       new SignCommand({
         KeyId: this.activeKeyId,
-        Message: buf,
-        MessageType: "RAW",
+        Message: digest,
+        MessageType: "DIGEST",
         SigningAlgorithm: "ECDSA_SHA_256",
       })
     );

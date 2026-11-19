@@ -15,9 +15,10 @@ locals {
     DB_HOST                  = local.db_endpoint
     DB_PORT                  = tostring(local.db_port)
     DB_NAME                  = var.db_name
+    DB_POOL_MAX              = tostring(local.db_pool_max)
     SECRETS_ARN              = aws_secretsmanager_secret.app_secrets.arn
-    ASSETS_BUCKET            = aws_s3_bucket.assets.id
-    IMPORTS_BUCKET           = aws_s3_bucket.imports.id
+    ASSETS_BUCKET            = local.assets_bucket_name
+    IMPORTS_BUCKET           = local.imports_bucket_name
     KMS_SIGNER_KEY_ID        = var.enable_kms_signer ? aws_kms_key.qr_signer[0].key_id : ""
     CANALES_ACTIVOS          = join(",", var.canales_activos)
     EMAIL_PROVIDER_MODE      = var.email_provider_mode
@@ -43,13 +44,15 @@ resource "aws_lambda_function" "api" {
   timeout          = 29
   # Más memoria = más CPU en Lambda: login (hash de contraseña) y arranque en frío más rápidos,
   # así cada ejecución dura menos y la misma concurrencia atiende más peticiones en el pico.
-  memory_size = var.api_memory_mb
+  memory_size                    = var.api_memory_mb
+  reserved_concurrent_executions = var.api_reserved_concurrency
 
   depends_on = [
     aws_cloudwatch_log_group.lambdas,
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {
@@ -87,6 +90,7 @@ resource "aws_lambda_function" "import_worker" {
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {
@@ -134,6 +138,7 @@ resource "aws_lambda_function" "outbox_poller" {
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {
@@ -167,6 +172,7 @@ resource "aws_lambda_function" "projector" {
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {
@@ -215,6 +221,7 @@ resource "aws_lambda_function" "notify_sms" {
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {
@@ -262,6 +269,7 @@ resource "aws_lambda_function" "notify_email" {
     aws_secretsmanager_secret_version.app_secrets,
     aws_rds_cluster_instance.aurora_writer,
     aws_db_instance.postgres_lab,
+    aws_db_proxy_target.main,
   ]
 
   dynamic "vpc_config" {

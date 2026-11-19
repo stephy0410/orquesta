@@ -51,6 +51,28 @@ resource "aws_security_group" "lambda_sg" {
   }
 }
 
+resource "aws_security_group" "rds_proxy_sg" {
+  count       = var.enable_rds_proxy ? 1 : 0
+  name        = "${local.name_prefix}-rds-proxy-sg-${random_id.suffix.hex}"
+  description = "Security group para RDS Proxy entre Lambdas y PostgreSQL"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description     = "PostgreSQL desde Lambda SG hacia RDS Proxy"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 resource "aws_security_group" "db_sg" {
   name        = "${local.name_prefix}-db-sg-${random_id.suffix.hex}"
   description = "Security group para PostgreSQL (RDS / Aurora)"
@@ -62,6 +84,17 @@ resource "aws_security_group" "db_sg" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.lambda_sg.id]
+  }
+
+  dynamic "ingress" {
+    for_each = var.enable_rds_proxy ? [1] : []
+    content {
+      description     = "PostgreSQL desde RDS Proxy SG"
+      from_port       = 5432
+      to_port         = 5432
+      protocol        = "tcp"
+      security_groups = [aws_security_group.rds_proxy_sg[0].id]
+    }
   }
 
   dynamic "ingress" {

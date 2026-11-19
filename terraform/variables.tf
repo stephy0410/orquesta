@@ -195,7 +195,7 @@ variable "waf_rate_limit_per_5min" {
 }
 
 variable "stripe_secret_key" {
-  description = "Llave secreta de Stripe (sk_test_… en lab, sk_live_… en prod). Vacía = PSP simulado. Viene del secret STRIPE_SECRET_KEY del environment de GitHub."
+  description = "Llave secreta de Stripe (sk_test_… en lab, sk_live_… en prod). Vacía = PSP simulado. Pasar con TF_VAR_stripe_secret_key."
   type        = string
   default     = ""
   sensitive   = true
@@ -218,4 +218,28 @@ variable "aurora_reader_instances" {
   description = "Réplicas de lectura de Aurora en otras zonas para failover automático (prod >= 1; en lab no aplica)."
   type        = number
   default     = 1
+}
+
+variable "manage_s3_with_cli" {
+  description = "Crea/elimina los buckets S3 vía AWS CLI (terraform_data) para evitar s3:GetBucketObjectLockConfiguration en Learner Lab. Vacío = automático en lab con use_lab_role=true."
+  type        = bool
+  default     = null
+}
+
+variable "enable_rds_proxy" {
+  description = "Crea RDS Proxy entre las Lambdas y PostgreSQL para multiplexar conexiones a escala (issue #32, ~USD 20/mes). Requiere lambda_in_vpc = true."
+  type        = bool
+  default     = false
+}
+
+variable "db_pool_max" {
+  description = "Máximo de conexiones PostgreSQL por instancia Lambda (DB_POOL_MAX). Vacío = 2 con RDS Proxy, 5 sin proxy."
+  type        = number
+  default     = null
+}
+
+variable "api_reserved_concurrency" {
+  description = "Concurrencia reservada para la Lambda api (-1 = sin reserva; útil en producción o tras aumento de cuota para proteger el check-in)."
+  type        = number
+  default     = -1
 }

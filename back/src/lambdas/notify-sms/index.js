@@ -1,5 +1,6 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
 import { decryptPii } from "../../shared/crypto.js";
+import { redactPiiText } from "../../shared/errors.js";
 
 let defaultCtxPromise = null;
 async function getDefaultContext() {
@@ -70,7 +71,17 @@ export function createNotifySmsHandler(ctx) {
             success: true,
             now: ctx.now(),
           });
-        } catch {
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              component: "notify_sms",
+              delivery_id: msg.delivery_id,
+              event_type: dCtx.delivery.plantilla,
+              error_name: err?.name || err?.Code || "Error",
+              error: redactPiiText(err?.message || err),
+            })
+          );
           ctx.metrics.notifRetry("sms");
           const res = await ctx.store.markDeliveryResult({
             deliveryId: msg.delivery_id,
@@ -105,7 +116,17 @@ export function createNotifySmsHandler(ctx) {
                 ? `[Orquesta] URGENTE: solicitud de emergencia (${msg.rol || "staff"}). Responde en 15 min en tu consola de Orquesta.`
                 : `[Orquesta] Nueva solicitud de trabajo (${msg.rol || "staff"}). Revisa tu consola de Orquesta.`;
           await ctx.smsProvider.send({ to: msg.to, message: text, metadata: msg });
-        } catch {
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              component: "notify_sms",
+              delivery_id: null,
+              event_type: msg.event_type || null,
+              error_name: err?.name || err?.Code || "Error",
+              error: redactPiiText(err?.message || err),
+            })
+          );
           ctx.metrics.notifRetry("sms");
           if (messageId) batchItemFailures.push({ itemIdentifier: messageId });
         }

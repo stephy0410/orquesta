@@ -1,5 +1,7 @@
 import { createAppContext, flushOutboxNow } from "../../shared/context.js";
 import { decryptPii } from "../../shared/crypto.js";
+import { redactPiiText } from "../../shared/errors.js";
+import { renderQrPng } from "../../shared/qr-png.js";
 
 /** Escapa texto controlado por usuarios (nombres de invitado/evento del CSV) antes de meterlo en HTML. */
 function escapeHtml(value) {
@@ -52,11 +54,31 @@ export function createNotifyEmailHandler(ctx) {
           if (dCtx.event?.id) params.set("e", dCtx.event.id);
           rsvpUrl = `${baseUrl}/invitacion/#${params.toString()}`;
         }
-        const qrUrl = dCtx.invitation?.qr_s3_key
+        const isArrivalReminder = dCtx.delivery.plantilla === "recordatorio_llegada";
+        const qrUrl = !isArrivalReminder && dCtx.invitation?.qr_s3_key
           ? ctx.objectStorage.getPublicUrl({ key: dCtx.invitation.qr_s3_key })
           : "";
+        let qrPngBuffer = null;
+        if (!isArrivalReminder) {
+          if (dCtx.invitation?.qr_s3_key && ctx.objectStorage?.getObject) {
+            try {
+              const obj = await ctx.objectStorage.getObject({
+                bucket: ctx.assetsBucket,
+                key: dCtx.invitation.qr_s3_key,
+              });
+              if (obj?.body) {
+                qrPngBuffer = Buffer.isBuffer(obj.body) ? obj.body : Buffer.from(obj.body);
+              }
+            } catch {
+              qrPngBuffer = null;
+            }
+          }
+          if (!qrPngBuffer && dCtx.invitation?.qr_token_plano) {
+            qrPngBuffer = await renderQrPng(dCtx.invitation.qr_token_plano);
+          }
+        }
         const subject =
-          dCtx.delivery.plantilla === "recordatorio_llegada"
+          isArrivalReminder
             ? `Recordatorio de llegada — ${eventName}`
             : dCtx.delivery.plantilla === "recordatorio_rsvp"
               ? `Recordatorio RSVP — ${eventName}`
@@ -67,13 +89,22 @@ export function createNotifyEmailHandler(ctx) {
                <a href="${rsvpUrl}">tu invitación</a> y elige «Dejar de recibir correos». Consulta el
                <a href="${baseUrl}/privacidad">Aviso de privacidad</a>.</p>`
           : "";
-        const html =
-          dCtx.delivery.plantilla === "recordatorio_llegada"
-            ? `<p>Recordatorio de hora de llegada (${escapeHtml(msg.hora_llegada || "")}) para <strong>${safeEvent}</strong>.</p>`
-            : `<p>Hola ${escapeHtml(dCtx.guest?.nombre || "")}, estás invitado a <strong>${safeEvent}</strong>.</p>
+        const qrHtml = qrPngBuffer
+          ? `<p><img src="cid:qr.png" alt="QR Check-in" /></p>`
+          : qrUrl
+            ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>`
+            : "";
+        const attachments = qrPngBuffer
+          ? [{ filename: "qr.png", contentType: "image/png", contentId: "qr.png", content: qrPngBuffer, ...(qrUrl ? { url: qrUrl } : {}) }]
+          : qrUrl
+            ? [{ filename: "qr.png", url: qrUrl }]
+            : [];
+        const html = isArrivalReminder
+          ? `<p>Recordatorio de hora de llegada (${escapeHtml(msg.hora_llegada || "")}) para <strong>${safeEvent}</strong>.</p>`
+          : `<p>Hola ${escapeHtml(dCtx.guest?.nombre || "")}, estás invitado a <strong>${safeEvent}</strong>.</p>
                <p><a href="${rsvpUrl}">Confirmar o declinar asistencia</a></p>
                <p>Código corto: ${escapeHtml(dCtx.invitation?.codigo_corto || "")}</p>
-               ${qrUrl ? `<p><img src="${qrUrl}" alt="QR Check-in" /></p>` : ""}
+               ${qrHtml}
                ${footer}`;
 
         try {
@@ -82,7 +113,7 @@ export function createNotifyEmailHandler(ctx) {
             subject,
             html,
             text: `${subject} - ${rsvpUrl}`,
-            attachments: qrUrl ? [{ filename: "qr.png", url: qrUrl }] : [],
+            attachments,
             metadata: {
               delivery_id: dCtx.delivery.id,
               event_id: dCtx.delivery.event_id,
@@ -97,7 +128,17 @@ export function createNotifyEmailHandler(ctx) {
             success: true,
             now: ctx.now(),
           });
-        } catch {
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              component: "notify_email",
+              delivery_id: msg.delivery_id,
+              event_type: dCtx.delivery.plantilla,
+              error_name: err?.name || err?.Code || "Error",
+              error: redactPiiText(err?.message || err),
+            })
+          );
           ctx.metrics.notifRetry("email");
           const res = await ctx.store.markDeliveryResult({
             deliveryId: msg.delivery_id,
@@ -152,7 +193,17 @@ export function createNotifyEmailHandler(ctx) {
             text: html.replace(/<[^>]+>/g, ""),
             metadata: msg,
           });
-        } catch {
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              component: "notify_email",
+              delivery_id: null,
+              event_type: msg.event_type || null,
+              error_name: err?.name || err?.Code || "Error",
+              error: redactPiiText(err?.message || err),
+            })
+          );
           ctx.metrics.notifRetry("email");
           if (messageId) batchItemFailures.push({ itemIdentifier: messageId });
         }

@@ -122,3 +122,9 @@ export function validationError(message, campo = null, extra = {}) {
 export function isAppError(err) {
   return err instanceof AppError || (err && err.name === "AppError" && typeof err.code === "string");
 }
+
+export function redactPiiText(value) {
+  return String(value ?? "")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\+\d{7,15}/g, "[redacted-phone]");
+}

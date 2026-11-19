@@ -35,7 +35,7 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | --- | --- | --- | --- |
 | FR1 | Eventos, importación de invitados, invitación con QR único, RSVP sin cuenta | ✅ | *Ciclo completo del invitado* |
 | FR2 | Check-in por QR con mala o nula conectividad | ✅ | *Check-in offline, replay idempotente, convergencia cross-dispositivo…* |
-| FR3 | Tablero de todos los eventos casi en tiempo real | ✅ (polling ≤ 5 s p95, ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)) | *Check-in…* (contadores), *Retención…* (agregados) |
+| FR3 | Tablero de todos los eventos casi en tiempo real | ✅ (polling p50 506 ms / p95 11.7 s en lab, ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)) | *Check-in…* (contadores), *Retención…* (agregados) |
 | FR4 | Buscar y asignar proveedores, antes y en emergencia | ✅ | *Contratación: 100 solicitudes concurrentes…*, *Bordes normativos…* |
 | FR5 | Recordatorios: RSVP a invitados y hora de llegada a proveedores | ✅ | *Ciclo completo del invitado* (RSVP), *Recordatorio de llegada al proveedor* |
 | FR6 | Pago a proveedores | ✅ | *Pagos: contract test PSP…*, *Pagos: conciliación automática…*, *Pagos: conciliación diaria…* |
@@ -43,7 +43,7 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
 
 - **16/16 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
-- **Pruebas de carga (local, PostgreSQL 16):** check-in a **517/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s. Import de **1 000 invitados en 6.3 s** con latencia de AWS simulada (meta 30 s). Ver [§7.4](#74-pruebas-de-carga).
+- **Pruebas de carga:** en local (PostgreSQL 16) check-in a **517/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s; import de 1 000 invitados en 6.3 s. En **AWS Academy Learner Lab** (`db.t4g.micro`): import de **1 000 invitados en 10.7 s p50 / 12.1 s p95** (meta 30 s) y check-in a 72.7/s (ráfaga offline de 500 en **1.4 s**, 0 errores). Ver [§7.4](#74-pruebas-de-carga).
 - **Listo para producción** salvo la decisión del dominio: ver [§13](#13-lista-de-verificación-de-producción).
 - **83 endpoints HTTP**, **6 Lambdas**, **7 migraciones versionadas**.
 - Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
@@ -71,16 +71,16 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 
 | Área | Objetivo | Cómo se cumple hoy |
 | --- | --- | --- |
-| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
-| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados, p99 221 ms ([§7.4](#74-pruebas-de-carga)). |
-| **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
+| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 10.7 s p50 / 12.1 s p95 reales en AWS Academy** (6.3 s local simulado, 20 000 en 125 s, [§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*) y QR adjunto/inline en el correo. |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas, p99 221 ms; AWS Academy (`db.t4g.micro`): ráfaga offline de 500 en **1.4 s** ([§7.4](#74-pruebas-de-carga)). |
+| **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s (pausa en segundo plano). Medido en AWS Academy (`Orquesta/lag_frescura`, 254 muestras): **p50 506 ms · p95 11.7 s · p99 22.0 s**. Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
 | **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; **tope por requerimiento** con lock `(evento, rol)` → `409 REQUERIMIENTO_CUBIERTO` o aceptación parcial; **aviso al proveedor por SMS + email vía outbox** (flush inmediato, segundos; en emergencia «URGENTE» y 15 min para responder). |
 | **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
 | **Pagos** (FR6) | Nunca cobrar ni enviar dos veces; sin datos de tarjeta; ledger *append-only* con conciliación; si el procesador falla, el pago se reintenta y nunca se pierde. | Llave `pay:{reservation_id}`; ledger de doble entrada con trigger diferido de balance y unicidad `(pago, movimiento, cuenta)`; webhook firmado HMAC; **reintento automático** de pagos `pendiente`/`desconocido` por llave de idempotencia y **conciliación diaria** ledger ↔ procesador (`payment_reconciliation`, alarma ante diferencias). |
 | **Mesas** (FR7) | Nadie en dos mesas; ninguna mesa sobre capacidad; edición concurrente rechazada con aviso (versión optimista); guardar < 1 s con 500 invitados / 50 mesas. | Lock por evento + conteo transaccional (AC-14); **`plan_version` + `If-Match`** → `409 SEATING_VERSION_CONFLICT`. |
 | **SMS y email** (FR8) | 200 invitaciones encoladas < 1 s y entregadas < 5 min; reintentos + DLQ; nunca duplicado por canal; si falla un canal el otro se entrega; respeta bajas; SPF/DKIM/DMARC. | SNS → dos colas SQS independientes (SMS / email) con DLQ; 3 intentos y luego `rebotado`; `indeterminado` a los 15 min; dedupe por `(destinatario, plantilla, ventana)`; **baja del invitado por canal** desde su invitación (`POST /public/invitations/{token}/unsubscribe`), respetada en envíos, reenvíos y recordatorios; SPF/DKIM/DMARC en Terraform al activar dominio propio (`domain.tf`). |
 
-**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — aplicado en el workflow de deploy); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, [Aviso de privacidad LFPDPPP](front/src/app/features/privacy/privacy.page.ts) y **borrado de teléfonos de invitados a los 90 días** del evento; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
+**Transversales:** disponibilidad 99.9 % (99.95 % check-in vie–dom 17:00–02:00, congelamiento de despliegues en sábado — regla operativa al aplicar en `prod`); aislamiento de fallas (Notification, tablero o PSP caídos no detienen check-in ni contratación); RPO ≤ 5 min / RTO < 1 h con PITR 7 días; TLS + KMS, aislamiento por membresía, [Aviso de privacidad LFPDPPP](front/src/app/features/privacy/privacy.page.ts) y **borrado de teléfonos de invitados a los 90 días** del evento; crecer 10× sin rediseño; WCAG 2.2 AA; alarmas de p99, 5xx y colas atascadas en < 5 min; UTC + zona IANA por evento, idioma/moneda por organización.
 
 ### 1.3 Estimación de capacidad (lo que sí cambia el diseño)
 
@@ -306,12 +306,13 @@ flowchart TB
 #### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
 - **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
 - **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre.
-- **Evidencia:** prueba de carga local ([§7.4](#74-pruebas-de-carga)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. Falta la medición en AWS (`db.t4g.micro`); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
+- **Evidencia:** prueba de carga local ([§7.4](#74-pruebas-de-carga)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. En AWS Academy (`db.t4g.micro`): 72.7 check-ins/s (1 465 escaneos, 0 errores, ráfaga offline de 500 en 1.4 s); la vía de escape a gran escala es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
 
 #### ADR-3 · Tablero por polling con read model en lugar de SSE + Valkey
-- **Decisión:** `event_counters` alimentado por outbox; el cliente consulta cada 3 s con `limit ≤ 25`.
+- **Decisión:** `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente consulta cada 3 s con `limit ≤ 25` (y pausa automáticamente cuando la pestaña pasa a segundo plano).
 - **Por qué:** ElastiCache/Valkey no está disponible en el entorno y 10 000 conexiones SSE no son viables en Lambda. NFR-03 de la spec vigente fija **≤ 5 s p95**, más laxo que los 3 s del objetivo original.
-- **Riesgo:** con muchos planners conectados el polling cuesta lecturas; la evolución natural es API Gateway WebSocket o SSE en un contenedor, alimentado por el mismo outbox.
+- **Evidencia medida en AWS Academy (`Orquesta/lag_frescura`, 254 muestras durante carga):** **mín 80 ms · p50 506 ms · promedio 1 787 ms · p95 11.7 s · p99 22.0 s · máx 28.8 s**. El caso común (`p50 = 506 ms`) cumple con holgura gracias al *flush* inmediato, pero los lotes rezagados que caen en el barrido de 1 min de `outbox-poller` elevan el `p95` por encima de 5 s (además del intervalo de polling de 3 s en el navegador).
+- **Decisión explícita y evolución:** se conserva **polling + read model** para la demo/entrega actual por simplicidad operativa en Serverless/Academy. Para producción con SLA estricto < 3 s y miles de planners conectados, la evolución propuesta es **API Gateway WebSocket o SSE en contenedor (ECS/Fargate)** alimentado directamente desde el outbox (`FOR UPDATE SKIP LOCKED` con frecuencia de barrido < 5 s).
 
 #### ADR-4 · Zonas + radio en lugar de PostGIS para la búsqueda de proveedores
 - **Decisión:** catálogo cerrado de zonas por perfil más `radio_km`, con índice parcial de visibilidad.
@@ -321,15 +322,17 @@ flowchart TB
 - **Decisión:** toda marca temporal que participa en una regla de negocio (expiraciones, `estado_en`, recordatorios, pagos) la fija la aplicación (`ctx.now()`), no `DEFAULT now()` de la base.
 - **Por qué:** evita reglas evaluadas con dos relojes distintos y hace testeable el tiempo (las pruebas viajan meses hacia adelante). Los guardias de inmutabilidad de la BD siguen usando su propio reloj como defensa en profundidad.
 
-#### ADR-6 · La demo se despliega en una cuenta propia, no en Learner Lab
-- **Contexto:** Learner Lab bloquea SES (correo), SMS, CloudFront, la creación de roles IAM, las instancias de Aurora y la lectura de *object lock* de S3, que el provider de Terraform (v5 y v6) necesita para administrar buckets. Además, la sesión se apaga a las 4 h y las credenciales cambian.
-- **Decisión:** desplegar la demo en una cuenta propia en el plan gratuito de AWS (crédito de USD 157), con el perfil económico de `lab` más CloudFront, WAF y SES. Terraform crea el rol de las Lambdas con permisos mínimos (`use_lab_role=false`, [`iam.tf`](terraform/iam.tf)); Learner Lab sigue soportado con `LabRole`.
-- **Consecuencias:** correo real y HTTPS (la cámara del escáner lo exige). El plan gratuito trae sus propios límites: 10 Lambdas simultáneas (aumento a 1 000 solicitado), respaldos de RDS de 1 día y sin SMS; los tres se quitan pasando la cuenta al plan de pago. Costo de la demo: unos USD 0.85 al día. SES arranca en *sandbox*: solo envía a correos verificados hasta que AWS aprueba el acceso de producción.
+#### ADR-6 · Reconciliación de Learner Lab y despliegue de la demo en cuenta propia
+- **Contexto:** AWS Academy Learner Lab bloquea SES (correo), SMS, CloudFront, WAF, creación de roles IAM (`iam:CreateRole`), Aurora y `s3:GetBucketObjectLockConfiguration` (que el provider de AWS v5/v6 consulta al crear/leer `aws_s3_bucket`). Además, la sesión dura 4 h y las credenciales temporales caducan.
+- **Decisión:**
+  1. **Learner Lab soportado de punta a punta con estado local de Terraform:** cuando `environment = "lab"` y `use_lab_role = true`, `storage.tf` activa automáticamente `manage_s3_with_cli = true` para crear/destruir los buckets S3 con `terraform/scripts/lab-s3-buckets.mjs` (`terraform_data`), dejando que Terraform administre de forma nativa objetos, políticas, CORS, lifecycle, website, Lambdas, API Gateway, RDS `db.t4g.micro`, KMS, SQS, SNS y alarmas (140 recursos desplegados y destruidos en `647018795197`). Email y SMS quedan en modo *capture* imprimiéndose en CloudWatch Logs (`capture_email` / `capture_sms`). Se eliminó el workflow de CD en GitHub Actions y el estado remoto en S3 (`TF_STATE_BUCKET`).
+  2. **Demo completa en cuenta propia:** para demostrar correo real por SES, CloudFront (HTTPS para la cámara) y WAF, se soporta el mismo Terraform con `use_lab_role=false` (`iam.tf`), `enable_cloudfront=true`, `enable_waf=true` y `email_provider_mode=ses` (con bloques `moved` en `storage.tf` para preservar buckets existentes).
+- **Consecuencias:** Learner Lab sirve para pruebas de infraestructura, API, KMS, S3 y carga sin pagar cuenta personal; la cuenta propia cubre HTTPS + SES (en *sandbox*, límite de 10 Lambdas simultáneas y sin SMS en plan gratuito).
 
 #### ADR-7 · Base de datos de la demo: RDS micro y no Aurora ni RDS Proxy
 - **Contexto:** Aurora Serverless v2 cobra un mínimo de 0.5 ACU (≈ USD 43 al mes) aunque no haya tráfico, y RDS Proxy otros ≈ USD 20 al mes; juntos agotarían el crédito de la demo en pocos meses.
-- **Decisión:** la demo usa RDS PostgreSQL 16 `db.t4g.micro` (cifrado, en la capa gratuita). La configuración de producción no cambia: Aurora Serverless v2 con réplica y PITR de 7 días (`environment=prod`).
-- **Consecuencias:** una sola instancia, sin failover, con unas 80 conexiones. Con el límite actual de 10 Lambdas (5 conexiones cada una, ≤ 50) alcanza de sobra. **Brecha conocida:** a 1 000 Lambdas simultáneas serían hasta 5 000 conexiones, más de las que acepta PostgreSQL. Antes de escalar hay que poner **RDS Proxy** entre las Lambdas y la base, bajar `DB_POOL_MAX` a 1–2 y reservar concurrencia para la Lambda `api` ([issue](https://github.com/stephy0410/orquesta/issues/32)).
+- **Decisión:** la demo y `lab` usan RDS PostgreSQL 16 `db.t4g.micro` (cifrado, en la capa gratuita). La configuración de producción no cambia: Aurora Serverless v2 con réplica y PITR de 7 días (`environment=prod`).
+- **Consecuencias:** una sola instancia, sin failover, con unas 80 conexiones. Con pocas Lambdas simultáneas (`DB_POOL_MAX=5`) alcanza, pero a gran escala (1 000 Lambdas) agotaría las conexiones de PostgreSQL. Terraform ya incluye la mitigación lista para activar (`enable_rds_proxy = true` con `lambda_in_vpc = true`, `db_pool_max = 2` y `api_reserved_concurrency`, [issue #32](https://github.com/stephy0410/orquesta/issues/32)), apagada por defecto para no generar el costo de USD 20/mes en `lab`/demo.
 
 Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delivery/05-high-level-design.md) · [`07-system-design-back-front.md`](docs/delivery/07-system-design-back-front.md).
 
@@ -397,6 +400,9 @@ Correr la suite contra la base real (antes solo corría en memoria) destapó def
 | Arreglos `text[]` contra columnas `char(26)` | Seq scans en check-in e import | Arreglos `char(26)[]` (§7.4) |
 | Nombres de invitado/evento sin escapar en el HTML del correo | Inyección de HTML/enlaces en correos | `escapeHtml` en la plantilla |
 | `EMAIL_FROM` no definido en Terraform | SES rechazaría todos los correos en `prod` | `EMAIL_FROM` desde `domain.tf` |
+| `KmsQrSigner.signBytes` usaba `MessageType: "RAW"` | KMS limita `RAW` a 4 096 bytes → `GET /roster` devolvía 500 con ≥ 25 invitados | Hash SHA-256 + `MessageType: "DIGEST"` (`ports.js`) |
+| `SesEmailAdapter` ignoraba `attachments` y `capture` no logueaba en Lambda | QR en correo dependía solo de URL externa; tokens/errores invisibles en CloudWatch | MIME `multipart/related` (`cid:qr.png` + adjunto) vía `SendRawEmailCommand` y logs JSON estructurados |
+| `PgStore.applyProjectionBatch` no emitía `lag_frescura` y EMF sin dimensión global | Alarma `lag_frescura_p95` sin datos en AWS | Emisión en `db.js` y doble dimensión `[ ["EventId"], [] ]` en `observability.js` |
 
 ---
 
@@ -415,17 +421,24 @@ Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cóm
 | Convergencia del tablero tras la carga | ≤ 5 s (NFR-03) | 1.2 s | **1.2 s** |
 | Latencia por lote (5 escaneos) | p99 < 300 ms en línea | p50 179 · p95 358 · p99 **481 ms** ❌ | p50 122 · p95 193 · p99 **221 ms** ✅ |
 
-**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`. Falta confirmar la cifra en AWS (fase 2); el veredicto en la puerta, de todos modos, se calcula en el dispositivo (< 100 ms).
+**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`.
+
+**Medición real en AWS Academy (`db.t4g.micro`, 2026-11-19):** 10 eventos × 2 dispositivos, 50 check-ins/s objetivo durante 20 s + ráfaga offline de 500 escaneos:
+- **Tasa lograda:** **72.7/s** (1 465 escaneos, 1 440 únicos + 25 `ya_registrado`, 392 lotes, **0 errores**, **0 perdidos**, **0 dobles admisiones**).
+- **Ráfaga offline (500 escaneos):** **1.4 s** ✅ (meta < 30 s).
+- **Latencia por lote en `db.t4g.micro`:** p50 **192.2 ms** · p95 1 483.7 ms · p99 1 541.6 ms (refleja contención de `db.t4g.micro` sin RDS Proxy; en puerta el veredicto es offline < 100 ms).
+- **Convergencia y frescura (`Orquesta/lag_frescura`):** tablero converge al 100 % tras 20.9 s; en 254 muestras CloudWatch: **p50 506 ms · p95 11.7 s · p99 22.0 s** ([ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey)).
 
 #### Import de invitados
 
-Script: [`back/load/import-load.js`](back/load/import-load.js). Archivos con 2 % de duplicados y 1 % de filas inválidas; se verifica que aceptadas = válidas únicas, que no se envía nada y que reimportar no crea nada. Latencia de AWS simulada: 15 ms por firma en KMS y 30 ms por PUT a S3.
+Script: [`back/load/import-load.js`](back/load/import-load.js). Archivos con 2 % de duplicados y 1 % de filas inválidas; se verifica que aceptadas = válidas únicas, que no se envía nada y que reimportar no crea nada.
 
-| Filas | Antes | Después | Meta |
+| Entorno / Filas | Antes | Después | Meta |
 | --- | --- | --- | --- |
-| 1 000 | 64.9 s ❌ | **6.3 s** ✅ | < 30 s |
-| 5 000 | — | 31 s | — |
-| 20 000 | ~21 min (supera el timeout) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
+| Local simulado (KMS 15 ms, S3 30 ms) · **1 000** | 64.9 s ❌ | **6.3 s** ✅ | < 30 s |
+| Local simulado · **5 000** | — | 31 s | — |
+| Local simulado · **20 000** | ~21 min (supera el timeout) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
+| **AWS Academy real (`db.t4g.micro` + KMS + S3) · 1 000** | — | **10.7 s p50 / 12.1 s p95** ✅ | < 30 s |
 
 Cambios: inserción en lote (`unnest`), firma de QR en paralelo con concurrencia acotada (cuota de KMS), PNG del QR después del COMMIT y con filtro PNG fijo (2× más rápido, mismo tamaño).
 
@@ -436,13 +449,8 @@ Cambios: inserción en lote (`unnest`), firma de QR en paralelo con concurrencia
 | Workflow | Disparador | Qué hace |
 | --- | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | Cada PR y push a `main` | 4 jobs en paralelo: backend en memoria (Node 20 = runtime Lambda) + lint; backend contra **PostgreSQL 16** como service container; frontend build + tests (Node 24); Terraform `fmt` + `validate`. |
-| [`deploy.yml`](.github/workflows/deploy.yml) | Manual (`workflow_dispatch`) | Reutiliza `ci.yml` como gate → build del front → `npm ci --omit=dev` → `terraform plan` (y `apply` si se marca) con estado remoto en S3 → *smoke test* de `/health`. Bloquea `apply` a `prod` en sábado (congelamiento). |
 
-**Configuración inicial (una vez):**
-1. *Settings → Branches → main*: exigir PR y los 4 checks de `CI` en verde.
-2. *Settings → Environments*: crear `lab` (y `prod` con revisores obligatorios).
-3. En cada environment: secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` (en Learner Lab se renuevan cada sesión) y variable `TF_STATE_BUCKET` con un bucket S3 existente para el estado de Terraform.
-4. En `prod` (opcional): `ALARM_EMAIL` para recibir las alarmas, y `CUSTOM_DOMAIN` + `ROUTE53_ZONE_ID` para el dominio propio. El workflow aplica el perfil de producción solo: Aurora con réplica en otra zona, CloudFront + WAF, SES, SMS real y firma con KMS.
+**Despliegue:** se ejecuta localmente con Terraform usando **estado local** (sin workflow de CD en GitHub Actions ni estado remoto en S3, para operar sin fricción tanto con credenciales temporales de 4 h en AWS Academy Learner Lab como en cuenta propia o `prod`). En *Settings → Branches → main*, exigir PR y los 4 checks de `CI` en verde. En `prod`, mantener la regla operativa de congelamiento de despliegues en sábado (pico de check-in).
 
 Las migraciones se aplican solas en el *cold start* (`AUTO_MIGRATE=true`) con advisory lock; son **inmutables**: un cambio de esquema es un archivo `NNN_*.sql` nuevo.
 
@@ -486,9 +494,11 @@ cd front
 npm ci
 npx ng serve           # http://localhost:4200
 
-# Infraestructura (Learner Lab)
-cd terraform
-terraform init && terraform plan -out=tfplan && terraform apply tfplan
+# Infraestructura (AWS Academy Learner Lab; genera build del front y deps de producción antes)
+cd front && npm ci && npx ng build
+cd ../back && npm ci --omit=dev
+cd ../terraform
+terraform init && terraform plan -out=lab.tfplan && terraform apply lab.tfplan
 terraform destroy      # al terminar la sesión, para no consumir crédito
 
 # Infraestructura en cuenta propia (la demo, ADR-6): rol IAM propio, CloudFront, WAF y SES
@@ -498,7 +508,7 @@ AWS_PROFILE=<perfil> terraform apply -var use_lab_role=false -var enable_cloudfr
   -var sqs_consumer_max_concurrency=2
 ```
 
-Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`…): [`terraform/README.md`](terraform/README.md). Backend: [`back/README.md`](back/README.md). Frontend: [`front/README.md`](front/README.md).
+Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`, `enable_rds_proxy`…): [`terraform/README.md`](terraform/README.md). Backend: [`back/README.md`](back/README.md). Frontend: [`front/README.md`](front/README.md).
 
 ---
 
@@ -506,11 +516,11 @@ Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`…): [`
 
 ```text
 orquesta/
-├── .github/workflows/   # CI (4 jobs) y CD manual a AWS
+├── .github/workflows/   # CI (4 jobs: memoria, PostgreSQL 16, Angular, Terraform)
 ├── docs/                # requerimientos.md (normativo) + delivery/ (framework 01–07)
 ├── back/                # 6 Lambdas Node.js, dominio compartido, migraciones, suite de aceptación
 ├── front/               # Angular 22 + PWA: planner, proveedor, invitación, escáner
-└── terraform/           # API Gateway, Lambdas, RDS/Aurora, SNS/SQS, S3, KMS, alarmas
+└── terraform/           # API Gateway, Lambdas, RDS/Aurora/Proxy, SNS/SQS, S3, KMS, alarmas
 ```
 
 ---
@@ -521,7 +531,7 @@ orquesta/
 | --- | --- | --- |
 | **Hannah** | Frontend: consola del planner, consola del proveedor, invitación pública y PWA de escaneo | `front/` |
 | **Stephanie** | Backend: los 6 servicios de dominio, PostgreSQL y migraciones, pruebas de aceptación y de carga | `back/` |
-| **Emmanuel** | Infraestructura: AWS / Terraform, despliegue, observabilidad y Learner Lab | `terraform/`, `.github/workflows/deploy.yml` |
+| **Emmanuel** | Infraestructura: AWS / Terraform, despliegue, observabilidad y Learner Lab | `terraform/`, `.github/workflows/ci.yml` |
 
 Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El trabajo abierto vive en [GitHub Issues](https://github.com/stephy0410/orquesta/issues).
 
@@ -531,13 +541,13 @@ Flujo de trabajo: rama por cambio → PR → CI en verde → merge a `main`. El 
 
 | Riesgo / pendiente | Impacto | Mitigación / siguiente paso |
 | --- | --- | --- |
-| Cargas medidas en local (con latencia de AWS simulada en el import) | Falta la cifra en AWS | Correr `checkin-load.js` e `import-load.js` con `--target=http` contra la demo desplegada |
-| Conexiones a la base a gran escala (ADR-7) | A 1 000 Lambdas × 5 conexiones se agotan las ~80 de RDS micro (o las de Aurora) | RDS Proxy + `DB_POOL_MAX` 1–2 + concurrencia reservada para `api` |
+| Carga completa 500/s en AWS | En AWS Academy se midieron import 1 000 en 10.7 s p50 y check-in 72.7/s + 500 offline en 1.4 s sobre `db.t4g.micro`; falta 500/s sostenidos contra `prod` (Aurora + RDS Proxy) | Correr `checkin-load.js` con `--rate=500` tras subir cuota de Lambdas y activar `enable_rds_proxy=true` |
+| Conexiones a la base a gran escala (ADR-7) | Sin RDS Proxy, 1 000 Lambdas × 5 conexiones saturan PostgreSQL | Ya implementado en Terraform (`enable_rds_proxy=true`, `DB_POOL_MAX=2`, `api_reserved_concurrency`, issue #32); falta probarlo con carga alta en cuenta propia/`prod` |
 | Cuenta en plan gratuito (ADR-6) | 10 Lambdas simultáneas, respaldos de 1 día, sin SMS | Aumento de concurrencia solicitado; plan de pago para SMS y PITR de 7 días |
 | SES en *sandbox* | Solo llegan correos a direcciones verificadas (máx. 200 al día) | Pedir acceso de producción en SES (≈ 24 h); con dominio propio, DKIM/SPF/DMARC |
-| Tablero por polling vs. objetivo original de 3 s / 10 000 conexiones | Puede no cumplir el objetivo original | Medir `lag_frescura` en `lab`; WebSocket si no alcanza (ADR-3) |
+| Tablero por polling vs. objetivo original de 3 s | Medido en AWS Academy: **p50 506 ms**, pero **p95 11.7 s** por barrido de 1 min de `outbox-poller` + polling 3 s | Aceptado para demo/entrega; migrar a API Gateway WebSocket o SSE en producción (ADR-3) |
 | Búsqueda por zonas, no por radio geográfico | No cumple literalmente "25 km" | PostGIS (ADR-4) |
-| Learner Lab bloquea SES, SMS, CloudFront, roles IAM, Aurora y el *object lock* de S3 | No se puede desplegar completo ahí (Terraform falla en S3) | La demo vive en una cuenta propia (ADR-6) |
+| Learner Lab bloquea SES, SMS, CloudFront, roles IAM, Aurora y `GetBucketObjectLockConfiguration` | No hay correo/SMS real ni HTTPS CloudFront dentro de Academy (en Academy el front corre por HTTP S3 Website y email/SMS van a CloudWatch Logs) | S3 ya reconciliado vía CLI en `lab` (`storage.tf`); demo con SES/HTTPS vive en cuenta propia (ADR-6) |
 | ¿Dominio propio? (por confirmar con el profesor) | Sin él no hay SPF/DKIM/DMARC ni URL propia con HTTPS | Listo en Terraform: definir `CUSTOM_DOMAIN` y `ROUTE53_ZONE_ID` y desplegar |
 | Datos del responsable en el Aviso de privacidad | El aviso necesita razón social, domicilio y correo ARCO reales | Completar `environment.privacy` en el front (revisión legal recomendada) |
 | Stripe en modo prueba | Sin cobros reales | Cambiar a llave `sk_live` y registrar el webhook (`STRIPE_WEBHOOK_SECRET`) al salir a producción |
@@ -564,6 +574,6 @@ Cada requisito transversal del README contra lo que lo cumple. **Lo único pendi
 | Alarmas de p99, 5xx y colas atascadas en < 5 min | API 5xx, latencia p99, errores por Lambda, edad del mensaje más viejo por cola, DLQ, frescura, PSP; todas notifican a SNS (+ email) | `observability.tf` |
 | Aislamiento de fallas | Colas independientes por canal; PSP y notificaciones nunca bloquean check-in ni contratación | `notify-*`, `payment-reconciliation.js` |
 | Pagos reales sin tocar tarjetas | Stripe Checkout hospedado (PCI SAQ A) con el diseño de Orquesta; webhook con firma `Stripe-Signature`; reembolso automático si se cancela una reserva pagada | `StripePspAdapter`, `routes/payments.js` |
-| Congelamiento de despliegues en sábado | El workflow rechaza `apply` a `prod` en sábado | `deploy.yml` |
+| Congelamiento de despliegues en sábado | Regla operativa para `prod` (sin despliegues en sábado de pico; `terraform apply` es manual/local) | Operación |
 | Accesibilidad WCAG 2.2 AA y LCP < 2.5 s | Auditoría axe + recorrido con teclado; LCP p75 2.35 s | PRs #14 y #15 (front) |
 

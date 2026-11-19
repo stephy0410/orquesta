@@ -1,4 +1,6 @@
 // Emisor CloudWatch Embedded Metric Format (EMF) para NFR-09
+// Métricas con alarmas globales sin dimensiones en terraform/observability.tf
+const GLOBAL_ALARM_METRICS = new Set(["lag_frescura", "offline_queue_depth", "psp_error"]);
 
 export class MetricsEmitter {
   constructor({ namespace = "Orquesta", sink = null, silent = false } = {}) {
@@ -10,13 +12,19 @@ export class MetricsEmitter {
 
   emit(metricName, value, unit = "Count", dimensions = {}, extra = {}) {
     const dimKeys = Object.keys(dimensions);
+    const metricDimensions =
+      dimKeys.length > 0
+        ? GLOBAL_ALARM_METRICS.has(metricName)
+          ? [dimKeys, []]
+          : [dimKeys]
+        : [[]];
     const payload = {
       _aws: {
         Timestamp: Date.now(),
         CloudWatchMetrics: [
           {
             Namespace: this.namespace,
-            Dimensions: dimKeys.length > 0 ? [dimKeys] : [[]],
+            Dimensions: metricDimensions,
             Metrics: [{ Name: metricName, Unit: unit }],
           },
         ],
