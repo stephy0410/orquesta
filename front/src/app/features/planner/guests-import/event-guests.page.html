@@ -43,9 +43,11 @@
           Enviar invitaciones ({{ pendingSummary()?.destinatarios }})
         </button>
       }
-      <button type="button" class="oq-btn oq-btn-secondary" (click)="uploadOpen.set(!uploadOpen())">
-        {{ guests().length ? 'Agregar invitados' : 'Subir lista' }}
-      </button>
+      @if (guests().length > 0) {
+        <button type="button" class="oq-btn oq-btn-secondary" (click)="uploadOpen.set(!uploadOpen())">
+          {{ uploadOpen() ? 'Cerrar' : 'Agregar invitados' }}
+        </button>
+      }
     </div>
   </div>
 

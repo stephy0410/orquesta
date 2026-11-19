@@ -82,39 +82,49 @@
           }
         </dl>
 
-        @if (lastActionBanner()) {
-          <div class="oq-alert oq-alert-success" role="status">{{ lastActionBanner() }}</div>
-        }
-
-        <div class="inv-actions">
-          <button
-            type="button"
-            class="oq-btn oq-btn-lg"
-            [class.oq-btn-accent]="inv.respuesta !== 'confirma'"
-            [class.oq-btn-primary]="inv.respuesta === 'confirma'"
-            [disabled]="submitting()"
-            (click)="respond('confirma')"
-          >
-            {{ inv.respuesta === 'confirma' ? 'Mantener confirmación' : 'Confirmar asistencia' }}
-          </button>
-
-          <button
-            type="button"
-            class="oq-btn oq-btn-lg oq-btn-secondary"
-            [disabled]="submitting()"
-            (click)="respond('declina')"
-          >
-            {{ inv.respuesta === 'declina' ? 'Mantener que no asistiré' : 'No podré asistir' }}
-          </button>
-        </div>
-
-        @if (inv.respondido_en) {
-          <p class="oq-hint inv-timestamp">
-            Respondiste el {{ respondidoLabel() }}
-            @if (inv.recordatorios_cancelados) {
-              · Recordatorios cancelados: {{ inv.recordatorios_cancelados }}
+        @if (!inv.respuesta || changing()) {
+          <div class="inv-ask">
+            <h2>{{ inv.respuesta ? 'Cambia tu respuesta' : '¿Nos acompañas?' }}</h2>
+            <div class="inv-actions">
+              <button
+                type="button"
+                class="oq-btn oq-btn-lg oq-btn-primary"
+                [disabled]="submitting() || inv.respuesta === 'confirma'"
+                (click)="respond('confirma')"
+              >
+                Confirmar asistencia
+              </button>
+              <button
+                type="button"
+                class="oq-btn oq-btn-lg oq-btn-secondary"
+                [disabled]="submitting() || inv.respuesta === 'declina'"
+                (click)="respond('declina')"
+              >
+                No podré asistir
+              </button>
+            </div>
+            @if (inv.respuesta) {
+              <button type="button" class="inv-change" (click)="changing.set(false)">
+                Dejar mi respuesta como estaba
+              </button>
             }
-          </p>
+          </div>
+        } @else {
+          <div class="inv-result" role="status" [attr.data-tone]="inv.respuesta">
+            @if (inv.respuesta === 'confirma') {
+              <h2>¡Te esperamos!</h2>
+              <p>Tu asistencia quedó confirmada. Muestra el pase de abajo al llegar.</p>
+            } @else {
+              <h2>Gracias por avisarnos</h2>
+              <p>Registramos que no podrás asistir. Si cambias de planes, todavía puedes confirmar.</p>
+            }
+            @if (inv.respondido_en) {
+              <p class="oq-hint inv-timestamp">Respondiste el {{ respondidoLabel() }}</p>
+            }
+            <button type="button" class="inv-change" (click)="changing.set(true)">
+              Cambiar mi respuesta
+            </button>
+          </div>
         }
 
         <hr class="inv-divider" />
@@ -122,7 +132,13 @@
         <div class="inv-qr-box">
           <h2>Tu pase de entrada</h2>
           <p class="oq-hint">
-            Muéstralo en la entrada. Lo puedes volver a abrir con el mismo enlace cuando quieras.
+            @if (inv.respuesta === 'confirma') {
+              Muéstralo en la entrada. Lo puedes volver a abrir con este mismo enlace cuando quieras.
+            } @else if (inv.respuesta === 'declina') {
+              Sigue activo por si cambias de planes.
+            } @else {
+              Este será tu pase. Confírmanos arriba si vienes para que te esperemos.
+            }
           </p>
 
           @if (qrDataUrl()) {

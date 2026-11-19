@@ -99,8 +99,27 @@ export class AuthService {
     );
 
     const decodedRoles = decodeJwtRoles(res.access_token);
-    const roles: UserRole[] =
-      decodedRoles.length > 0 ? decodedRoles : [expectedRole];
+    const serverRoles = ((res as { user?: { roles?: string[] } }).user?.roles ?? []).filter(
+      (r): r is UserRole => r === 'planner' || r === 'worker',
+    );
+    const known = decodedRoles.length > 0 ? decodedRoles : serverRoles;
+    if (known.length > 0 && !known.includes(expectedRole)) {
+      // Cuenta válida pero de otro tipo: no la dejamos entrar a esta área.
+      try {
+        await this.api.post('/v1/auth/logout', {}, { skipIdempotency: true });
+      } catch {
+        // La sesión de servidor puede no existir todavía.
+      }
+      this.tokenStore.clearAccountSession();
+      throw new OrquestaApiError(
+        403,
+        'ROL_INCORRECTO',
+        expectedRole === 'planner'
+          ? 'Esta cuenta es de proveedor. Entra desde «Soy proveedor».'
+          : 'Esta cuenta es de planner. Entra desde «Soy planner».',
+      );
+    }
+    const roles: UserRole[] = known.length > 0 ? known : [expectedRole];
 
     this.tokenStore.setAccountSession(res.access_token ?? null, email, roles);
     this.tokenStore.markCookieSessionVerified(expectedRole);
@@ -118,6 +137,10 @@ export class AuthService {
   }
 
   async ensureAuthenticated(role: UserRole): Promise<boolean> {
+    const roles = this.tokenStore.userRoles();
+    if (roles.length > 0 && !roles.includes(role)) {
+      return false;
+    }
     if (this.tokenStore.accessToken() || this.tokenStore.cookieVerifiedRole() === role) {
       return true;
     }

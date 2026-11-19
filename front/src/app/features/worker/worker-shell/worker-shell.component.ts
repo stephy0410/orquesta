@@ -19,7 +19,6 @@ import { AuthService } from '../../../core/auth/auth.service';
           <a class="oq-nav-link" routerLink="/worker/requests" routerLinkActive="active" ariaCurrentWhenActive="page">Solicitudes</a>
           <a class="oq-nav-link" routerLink="/worker/profile" routerLinkActive="active" ariaCurrentWhenActive="page">Perfil</a>
           <a class="oq-nav-link" routerLink="/worker/availability" routerLinkActive="active" ariaCurrentWhenActive="page">Disponibilidad</a>
-          <a class="oq-nav-link" routerLink="/scan">Escáner</a>
         </nav>
 
         <div class="oq-row oq-topbar-end">

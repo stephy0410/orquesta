@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { OrquestaApiError } from '../../../core/api/api-config';
 import { TablescapeArtComponent } from '../../../shared/ui/tablescape-art.component';
+import { ApiService } from '../../../core/api/api.service';
 import { AuthService } from '../../../core/auth/auth.service';
 
 @Component({
@@ -83,6 +84,7 @@ import { AuthService } from '../../../core/auth/auth.service';
 })
 export class WorkerLoginPage {
   private readonly auth = inject(AuthService);
+  private readonly api = inject(ApiService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
 
@@ -97,8 +99,17 @@ export class WorkerLoginPage {
     this.error.set(null);
     try {
       await this.auth.login(this.email().trim(), this.password(), 'worker');
-      const redirect = this.route.snapshot.queryParamMap.get('redirect') || '/worker/requests';
-      await this.router.navigateByUrl(redirect);
+      const redirect = this.route.snapshot.queryParamMap.get('redirect');
+      if (redirect) {
+        await this.router.navigateByUrl(redirect);
+        return;
+      }
+      // Quien todavía no tiene perfil empieza por crearlo.
+      const tienePerfil = await this.api
+        .get('/v1/worker/profile')
+        .then(() => true)
+        .catch(() => false);
+      await this.router.navigateByUrl(tienePerfil ? '/worker/requests' : '/worker/profile');
     } catch (err) {
       this.error.set(
         err instanceof OrquestaApiError ? err.message : 'Credenciales inválidas.',
