@@ -148,6 +148,13 @@ export class PlannerLoginPage {
   readonly resetToken = signal('');
   readonly resetNewPassword = signal('');
 
+  constructor() {
+    const q = this.route.snapshot.queryParamMap;
+    const email = q.get('email');
+    if (email) this.email.set(email);
+    if (q.get('listo')) this.info.set('Tu correo quedó verificado. Escribe tu contraseña para entrar.');
+  }
+
   async submit(): Promise<void> {
     if (this.loading()) return;
     this.loading.set(true);
