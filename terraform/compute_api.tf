@@ -193,7 +193,7 @@ resource "aws_lambda_event_source_mapping" "projection" {
   function_response_types            = ["ReportBatchItemFailures"]
 
   scaling_config {
-    maximum_concurrency = 5
+    maximum_concurrency = var.sqs_consumer_max_concurrency
   }
 }
 
@@ -240,7 +240,7 @@ resource "aws_lambda_event_source_mapping" "notify_sms" {
   function_response_types = ["ReportBatchItemFailures"]
 
   scaling_config {
-    maximum_concurrency = 5
+    maximum_concurrency = var.sqs_consumer_max_concurrency
   }
 }
 
@@ -287,7 +287,7 @@ resource "aws_lambda_event_source_mapping" "notify_email" {
   function_response_types = ["ReportBatchItemFailures"]
 
   scaling_config {
-    maximum_concurrency = 5
+    maximum_concurrency = var.sqs_consumer_max_concurrency
   }
 }
 
