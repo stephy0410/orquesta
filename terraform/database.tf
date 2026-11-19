@@ -24,7 +24,7 @@ resource "aws_db_instance" "postgres_lab" {
   vpc_security_group_ids  = [aws_security_group.db_sg.id]
   publicly_accessible     = !var.lambda_in_vpc
   multi_az                = false
-  backup_retention_period = 1
+  backup_retention_period = var.db_backup_retention_days
   skip_final_snapshot     = true
   deletion_protection     = false
 }

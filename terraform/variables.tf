@@ -141,6 +141,23 @@ variable "route53_zone_id" {
   default     = ""
 }
 
+variable "sqs_consumer_max_concurrency" {
+  description = "Máximo de Lambdas simultáneas por cola (proyección, SMS, email). En cuentas nuevas con límite de 10 ejecuciones se baja a 2 para que la API siempre tenga capacidad en el pico del check-in."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.sqs_consumer_max_concurrency >= 2 && var.sqs_consumer_max_concurrency <= 1000
+    error_message = "AWS exige entre 2 y 1000."
+  }
+}
+
+variable "db_backup_retention_days" {
+  description = "Días de respaldo automático (PITR) de RDS en modo rds_lab. Learner Lab: 1; cuenta propia: 7 (NFR de recuperación)."
+  type        = number
+  default     = 1
+}
+
 variable "use_lab_role" {
   description = "true en AWS Learner Lab (usa su LabRole). false en una cuenta propia: Terraform crea el rol de las Lambdas con permisos mínimos (iam.tf)."
   type        = bool
