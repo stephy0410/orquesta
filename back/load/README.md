@@ -64,7 +64,7 @@ El p99 local está inflado porque los 100 dispositivos comparten **un proceso No
 
 ### Fase 2: AWS
 
-**Resultado (2026-11-22, cuenta propia, RDS `db.t4g.micro`):** 500/s, 0 dobles admisiones, p50 95 · p95 344 · p99 1.7 s, ráfaga offline 9.7 s. Detalle en [`docs/resultados-aws.md`](../../docs/resultados-aws.md).
+**Resultado (2026-11-22, cuenta propia, RDS `db.t4g.micro`):** 500/s, 0 dobles admisiones, p50 93 · p95 370 · p99 1.3 s (CPU de la base al 86 %), ráfaga offline < 30 s. Detalle en [`docs/resultados-aws.md`](../../docs/resultados-aws.md).
 
 El script reintenta como el escáner real: todo error que no sea 400/403 se reintenta con backoff exponencial (1.5 s base, tope 60 s), hasta 6 intentos y con el mismo `batch_id`. El reporte separa la latencia por petición (`latencia_lote_ms`, la del NFR), el tiempo hasta el ack con reintentos (`tiempo_hasta_ack_ms`) y los reintentos por status.
 
