@@ -87,42 +87,52 @@ export async function createAppContext(options = {}) {
 /**
  * Immediate Outbox Flush post-commit (07-system-design §2.3, NFR-03):
  * publica inmediatamente los eventos pendientes de `outbox_event` hacia `projection` / `SNS`.
+ *
+ * Cada flush RECLAMA sus filas (FOR UPDATE SKIP LOCKED en PgStore): medido en AWS, cuando cada
+ * petición leía los mismos 100 pendientes sin bloquearlos, 30 Lambdas concurrentes reenviaban los
+ * mismos mensajes una y otra vez (≈ 10 llamadas a SQS por petición) y el p99 del check-in subía a
+ * 1.7 s. Una falla al publicar deja las filas pendientes para el siguiente flush o el poller.
  */
 export async function flushOutboxNow(ctx, limit = 100) {
-  const pending = await ctx.store.fetchPendingOutbox(limit);
-  if (!pending || pending.length === 0) return { flushed: 0 };
-
-  const projectionMsgs = [];
-  const publishedIds = [];
-
-  for (const row of pending) {
-    if (row.topic === "projection") {
-      projectionMsgs.push({
-        outbox_event_id: row.id,
-        event_id: row.event_id,
-        event_type: row.event_type,
-        payload: row.payload,
-        t_ingest: row.t_ingest,
-      });
-      publishedIds.push(row.id);
-    } else if (row.topic === "notifications") {
-      await ctx.queueBus.publishNotification(
-        {
+  const publish = async (pending) => {
+    const projectionMsgs = [];
+    const publishedIds = [];
+    for (const row of pending) {
+      if (row.topic === "projection") {
+        projectionMsgs.push({
           outbox_event_id: row.id,
           event_id: row.event_id,
           event_type: row.event_type,
-          ...row.payload,
-        },
-        row.canal || "ambos"
-      );
-      publishedIds.push(row.id);
+          payload: row.payload,
+          t_ingest: row.t_ingest,
+        });
+        publishedIds.push(row.id);
+      } else if (row.topic === "notifications") {
+        await ctx.queueBus.publishNotification(
+          {
+            outbox_event_id: row.id,
+            event_id: row.event_id,
+            event_type: row.event_type,
+            ...row.payload,
+          },
+          row.canal || "ambos"
+        );
+        publishedIds.push(row.id);
+      }
     }
-  }
+    if (projectionMsgs.length > 0) {
+      await ctx.queueBus.sendToProjection(projectionMsgs);
+    }
+    return publishedIds;
+  };
 
-  if (projectionMsgs.length > 0) {
-    await ctx.queueBus.sendToProjection(projectionMsgs);
+  if (typeof ctx.store.publishPendingOutbox === "function") {
+    const ids = await ctx.store.publishPendingOutbox(limit, publish, ctx.now());
+    return { flushed: ids.length };
   }
-
+  const pending = await ctx.store.fetchPendingOutbox(limit);
+  if (!pending || pending.length === 0) return { flushed: 0 };
+  const publishedIds = await publish(pending);
   await ctx.store.markOutboxPublished(publishedIds, ctx.now());
   return { flushed: publishedIds.length };
 }

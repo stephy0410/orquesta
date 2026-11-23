@@ -1295,6 +1295,31 @@ export class PgStore {
     return res.rows;
   }
 
+  /**
+   * Reclama hasta `limit` filas pendientes con FOR UPDATE SKIP LOCKED, las entrega a `publish` y
+   * marca como publicadas las que devuelva, todo en una transacción. Varias Lambdas pueden vaciar
+   * el outbox a la vez sin publicar la misma fila dos veces; si `publish` falla o la Lambda muere,
+   * el ROLLBACK deja las filas pendientes para el siguiente flush o el poller (at-least-once).
+   */
+  async publishPendingOutbox(limit, publish, now = new Date()) {
+    return withTx(this.pool, async (client) => {
+      const res = await client.query(
+        `SELECT * FROM outbox_event WHERE published_at IS NULL
+          ORDER BY created_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
+        [limit]
+      );
+      if (res.rows.length === 0) return [];
+      const ids = await publish(res.rows);
+      if (ids.length > 0) {
+        await client.query(
+          `UPDATE outbox_event SET published_at = $2 WHERE id = ANY($1::char(26)[]) AND published_at IS NULL`,
+          [ids, toIso(now)]
+        );
+      }
+      return ids;
+    });
+  }
+
   async markOutboxPublished(ids, now = new Date()) {
     if (!ids || ids.length === 0) return;
     await this.pool.query(

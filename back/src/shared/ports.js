@@ -967,18 +967,26 @@ export class SqsSnsQueueBus {
     const { SendMessageBatchCommand } = await import("@aws-sdk/client-sqs");
     const sqs = await this._getSqs();
     const list = Array.isArray(messages) ? messages : [messages];
+    // Lotes de 10 (máximo de SQS) en paralelo: un flush no espera N viajes en serie.
+    const chunks = [];
+    for (let i = 0; i < list.length; i += 10) chunks.push(list.slice(i, i + 10));
+    const results = await Promise.all(
+      chunks.map((chunk) =>
+        sqs.send(
+          new SendMessageBatchCommand({
+            QueueUrl: this.projectionQueueUrl,
+            Entries: chunk.map((m, idx) => ({
+              Id: String(idx),
+              MessageBody: JSON.stringify(m),
+            })),
+          })
+        )
+      )
+    );
     const ids = [];
-    for (let i = 0; i < list.length; i += 10) {
-      const chunk = list.slice(i, i + 10);
-      const res = await sqs.send(
-        new SendMessageBatchCommand({
-          QueueUrl: this.projectionQueueUrl,
-          Entries: chunk.map((m, idx) => ({
-            Id: String(idx),
-            MessageBody: JSON.stringify(m),
-          })),
-        })
-      );
+    for (const res of results) {
+      // Una entrada rechazada por SQS no puede marcarse como publicada.
+      if (res.Failed?.length) throw new Error(`SQS rechazó ${res.Failed.length} mensajes de proyección`);
       for (const s of res.Successful || []) ids.push(s.MessageId);
     }
     return ids;
