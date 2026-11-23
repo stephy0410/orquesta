@@ -60,6 +60,11 @@ const CFG = {
 // Invitados únicos necesarios por evento para que cada escaneo "nuevo" sea de alguien distinto.
 CFG.guestsPerEvent = Math.ceil((CFG.rate * CFG.duration) / CFG.events) + 10;
 
+// Backoff del escáner real (front/src/app/core/sync/batch-sync.service.ts).
+const BASE_BACKOFF_MS = 1_500;
+const MAX_BACKOFF_MS = 60_000;
+const MAX_ATTEMPTS = 6;
+
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
 import {
@@ -95,7 +100,10 @@ async function openDevice(client, plannerHeaders, eventId, accessToken, deviceId
 const stats = {
   batches: 0,
   batchErrors: [],
-  latenciesMs: [],
+  latenciesMs: [], // por petición HTTP (lo que mide el NFR p99 < 300 ms)
+  ackMs: [], // desde el primer intento hasta el ack, con reintentos incluidos
+  retries: 0,
+  retryStatuses: {},
   itemsSent: 0,
   itemsWithoutCheckinId: 0,
   verdicts: {},
@@ -123,22 +131,37 @@ async function sendBatch(client, device, invitationIds) {
   };
   for (const e of events) stats.scannedInvitations.add(e.invitation_id);
   stats.itemsSent += events.length;
-  const t0 = performance.now();
-  let res;
-  try {
-    res = await client.request("POST", `/v1/scan-sessions/${device.sessionId}/batches`, {
-      headers: { ...device.headers, "idempotency-key": body.batch_id },
-      body,
-    });
-  } catch (err) {
-    stats.batchErrors.push({ error: String(err?.message || err) });
-    return null;
+  // Igual que BatchSyncService en la PWA: todo error que no sea 400/403 se reintenta con backoff
+  // exponencial + jitter y el MISMO batch_id (llave de idempotencia), porque la cola del
+  // dispositivo es durable. Se cuentan los reintentos para no esconder la saturación.
+  const tAck = performance.now();
+  let res = null;
+  let ms = 0;
+  for (let attempt = 1; ; attempt++) {
+    const t0 = performance.now();
+    let status;
+    try {
+      res = await client.request("POST", `/v1/scan-sessions/${device.sessionId}/batches`, {
+        headers: { ...device.headers, "idempotency-key": body.batch_id },
+        body,
+      });
+      status = res.status;
+    } catch (err) {
+      res = null;
+      status = "red";
+    }
+    ms = performance.now() - t0;
+    stats.latenciesMs.push(ms);
+    if (status === 200 || status === 400 || status === 403 || attempt >= MAX_ATTEMPTS) break;
+    stats.retries += 1;
+    stats.retryStatuses[status] = (stats.retryStatuses[status] || 0) + 1;
+    const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS) + Math.random() * BASE_BACKOFF_MS;
+    await new Promise((r) => setTimeout(r, backoff));
   }
-  const ms = performance.now() - t0;
   stats.batches += 1;
-  stats.latenciesMs.push(ms);
-  if (res.status !== 200) {
-    stats.batchErrors.push({ status: res.status, code: res.body?.error?.code });
+  stats.ackMs.push(performance.now() - tAck);
+  if (!res || res.status !== 200) {
+    stats.batchErrors.push({ status: res?.status ?? "red", code: res?.body?.error?.code });
     return { ms, ok: false };
   }
   for (const r of res.body.results || []) {
@@ -273,9 +296,11 @@ async function main() {
       const elapsed = performance.now() - tickStart;
       if (elapsed < 1000) await new Promise((r) => setTimeout(r, 1000 - elapsed));
       if (tick % 10 === 9) {
-        log(`t=${tick + 1}s enviados=${stats.itemsSent} lotes=${stats.batches} en_vuelo=${inflight.size} errores=${stats.batchErrors.length}`);
+        log(`t=${tick + 1}s enviados=${stats.itemsSent} lotes=${stats.batches} en_vuelo=${inflight.size} reintentos=${stats.retries} errores=${stats.batchErrors.length}`);
       }
     }
+    const sendSeconds = (performance.now() - tLoad) / 1000;
+    const onlineItems = stats.itemsSent - (CFG.offlineBacklog > 0 ? Math.min(CFG.offlineBacklog, offlineDevice.roster.length) : 0);
     await Promise.all([...inflight]);
     const loadSeconds = (performance.now() - tLoad) / 1000;
 
@@ -320,8 +345,10 @@ async function main() {
     Object.assign(report, {
       carga: {
         objetivo_checkins_por_s: CFG.rate,
-        logrado_checkins_por_s: round(stats.itemsSent / loadSeconds),
-        duracion_s: round(loadSeconds),
+        // Solo la carga en línea; la ráfaga offline se reporta aparte (ac04_rafaga_offline).
+        logrado_checkins_por_s: round(onlineItems / sendSeconds),
+        duracion_envio_s: round(sendSeconds),
+        duracion_hasta_ultimo_ack_s: round(loadSeconds),
         escaneos_enviados: stats.itemsSent,
         invitaciones_unicas: uniqueScanned,
         lotes: stats.batches,
@@ -334,6 +361,11 @@ async function main() {
         p99: round(percentile(sorted, 99)),
         max: round(sorted[sorted.length - 1] ?? null),
       },
+      reintentos: { total: stats.retries, por_status: stats.retryStatuses },
+      tiempo_hasta_ack_ms: (() => {
+        const a = [...stats.ackMs].sort((x, y) => x - y);
+        return { p50: round(percentile(a, 50)), p95: round(percentile(a, 95)), p99: round(percentile(a, 99)), max: round(a.at(-1) ?? null) };
+      })(),
       ac01: {
         perdidos_sin_checkin_id: stats.itemsWithoutCheckinId,
         invitaciones_admitidas_2_veces: doubleAdmitted,
@@ -355,7 +387,7 @@ async function main() {
       "AC-01 sin pérdidas": stats.itemsWithoutCheckinId === 0 && stats.batchErrors.length === 0,
       "AC-01 sin dobles admisiones": doubleAdmitted === 0 && (!db || db.invitaciones_admitidas_2_veces === 0),
       "AC-01 cada invitación única admitida 1 vez": admittedUnique === uniqueScanned,
-      "AC-01 tasa sostenida ≥ 95 % del objetivo": stats.itemsSent / loadSeconds >= CFG.rate * 0.95,
+      "AC-01 tasa sostenida ≥ 95 % del objetivo": onlineItems / sendSeconds >= CFG.rate * 0.95,
       "AC-04 ráfaga offline < 30 s": !offlineResult || offlineResult.total_s < 30,
       "FR3 tablero converge": dashboardOk,
     };
