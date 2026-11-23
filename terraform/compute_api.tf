@@ -76,7 +76,7 @@ resource "aws_lambda_function" "import_worker" {
   filename         = data.archive_file.backend_bundle.output_path
   source_code_hash = data.archive_file.backend_bundle.output_base64sha256
   timeout          = 300
-  memory_size      = 512
+  memory_size      = var.import_worker_memory_mb
 
   ephemeral_storage {
     size = 1024
