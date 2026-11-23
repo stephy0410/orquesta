@@ -6,6 +6,7 @@ import {
   verifyEs256Bytes,
   verifyEs256Jws,
 } from "./crypto.js";
+import { createHash } from "node:crypto";
 import { ulid } from "./ulid.js";
 
 // ============================================================================
@@ -689,6 +690,22 @@ export class LocalQrSigner {
   }
 }
 
+/**
+ * Petición a KMS Sign. KMS acepta hasta 4096 bytes en modo RAW y el roster firmado de un evento
+ * pesa mucho más, así que se manda el digest SHA-256 (MessageType DIGEST). Con ECDSA_SHA_256 la
+ * firma es la misma que sobre el mensaje completo: el escáner la verifica igual (Web Crypto
+ * ECDSA P-256 / SHA-256).
+ */
+export function kmsSignInput(keyId, bytes) {
+  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes), "utf8");
+  return {
+    KeyId: keyId,
+    Message: createHash("sha256").update(buf).digest(),
+    MessageType: "DIGEST",
+    SigningAlgorithm: "ECDSA_SHA_256",
+  };
+}
+
 export class KmsQrSigner {
   constructor({ keyId, region = process.env.AWS_REGION || "us-east-1" }) {
     this.activeKeyId = keyId;
@@ -720,15 +737,7 @@ export class KmsQrSigner {
   async signBytes(bytes) {
     const { SignCommand } = await import("@aws-sdk/client-kms");
     const client = await this._getClient();
-    const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes), "utf8");
-    const res = await client.send(
-      new SignCommand({
-        KeyId: this.activeKeyId,
-        Message: buf,
-        MessageType: "RAW",
-        SigningAlgorithm: "ECDSA_SHA_256",
-      })
-    );
+    const res = await client.send(new SignCommand(kmsSignInput(this.activeKeyId, bytes)));
     const p1363 = derEcdsaToP1363(Buffer.from(res.Signature));
     return p1363.toString("base64url");
   }
