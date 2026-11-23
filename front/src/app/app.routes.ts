@@ -21,6 +21,7 @@ export const routes: Routes = [
     // Ruta pública con NFR de LCP (FR1, issue #8): va en el bundle inicial para ahorrar un viaje
     // de red en 4G. Pesa ~4 KB comprimido; planner, proveedor y escáner siguen en carga diferida.
     path: 'invitacion',
+    title: 'Tu invitación',
     component: InvitationPage,
   },
   {
@@ -30,7 +31,7 @@ export const routes: Routes = [
   },
   {
     path: 'privacidad',
-    title: 'Aviso de privacidad · Orquesta',
+    title: 'Aviso de privacidad',
     loadComponent: () =>
       import('./features/privacy/privacy.page').then((m) => m.PrivacyPage),
   },
