@@ -2507,6 +2507,21 @@ export class InMemoryStore {
     return this.outboxEvents.filter((e) => !e.published_at).slice(0, limit);
   }
 
+  /** Igual que PgStore: una fila reclamada por un flush no la toma otro flush concurrente. */
+  async publishPendingOutbox(limit, publish, now = new Date()) {
+    this._outboxClaimed ??= new Set();
+    const rows = this.outboxEvents.filter((e) => !e.published_at && !this._outboxClaimed.has(e.id)).slice(0, limit);
+    if (rows.length === 0) return [];
+    for (const r of rows) this._outboxClaimed.add(r.id);
+    try {
+      const ids = await publish(rows);
+      await this.markOutboxPublished(ids, now);
+      return ids;
+    } finally {
+      for (const r of rows) this._outboxClaimed.delete(r.id);
+    }
+  }
+
   async markOutboxPublished(ids, now = new Date()) {
     const idSet = new Set(ids);
     const nowIso = toIso(now);
