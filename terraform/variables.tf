@@ -147,6 +147,18 @@ variable "api_memory_mb" {
   default     = 1024
 }
 
+variable "api_reserved_concurrency" {
+  description = "Tope de instancias simultáneas de la Lambda api. Sin RDS Proxy, cada instancia abre sus propias conexiones: el tope debe caber en max_connections de la BD. null = 30 con la RDS micro de la demo (~90 conexiones) y sin tope (-1) con Aurora."
+  type        = number
+  default     = null
+}
+
+variable "api_db_pool_max" {
+  description = "Conexiones máximas a la BD por instancia de la Lambda api (DB_POOL_MAX). Una instancia atiende una petición a la vez, así que 2 basta."
+  type        = number
+  default     = 2
+}
+
 variable "import_worker_memory_mb" {
   description = "Memoria de la Lambda import-worker. 1769 MB = 1 vCPU completa: el import es CPU (cifrado de PII, HMAC y PNG del QR) y con 512 MB (~0.3 vCPU) tardaba ~80 ms por invitado."
   type        = number

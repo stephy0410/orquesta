@@ -44,6 +44,10 @@ resource "aws_lambda_function" "api" {
   # Más memoria = más CPU en Lambda: login (hash de contraseña) y arranque en frío más rápidos,
   # así cada ejecución dura menos y la misma concurrencia atiende más peticiones en el pico.
   memory_size = var.api_memory_mb
+  # Sin RDS Proxy (ADR-7) las conexiones a la BD crecen con las instancias. Medido en AWS sin tope:
+  # 641 instancias y "too many clients" en la micro. Al rebasar el tope API Gateway responde 503 y el
+  # escáner reintenta con la misma llave de idempotencia (su cola es durable).
+  reserved_concurrent_executions = var.api_reserved_concurrency != null ? var.api_reserved_concurrency : (local.db_mode == "aurora" ? -1 : 30)
 
   depends_on = [
     aws_cloudwatch_log_group.lambdas,
@@ -63,6 +67,7 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = merge(local.common_lambda_env, {
       ORQUESTA_COMPONENT = "api"
+      DB_POOL_MAX        = tostring(var.api_db_pool_max)
     })
   }
 }

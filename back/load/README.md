@@ -1,9 +1,10 @@
 # Pruebas de carga
 
-Dos scripts con la misma infraestructura (`lib.js`: cliente local en proceso contra PostgreSQL o HTTP contra AWS):
+Tres scripts con la misma infraestructura (`lib.js`: cliente local en proceso contra PostgreSQL o HTTP contra AWS):
 
 - [`checkin-load.js`](#check-in-checkin-loadjs): FR2, AC-01 y AC-04.
 - [`import-load.js`](#import-de-invitados-import-loadjs): FR1, importar 1 000 invitados en < 30 s (issue #7).
+- [`api-latency.js`](#latencias-de-lectura-y-del-plano-de-mesas-api-latencyjs): FR4, FR7 y NFR-10.
 
 ## Check-in (`checkin-load.js`)
 
@@ -52,7 +53,7 @@ Crea un esquema `load_*` aislado y lo borra al terminar (`KEEP_LOAD_SCHEMA=1` pa
 
 | Métrica | Resultado |
 | --- | --- |
-| Tasa sostenida | 517 check-ins/s · 31 000 escaneos · 6 002 lotes · 0 errores |
+| Tasa sostenida | 500 check-ins/s en línea (+ 1 000 de la ráfaga offline) · 31 000 escaneos · 6 002 lotes · 0 errores |
 | Perdidos / dobles admisiones | 0 / 0 (API y BD) |
 | Duplicados cross-dispositivo | 607 `ya_registrado` |
 | Ráfaga offline 1 000 | 1.4 s (lotes de 736 y 636 ms) |
@@ -61,10 +62,16 @@ Crea un esquema `load_*` aislado y lo borra al terminar (`KEEP_LOAD_SCHEMA=1` pa
 
 El p99 local está inflado porque los 100 dispositivos comparten **un proceso Node**; en AWS cada lote corre en su propia Lambda. La cifra que cuenta para el NFR (p99 < 300 ms) es la de la fase 2.
 
-### Fase 2: AWS (necesita el Learner Lab abierto)
+### Fase 2: AWS
+
+**Resultado (2026-11-22, cuenta propia, RDS `db.t4g.micro`):** 500/s, 0 dobles admisiones, p50 95 · p95 344 · p99 1.7 s, ráfaga offline 9.7 s. Detalle en [`docs/resultados-aws.md`](../../docs/resultados-aws.md).
+
+El script reintenta como el escáner real: todo error que no sea 400/403 se reintenta con backoff exponencial (1.5 s base, tope 60 s), hasta 6 intentos y con el mismo `batch_id`. El reporte separa la latencia por petición (`latencia_lote_ms`, la del NFR), el tiempo hasta el ack con reintentos (`tiempo_hasta_ack_ms`) y los reintentos por status.
+
+Pasos:
 
 1. Desplegar con el workflow **Deploy** (README raíz §8) y tomar `api_endpoint` de `terraform output`.
-2. Crear un planner y verificar su email. En `lab` el email está en modo *capture*: el token aparece en los logs de CloudWatch de `notify-email`.
+2. Crear un planner y verificar su email. Con SES, el token viaja en el mensaje de SNS `orquesta-*-notifications`: una cola SQS temporal suscrita al tema lo recibe sin depender del buzón.
 3. Correr:
 
 ```bash
@@ -75,6 +82,7 @@ node load/checkin-load.js --target=http \
 
 Notas:
 - API Gateway está limitado a 250 req/s (ráfaga 500). Con lotes de 5 escaneos, 500 check-ins/s son ~100 req/s, dentro del límite.
+- La Lambda `api` tiene un tope de 30 instancias con la RDS micro (`api_reserved_concurrency`): lo que lo rebase recibe 429/503 y se reintenta.
 - RDS de `lab` es `db.t4g.micro`: el resultado será más pesimista que con Aurora en producción. Reportarlo así.
 - La verificación en BD no aplica en `http`; se verifica por API (veredictos + tablero).
 
@@ -107,3 +115,17 @@ Qué cambió en `PgStore.executeImportBatch`:
 5. **Bug corregido:** si el aforo se agotaba en el worker, el job quedaba `en_proceso` para siempre (el ROLLBACK deshacía el `fallido`). Ahora queda `fallido` con 0 creados. Hay prueba de aceptación.
 
 El costo restante (~6 ms por fila) es CPU: cifrado AES de PII, HMAC y render del PNG.
+
+## Latencias de lectura y del plano de mesas (`api-latency.js`)
+
+Pocas peticiones, no es prueba de estrés:
+- 200 búsquedas de proveedores con concurrencia 5 (FR4, p95 < 500 ms);
+- un evento con 500 invitados y 50 mesas, con las 500 asignaciones en serie y `If-Match` (FR7, guardar < 1 s), verificando que nadie queda sin mesa y que ninguna mesa rebasa su capacidad;
+- una lectura del tablero cada 10 asignaciones (NFR-10).
+
+```bash
+node load/api-latency.js                     # local
+node load/api-latency.js --target=http --base-url=... --planner-email=... --planner-password=...
+```
+
+En AWS (2026-11-22): búsqueda p95 123 ms, asignación p99 524 ms, tablero p95 414 ms.

@@ -43,7 +43,8 @@ Este README sigue el **delivery framework** de system design (Requirements → C
 | FR8 | Invitación por SMS **y** email | ✅ | *Ciclo completo del invitado*, *Bordes normativos…* (`indeterminado`) |
 
 - **16/16 escenarios de aceptación en verde contra los dos backends de datos**: `InMemoryStore` y **PostgreSQL 16 real** (el que usa producción). Antes de esta entrega la suite solo corría en memoria y 7 de 9 escenarios fallaban en PostgreSQL; ver [§7.3](#73-defectos-encontrados-al-correr-contra-postgresql).
-- **Pruebas de carga (local, PostgreSQL 16):** check-in a **517/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s. Import de **1 000 invitados en 6.3 s** con latencia de AWS simulada (meta 30 s). Ver [§7.4](#74-pruebas-de-carga).
+- **Pruebas de carga (local, PostgreSQL 16):** check-in a **500/s** durante 60 s en 50 eventos con **0 perdidos, 0 dobles admisiones y p99 de 221 ms** (meta 300 ms); ráfaga offline de 1 000 en 0.5 s. Import de **1 000 invitados en 6.3 s** con latencia de AWS simulada (meta 30 s). Ver [§7.4](#74-pruebas-de-carga).
+- **Pruebas de carga en AWS (RDS micro, 2026-11-22):** 500 check-ins/s con **0 dobles admisiones**, p50 95 ms y p99 1.7 s (la micro se satura; meta 300 ms ❌); ráfaga offline en 9.7 s; **1 000 invitados en 4.6 s**; búsqueda p95 123 ms; plano de mesas p99 524 ms. Hallaron y corrigieron 3 defectos que en local no aparecían. **Qué se cumple y qué no, requerimiento por requerimiento: [`docs/resultados-aws.md`](docs/resultados-aws.md).**
 - **Listo para producción** salvo la decisión del dominio: ver [§13](#13-lista-de-verificación-de-producción).
 - **83 endpoints HTTP**, **6 Lambdas**, **7 migraciones versionadas**.
 - Frontend Angular (PWA) con las 4 superficies; build y tests corren en CI. Lo pendiente está en [§12](#12-riesgos-y-trabajo-pendiente) y en los [issues del repo](https://github.com/stephy0410/orquesta/issues).
@@ -71,8 +72,8 @@ La descomposición normativa en RF-01…RF-22 con prioridad MVP está en [`docs/
 
 | Área | Objetivo | Cómo se cumple hoy |
 | --- | --- | --- |
-| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
-| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 517/s sin pérdidas ni duplicados, p99 221 ms ([§7.4](#74-pruebas-de-carga)). |
+| **Invitaciones y RSVP** (FR1) | Importar 1 000 invitados < 30 s. QR firmado, no adivinable, sin PII. RSVP con LCP p75 < 2.5 s en 4G. | Import asíncrono por SQS con inserción en lote, firma de QR en paralelo y PNG después del commit: **1 000 en 6.3 s, 20 000 en 125 s** con latencia de AWS simulada ([§7.4](#74-pruebas-de-carga)); en AWS, **1 000 en 4.6 s** y 5 000 en 8.4 s ([resultados](docs/resultados-aws.md)); QR = JWS **ES256** (KMS) con `{invitation_id, event_id, token_version}`; `rsvp_token` ≥ 128 bits, solo se guarda su SHA-256. Shell de RSVP cacheable (token en el *fragment*). |
+| **Check-in** (FR2) | p99 < 300 ms en línea y < 100 ms offline; 500 escrituras/s; cero check-ins perdidos; un QR nunca admite más de su cupo; 500 pendientes sincronizan en < 30 s. | Verificación de firma **en el dispositivo** (Web Crypto) + cola durable en IndexedDB (RPO 0); lotes ≤ 500 en **una** transacción; idempotencia por `(invitation, device, sequence)`; índice único parcial `(invitation_id, admision_ciclo) WHERE kind='admitido'`. Carga local: 500/s sin pérdidas ni duplicados, p99 221 ms; en AWS con RDS micro: 500/s sin duplicados, p99 1.7 s ([resultados en AWS](docs/resultados-aws.md)). |
 | **Tablero** (FR3) | Un cambio visible en < 3 s; 10 000 conexiones; reconexión < 5 s. | Read model `event_counters` alimentado por outbox + *flush* inmediato + proyector con ventana de 1 s; el cliente hace polling cada 3 s. Spec vigente: **≤ 5 s p95** (NFR-03). Ver [ADR-3](#adr-3--tablero-por-polling-con-read-model-en-lugar-de-sse--valkey). |
 | **Proveedores** (FR4) | Búsqueda p95 < 500 ms; nunca doble reserva solapada; en emergencia la solicitud llega en < 60 s; nunca más proveedores que lugares. | `pg_advisory_xact_lock` por trabajador + suma de plazas solapadas (`tstzrange &&`) en la función `aceptar_worker_reservation`; conflicto determinista que nombra la reserva ganadora; **tope por requerimiento** con lock `(evento, rol)` → `409 REQUERIMIENTO_CUBIERTO` o aceptación parcial; **aviso al proveedor por SMS + email vía outbox** (flush inmediato, segundos; en emergencia «URGENTE» y 15 min para responder). |
 | **Recordatorios** (FR5) | A la hora programada ±5 min, en la zona horaria del evento, nunca dos veces. | `reminder_job` con `disparar_en` en UTC (zona IANA por evento), barrido cada minuto; unicidad `(destinatario, plantilla, ventana)`. |
@@ -306,7 +307,7 @@ flowchart TB
 #### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
 - **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
 - **Por qué:** una sola base transaccional simplifica la convergencia cross-dispositivo, la anulación auditada y el corte al cierre.
-- **Evidencia:** prueba de carga local ([§7.4](#74-pruebas-de-carga)): 517 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas, 0 dobles admisiones. Falta la medición en AWS (`db.t4g.micro`); la vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
+- **Evidencia:** prueba de carga ([§7.4](#74-pruebas-de-carga)): 500 check-ins/s sostenidos 60 s sobre 50 eventos, 0 pérdidas y 0 dobles admisiones, tanto en local como en AWS con `db.t4g.micro` (ahí el p99 sube a 1.7 s porque la micro se satura; [resultados](docs/resultados-aws.md)). La vía de escape es particionar `checkin_event` por evento o mover solo la ingesta a DynamoDB con escrituras condicionales.
 
 #### ADR-3 · Tablero por polling con read model en lugar de SSE + Valkey
 - **Decisión:** `event_counters` alimentado por outbox; el cliente consulta cada 3 s con `limit ≤ 25`.
@@ -324,12 +325,12 @@ flowchart TB
 #### ADR-6 · La demo se despliega en una cuenta propia, no en Learner Lab
 - **Contexto:** Learner Lab bloquea SES (correo), SMS, CloudFront, la creación de roles IAM, las instancias de Aurora y la lectura de *object lock* de S3, que el provider de Terraform (v5 y v6) necesita para administrar buckets. Además, la sesión se apaga a las 4 h y las credenciales cambian.
 - **Decisión:** desplegar la demo en una cuenta propia en el plan gratuito de AWS (crédito de USD 157), con el perfil económico de `lab` más CloudFront, WAF y SES. Terraform crea el rol de las Lambdas con permisos mínimos (`use_lab_role=false`, [`iam.tf`](terraform/iam.tf)); Learner Lab sigue soportado con `LabRole`.
-- **Consecuencias:** correo real y HTTPS (la cámara del escáner lo exige). El plan gratuito trae sus propios límites: 10 Lambdas simultáneas (aumento a 1 000 solicitado), respaldos de RDS de 1 día y sin SMS; los tres se quitan pasando la cuenta al plan de pago. Costo de la demo: unos USD 0.85 al día. SES arranca en *sandbox*: solo envía a correos verificados hasta que AWS aprueba el acceso de producción.
+- **Consecuencias:** correo real y HTTPS (la cámara del escáner lo exige). El plan gratuito trae sus propios límites: respaldos de RDS de 1 día y sin SMS; los tres se quitan pasando la cuenta al plan de pago. Costo de la demo: unos USD 0.85 al día. SES arranca en *sandbox*: solo envía a correos verificados hasta que AWS aprueba el acceso de producción.
 
 #### ADR-7 · Base de datos de la demo: RDS micro y no Aurora ni RDS Proxy
 - **Contexto:** Aurora Serverless v2 cobra un mínimo de 0.5 ACU (≈ USD 43 al mes) aunque no haya tráfico, y RDS Proxy otros ≈ USD 20 al mes; juntos agotarían el crédito de la demo en pocos meses.
 - **Decisión:** la demo usa RDS PostgreSQL 16 `db.t4g.micro` (cifrado, en la capa gratuita). La configuración de producción no cambia: Aurora Serverless v2 con réplica y PITR de 7 días (`environment=prod`).
-- **Consecuencias:** una sola instancia, sin failover, con unas 80 conexiones. Con el límite actual de 10 Lambdas (5 conexiones cada una, ≤ 50) alcanza de sobra. **Brecha conocida:** a 1 000 Lambdas simultáneas serían hasta 5 000 conexiones, más de las que acepta PostgreSQL. Antes de escalar hay que poner **RDS Proxy** entre las Lambdas y la base, bajar `DB_POOL_MAX` a 1–2 y reservar concurrencia para la Lambda `api` ([issue](https://github.com/stephy0410/orquesta/issues/32)).
+- **Consecuencias:** una sola instancia, sin failover, con unas 90 conexiones. **Se comprobó en AWS (2026-11-22):** con la cuota de 1 000 Lambdas, el API escaló a 641 instancias y la micro respondió `too many clients` (82 % de lotes fallidos). Mitigación aplicada: **tope de 30 instancias para `api` con `DB_POOL_MAX=2`** (`api_reserved_concurrency`, `api_db_pool_max`). Al rebasarlo, API Gateway responde 503 y el cliente reintenta con la misma llave de idempotencia. Así sostiene 500 check-ins/s sin errores de base, pero con p99 de 1.7 s ([resultados](docs/resultados-aws.md)). Para escalar sigue faltando **RDS Proxy** ([issue](https://github.com/stephy0410/orquesta/issues/32)).
 
 Diseño completo y costos: [`docs/delivery/05-high-level-design.md`](docs/delivery/05-high-level-design.md) · [`07-system-design-back-front.md`](docs/delivery/07-system-design-back-front.md).
 
@@ -408,14 +409,16 @@ Script: [`back/load/checkin-load.js`](back/load/checkin-load.js) (detalle y cóm
 
 | Métrica (local, 2026-11-18) | Objetivo | Primera medición | Tras optimizar |
 | --- | --- | --- | --- |
-| Tasa sostenida 60 s | 500 check-ins/s (AC-01) | 517/s | **517/s** · 31 000 escaneos · 6 002 lotes · 0 errores |
+| Tasa sostenida 60 s | 500 check-ins/s (AC-01) | 500/s | **500/s** · 31 000 escaneos (incluye la ráfaga offline) · 6 002 lotes · 0 errores |
 | Check-ins perdidos | 0 | 0 | **0** |
 | Invitaciones admitidas 2 veces | 0 | 0 | **0** (verificado también en la BD) |
 | Ráfaga offline (1 000 en 2 lotes de 500) | < 30 s (AC-04) | 1.4 s | **0.5 s** |
 | Convergencia del tablero tras la carga | ≤ 5 s (NFR-03) | 1.2 s | **1.2 s** |
 | Latencia por lote (5 escaneos) | p99 < 300 ms en línea | p50 179 · p95 358 · p99 **481 ms** ❌ | p50 122 · p95 193 · p99 **221 ms** ✅ |
 
-**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`. Falta confirmar la cifra en AWS (fase 2); el veredicto en la puerta, de todos modos, se calcula en el dispositivo (< 100 ms).
+**Qué se optimizó:** el ingest hacía 3 lecturas por escaneo; ahora hace 3 por lote. Y, sobre todo, los arreglos se pasaban como `text[]` contra columnas `char(26)`: PostgreSQL convertía la columna y **no usaba los índices** (seq scan, confirmado con `EXPLAIN`). Con `char(26)[]` usa `uq_checkin_idempotency` y la PK de `invitation`. El veredicto en la puerta, de todos modos, se calcula en el dispositivo (< 100 ms).
+
+**En AWS (RDS `db.t4g.micro`, 2026-11-22):** 500/s sostenido, 0 dobles admisiones, p50 95 · p95 344 · **p99 1.7 s** (con 13 473 respuestas 429/503 reintentadas por el tope de concurrencia), ráfaga offline en 9.7 s. Detalle, causas y qué falta: [`docs/resultados-aws.md`](docs/resultados-aws.md).
 
 #### Import de invitados
 
@@ -428,6 +431,8 @@ Script: [`back/load/import-load.js`](back/load/import-load.js). Archivos con 2 %
 | 20 000 | ~21 min (supera el timeout) | **125 s** ✅ | < 300 s (timeout de `import-worker`) |
 
 Cambios: inserción en lote (`unnest`), firma de QR en paralelo con concurrencia acotada (cuota de KMS), PNG del QR después del COMMIT y con filtro PNG fijo (2× más rápido, mismo tamaño).
+
+**En AWS (2026-11-22):** 1 000 en **4.6 s** y 5 000 en **8.4 s** hasta `completado` (la Lambda termina los PNG a los 22.8 s y 96 s), con el `import-worker` en 1 769 MB (1 vCPU). Con 512 MB tardaba ~80 ms por invitado. **20 000 no se corrió:** los PNG llevarían la Lambda a ~380 s, arriba del timeout de 300 s; ver [`docs/resultados-aws.md`](docs/resultados-aws.md).
 
 ---
 
