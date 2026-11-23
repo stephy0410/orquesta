@@ -147,6 +147,12 @@ variable "api_memory_mb" {
   default     = 1024
 }
 
+variable "import_worker_memory_mb" {
+  description = "Memoria de la Lambda import-worker. 1769 MB = 1 vCPU completa: el import es CPU (cifrado de PII, HMAC y PNG del QR) y con 512 MB (~0.3 vCPU) tardaba ~80 ms por invitado."
+  type        = number
+  default     = 1769
+}
+
 variable "sqs_consumer_max_concurrency" {
   description = "Máximo de Lambdas simultáneas por cola (proyección, SMS, email). En cuentas nuevas con límite de 10 ejecuciones se baja a 2 para que la API siempre tenga capacidad en el pico del check-in."
   type        = number
