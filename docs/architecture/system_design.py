@@ -43,22 +43,28 @@ GRAPH = {
     "fontname": "Helvetica",
     "labelloc": "t",
     "pad": "0.6",
-    "nodesep": "0.55",
-    "ranksep": "1.4",
-    "splines": "spline",
+    "nodesep": "0.7",
+    "ranksep": "1.3",
+    "splines": "ortho",  # flechas en ángulo recto: menos cruces visuales
     "compound": "true",  # permite que una flecha salga del borde de un Cluster
 }
 NODE = {"fontsize": "12", "fontname": "Helvetica"}
-EDGE = {"fontsize": "10", "fontname": "Helvetica"}
+EDGE = {"fontsize": "11", "fontname": "Helvetica", "penwidth": "1.4"}
 
-LAMBDA_CLUSTER = "Procesamiento asíncrono · Lambda workers"
+SQS_CLUSTER = "SQS (cada cola con DLQ)"
+WORKERS_CLUSTER = "Procesamiento asíncrono · Lambda workers"
+SEC_CLUSTER = "Seguridad y operación · usado por todas las Lambdas"
 
 # Estilos de flecha
 sync = dict(color="#232F3E")                       # petición síncrona
 async_ = dict(color="#E7157B")                     # mensajería asíncrona
 data = dict(color="#3B48CC")                       # lectura / escritura de datos
 ext = dict(color="#7AA116")                        # servicio externo
-ops = dict(color="#8C8C8C", style="dashed")        # transversal (secretos, logs, firma)
+
+
+def e(text: str = "", **style) -> Edge:
+    """Edge con la etiqueta como `xlabel` (Graphviz no coloca `label` con splines=ortho)."""
+    return Edge(xlabel=text, **style) if text else Edge(**style)
 
 
 def build(fmt: str) -> None:
@@ -76,14 +82,16 @@ def build(fmt: str) -> None:
             planner = Users("Planner · Proveedor\n(navegador)")
             staff = MobileClient("Staff\nPWA offline (IndexedDB)")
             guest = Users("Invitado\nlink por email")
-        clients = [planner, staff, guest]
 
         with Cluster("Entrada / API"):
             waf = WAF("AWS WAF\nrate limit")
             cdn = CloudFront("CloudFront\nCDN · HTTPS")
-            api_gw = APIGateway("API Gateway\nHTTP API v2 · throttling")
+            api_gw = APIGateway("API Gateway\nHTTP API v2")
 
-        with Cluster("Procesamiento síncrono · Lambda"):
+        with Cluster("Contenido estático"):
+            s3_assets = SimpleStorageServiceS3Bucket("S3 assets\napp Angular · QR PNG\n(los QR los escribe import-worker)")
+
+        with Cluster("Procesamiento síncrono"):
             api = Lambda("api\n(monolito modular)")
 
         with Cluster("Tareas programadas"):
@@ -92,74 +100,67 @@ def build(fmt: str) -> None:
 
         with Cluster("Mensajería"):
             sns = SimpleNotificationServiceSnsTopic("SNS\norquesta-notifications")
-            with Cluster("SQS (cada cola con DLQ)"):
-                q_import = SimpleQueueServiceSqsQueue("import_jobs")
-                q_proj = SimpleQueueServiceSqsQueue("projection")
+            with Cluster(SQS_CLUSTER):
                 q_sms = SimpleQueueServiceSqsQueue("notify_sms")
                 q_email = SimpleQueueServiceSqsQueue("notify_email")
+                q_proj = SimpleQueueServiceSqsQueue("projection")
+                q_import = SimpleQueueServiceSqsQueue("import_jobs")
 
-        with Cluster(LAMBDA_CLUSTER):
-            importer = Lambda("import-worker")
-            projector = Lambda("projector")
-            notify_sms = Lambda("notify-sms\n(modo capture: registra,\nno envía SMS)")
+        with Cluster("Pagos (externo)"):
+            stripe = Stripe("Stripe\n(modo test)")
+
+        with Cluster(WORKERS_CLUSTER):
+            notify_sms = Lambda("notify-sms\n(modo capture:\nno envía SMS)")
             notify_email = Lambda("notify-email")
+            projector = Lambda("projector")
+            importer = Lambda("import-worker")
 
         with Cluster("Datos"):
             db = RDSPostgresqlInstance("RDS PostgreSQL 16\ndb.t4g.micro\ndatos + outbox + read model")
-            s3_assets = SimpleStorageServiceS3Bucket("S3 assets\napp Angular · QR PNG")
             s3_imports = SimpleStorageServiceS3Bucket("S3 imports\nCSV · expira 7 días")
 
-        with Cluster("Seguridad y operación"):
+        with Cluster("Correo"):
+            ses = SimpleEmailServiceSes("Amazon SES\n(sandbox)")
+
+        with Cluster(SEC_CLUSTER):
             kms = KeyManagementService("KMS\nfirma ES256 del QR")
-            secrets = SecretsManager("Secrets Manager\nBD · sesión · webhook · PII")
-            cw = Cloudwatch("CloudWatch\nlogs · EMF · alarmas")
+            secrets = SecretsManager("Secrets Manager")
+            cw = Cloudwatch("CloudWatch\nlogs · métricas · alarmas")
 
-        with Cluster("Externos"):
-            stripe = Stripe("Stripe\n(modo test)")
-            ses = SimpleEmailServiceSes("Amazon SES\nemail (sandbox)")
+        # 1. Entrada
+        [planner, staff, guest] >> e("HTTPS", **sync) >> waf
+        waf >> e(**sync) >> cdn
+        cdn >> e("estático", **sync) >> s3_assets
+        cdn >> e("/v1/*", **sync) >> api_gw
+        api_gw >> e("invoca", **sync) >> api
 
-        # Entrada
-        clients >> Edge(label="HTTPS", **sync) >> waf >> Edge(**sync) >> cdn
-        cdn >> Edge(label="GET estático (OAC)", **sync) >> s3_assets
-        cdn >> Edge(label="HTTPS /v1/*", **sync) >> api_gw
-        api_gw >> Edge(label="Invoca (proxy)", **sync) >> api
+        # 2. API síncrona: escribe dato + evento (outbox) y hace flush inmediato
+        api >> e("lee / escribe\n(dato + evento, misma TX)", **data) >> db
+        api >> e("publica / encola\n(flush inmediato)", lhead="cluster_Mensajería", **async_) >> q_proj
+        api >> e("sube CSV", **data) >> s3_imports
+        api >> e("cobro · webhook HMAC", dir="both", **ext) >> stripe
 
-        # API síncrona
-        api >> Edge(label="Lectura/Escritura\n(dato + evento en la misma TX)", **data) >> db
-        api >> Edge(label="Sube CSV", **data) >> s3_imports
-        api >> Edge(label="Encola import", **async_) >> q_import
-        api >> Edge(label="Publica (flush inmediato)", **async_) >> sns
-        api >> Edge(label="Encola proyección", **async_) >> q_proj
-        api >> Edge(label="Cobro idempotente", **ext) >> stripe
-        stripe >> Edge(label="Webhook HMAC (HTTPS)", constraint="false", **ext) >> api_gw
+        # 3. Fan-out y workers
+        sns >> e("fan-out", **async_) >> [q_sms, q_email]
+        q_sms >> e("trigger", **async_) >> notify_sms
+        q_email >> e("trigger", **async_) >> notify_email
+        q_proj >> e("trigger", **async_) >> projector
+        q_import >> e("trigger", **async_) >> importer
 
-        # Fan-out y workers
-        sns >> Edge(label="Fan-out", **async_) >> [q_sms, q_email]
-        q_import >> Edge(label="Trigger", **async_) >> importer
-        q_proj >> Edge(label="Trigger", **async_) >> projector
-        q_sms >> Edge(label="Trigger", **async_) >> notify_sms
-        q_email >> Edge(label="Trigger", **async_) >> notify_email
+        notify_email >> e("envía", **ext) >> ses
+        projector >> e("contadores", **data) >> db
+        importer >> e("invitados", **data) >> db
+        importer >> e("lee CSV", **data) >> s3_imports
 
-        importer >> Edge(label="Lee CSV", **data) >> s3_imports
-        importer >> Edge(label="Escribe invitados", **data) >> db
-        importer >> Edge(label="Escribe QR PNG", **data) >> s3_assets
-        projector >> Edge(label="Actualiza contadores", **data) >> db
-        notify_email >> Edge(label="Envía email", **ext) >> ses
+        # 4. Tareas programadas
+        cron >> e("trigger", **async_) >> poller
+        poller >> e("re-publica rezagados", lhead="cluster_Mensajería", **async_) >> sns
+        poller >> e("recordatorios ·\nexpiraciones", **data) >> db
+        poller >> e("conciliación", **ext) >> stripe
 
-        # Tareas programadas
-        cron >> Edge(label="Trigger", **async_) >> poller
-        poller >> Edge(label="Rezagados del outbox,\nrecordatorios, expiraciones", **data) >> db
-        poller >> Edge(label="Re-publica", **async_) >> sns
-        poller >> Edge(label="Re-encola", **async_) >> q_proj
-        poller >> Edge(label="Conciliación", **ext) >> stripe
-
-        # Transversal: salen del borde del cluster de Lambda
-        # (todas las Lambdas leen secretos y emiten logs; se dibuja una flecha
-        #  desde el borde del cluster de workers para no saturar el diagrama)
-        api >> Edge(label="Firma QR", **ops) >> kms
-        api >> Edge(label="Lee secretos", **ops) >> secrets
-        api >> Edge(label="Logs y métricas", **ops) >> cw
-        projector >> Edge(label="Secretos · logs", ltail=f"cluster_{LAMBDA_CLUSTER}", **ops) >> secrets
+        # 5. Transversal: todas las Lambdas firman (KMS), leen secretos y mandan logs.
+        #    Se indica en el título del grupo; aquí solo se posiciona con aristas invisibles.
+        api >> Edge(style="invis") >> kms >> Edge(style="invis") >> secrets >> Edge(style="invis") >> cw
 
 
 if __name__ == "__main__":

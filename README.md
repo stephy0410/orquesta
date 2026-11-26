@@ -210,7 +210,7 @@ flowchart LR
 
 ![System Design de Orquesta en AWS](docs/architecture/orquesta_system_design.png)
 
-Solo aparece lo que está desplegado en la demo (workspace `personal` de Terraform): no se dibujan Aurora, dominio propio (Route 53/ACM) ni envío real de SMS, que existen en el código pero no se usaron. Las flechas negras son peticiones síncronas; las rosas, mensajería (encola/trigger); las azules, lectura/escritura de datos; las verdes, servicios externos; las punteadas, servicios transversales. Versión vectorial: [`orquesta_system_design.svg`](docs/architecture/orquesta_system_design.svg). El diagrama se genera con código ([`docs/architecture/system_design.py`](docs/architecture/system_design.py), librería [`diagrams`](https://diagrams.mingrammer.com/)):
+Solo aparece lo que está desplegado en la demo (workspace `personal` de Terraform): no se dibujan Aurora, dominio propio (Route 53/ACM) ni envío real de SMS, que existen en el código pero no se usaron. Las flechas negras son peticiones síncronas; las rosas, mensajería (encola/trigger); las azules, lectura/escritura de datos; las verdes, servicios externos. KMS, Secrets Manager y CloudWatch los usan todas las Lambdas, así que se agrupan sin flechas para no saturar el diagrama. Versión vectorial: [`orquesta_system_design.svg`](docs/architecture/orquesta_system_design.svg). El diagrama se genera con código ([`docs/architecture/system_design.py`](docs/architecture/system_design.py), librería [`diagrams`](https://diagrams.mingrammer.com/)):
 
 ```bash
 pip install diagrams            # requiere Graphviz: brew install graphviz
