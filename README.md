@@ -208,78 +208,13 @@ flowchart LR
 
 ### 6.1 Arquitectura en AWS: qué se conecta con qué
 
-```mermaid
-flowchart TB
-  subgraph SG1["Usuarios"]
-    U1["Planner · Proveedor<br/>navegador"]
-    U2["Staff<br/>PWA offline · IndexedDB"]
-    U3["Invitado<br/>link SMS / email"]
-  end
+![System Design de Orquesta en AWS](docs/architecture/orquesta_system_design.png)
 
-  subgraph SG2["Borde"]
-    CF["Amazon CloudFront<br/>CDN · HTTPS"]
-    S3A[("Amazon S3 · assets<br/>app Angular · QR PNG")]
-    APIGW["Amazon API Gateway<br/>HTTP API v2 · CORS · throttling"]
-  end
+Solo aparece lo que está desplegado en la demo (workspace `personal` de Terraform): no se dibujan Aurora, dominio propio (Route 53/ACM) ni envío real de SMS, que existen en el código pero no se usaron. Las flechas negras son peticiones síncronas; las rosas, mensajería (encola/trigger); las azules, lectura/escritura de datos; las verdes, servicios externos; las punteadas, servicios transversales. Versión vectorial: [`orquesta_system_design.svg`](docs/architecture/orquesta_system_design.svg). El diagrama se genera con código ([`docs/architecture/system_design.py`](docs/architecture/system_design.py), librería [`diagrams`](https://diagrams.mingrammer.com/)):
 
-  subgraph SG3["AWS Lambda · Node.js 20"]
-    LAPI["api<br/>83 endpoints"]
-    LIMP["import-worker"]
-    LPRO["projector"]
-    LSMS["notify-sms"]
-    LEML["notify-email"]
-    LOUT["outbox-poller"]
-  end
-
-  subgraph SG4["Datos"]
-    RDS[("Amazon RDS PostgreSQL 16<br/>lab: db.t4g.micro<br/>prod: Aurora Serverless v2")]
-    S3I[("Amazon S3 · imports<br/>CSV · expira 7 días")]
-  end
-
-  subgraph SG5["Mensajería"]
-    SNS{{"Amazon SNS<br/>orquesta-notifications"}}
-    QSMS[["SQS notify_sms<br/>+ DLQ"]]
-    QEML[["SQS notify_email<br/>+ DLQ"]]
-    QPRO[["SQS projection<br/>+ DLQ"]]
-    QIMP[["SQS import_jobs<br/>+ DLQ"]]
-    EB["Amazon EventBridge<br/>rate 1 min"]
-  end
-
-  subgraph SG6["Seguridad y operación"]
-    KMS["AWS KMS<br/>firma ES256 del QR<br/>cifrado en reposo"]
-    SM["AWS Secrets Manager<br/>credenciales BD · llaves"]
-    CW["Amazon CloudWatch<br/>logs · métricas EMF · alarmas"]
-  end
-
-  subgraph SG7["Externos"]
-    SMSOUT["SNS SMS / End User Messaging"]
-    SES["Amazon SES<br/>SPF · DKIM · DMARC"]
-    PSP[("Procesador de pagos<br/>modo test")]
-  end
-
-  U1 & U2 & U3 --> CF --> S3A
-  U1 & U2 & U3 --> APIGW --> LAPI
-  LAPI <--> RDS
-  LAPI -->|"CSV"| S3I
-  LAPI --> QIMP --> LIMP
-  LIMP --> S3I
-  LIMP --> RDS
-  LIMP -->|"QR PNG"| S3A
-  LAPI -->|"flush inmediato"| SNS
-  LAPI -->|"flush inmediato"| QPRO
-  SNS --> QSMS --> LSMS --> SMSOUT
-  SNS --> QEML --> LEML --> SES
-  QPRO --> LPRO --> RDS
-  EB --> LOUT
-  LOUT <--> RDS
-  LOUT --> SNS
-  LOUT --> QPRO
-  LOUT <-->|"conciliación"| PSP
-  LAPI <-->|"cobro idempotente"| PSP
-  PSP -->|"webhook HMAC"| APIGW
-  LAPI & LOUT -.->|"firma"| KMS
-  LAPI & LIMP & LOUT & LPRO & LSMS & LEML -.->|"secretos"| SM
-  LAPI & LIMP & LOUT & LPRO & LSMS & LEML -.->|"logs y métricas"| CW
+```bash
+pip install diagrams            # requiere Graphviz: brew install graphviz
+cd docs/architecture && python system_design.py
 ```
 
 | Servicio AWS | Para qué se usa | Requisito que atiende |
@@ -512,7 +447,7 @@ Variables y modos (`db_mode`, `email_provider_mode`, `enable_cloudfront`…): [`
 ```text
 orquesta/
 ├── .github/workflows/   # CI (4 jobs) y CD manual a AWS
-├── docs/                # requerimientos.md (normativo) + delivery/ (framework 01–07)
+├── docs/                # requerimientos.md (normativo) + delivery/ (framework 01–07) + architecture/ (diagrama AWS como código)
 ├── back/                # 6 Lambdas Node.js, dominio compartido, migraciones, suite de aceptación
 ├── front/               # Angular 22 + PWA: planner, proveedor, invitación, escáner
 └── terraform/           # API Gateway, Lambdas, RDS/Aurora, SNS/SQS, S3, KMS, alarmas
