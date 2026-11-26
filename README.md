@@ -235,9 +235,9 @@ cd docs/architecture && python system_design.py
 ### 6.2 Decisiones de arquitectura (ADR)
 
 #### ADR-1 · Monolito modular en Lambda en lugar de 6 servicios en ECS Fargate
-- **Contexto:** el entorno de entrega es AWS Learner Lab (USD 100, sesiones de 4 h, sin `iam:CreateRole`, `cloudfront:*` ni `ses:*`).
-- **Decisión:** una Lambda HTTP + 5 Lambdas de trabajo, compartiendo dominio; los límites de servicio se mantienen como módulos con dueño único.
-- **Consecuencias:** costo ~0 en reposo y escalado por invocación; el aislamiento de fallas se logra por **colas independientes** (notificaciones, proyección, import) y por el barrido de conciliación que nunca propaga errores del PSP. Para separar un servicio basta mover su router y sus consumidores: no hay lecturas cruzadas de tablas de otro dominio en las rutas.
+- **Contexto:** la carga de Orquesta es muy dispareja. Entre semana el tráfico es bajo (planners armando eventos, invitados respondiendo RSVP) y los picos llegan en las noches de fin de semana, cuando ocurren los eventos: ~2 000 eventos el sábado y hasta **500 check-ins/s** en los primeros minutos ([§1.3](#13-estimación-de-capacidad-lo-que-sí-cambia-el-diseño)). Con contenedores en Fargate habría que pagar tareas encendidas toda la semana para atender un pico de pocas horas, o confiar en un autoescalado que tarda minutos en reaccionar justo cuando abren las puertas.
+- **Decisión:** desde el diseño se eligió cómputo *serverless*: una Lambda HTTP (`api`) + 5 Lambdas de trabajo, compartiendo dominio; los límites de servicio se mantienen como módulos con dueño único.
+- **Consecuencias:** costo ~0 en reposo entre semana y escalado por invocación en segundos durante el pico, pagando solo lo que se usa. El aislamiento de fallas se logra por **colas independientes** (notificaciones, proyección, import) y por el barrido de conciliación que nunca propaga errores del PSP. El costo de esta elección son las conexiones a PostgreSQL: cada instancia de Lambda abre las suyas, así que el escalado se acota con concurrencia reservada y pool pequeño, y a gran escala requiere RDS Proxy ([ADR-7](#adr-7--base-de-datos-de-la-demo-rds-micro-y-no-aurora-ni-rds-proxy)). Para separar un servicio basta mover su router y sus consumidores: no hay lecturas cruzadas de tablas de otro dominio en las rutas.
 
 #### ADR-2 · PostgreSQL para check-in en lugar de DynamoDB
 - **Decisión:** `checkin_event` append-only en PostgreSQL; el lote completo (≤ 500) en una transacción; idempotencia y convergencia por restricciones únicas.
